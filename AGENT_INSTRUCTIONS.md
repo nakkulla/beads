@@ -124,6 +124,14 @@ defer to the standard PR flow to keep changes reviewable.
 - When handling external contributor PRs, use fix-merge: checkout the PR
   branch locally, fix/rebase onto main, merge via PR, then close the PR
 
+### Fork Remote Target Safety
+
+In fork checkouts, `upstream` is fetch/sync-only unless the user explicitly
+names an upstream repo or PR. For user-requested PR create/merge/finish/close
+operations, default the GitHub target repo to the `origin` push remote, not
+`upstream`; resolve it from `git remote get-url --push origin` and pass that
+repo explicitly to `gh` with `--repo <owner>/<repo>`.
+
 ### Maintainer PR Guidelines
 
 Before triaging, reviewing, landing, closing, or otherwise maintaining PRs,

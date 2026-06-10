@@ -41,6 +41,11 @@ scripts/pr-preflight.sh --search "<topic keywords>" --repo gastownhall/beads
 scripts/pr-preflight.sh <pr-number> --repo gastownhall/beads
 ```
 
+In fork checkouts, treat `upstream` as fetch/sync-only unless the user
+explicitly names an upstream repo or PR. For user-requested PR create, merge,
+finish, or close actions, resolve the target from `git remote get-url --push
+origin` and pass it to `gh` with `--repo <owner>/<repo>`.
+
 External contributor PRs have priority. Review and build on their branch when
 possible, preserve their tests and attribution, and never close or supersede
 their PR silently. If a rewrite is unavoidable, explain why on the original PR
