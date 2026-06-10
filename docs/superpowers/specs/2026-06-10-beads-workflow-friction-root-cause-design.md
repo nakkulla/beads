@@ -17,7 +17,7 @@
 1. Beads write 성공 후 `bd show`, JSONL export/source, Dolt state가 서로 다르게 보이거나 rollback되는 원인을 재현 테스트로 고정하고 수정한다.
 2. embedded Dolt와 JSONL auto-import 경계에서 stale configured import JSONL이 현재 DB state를 덮거나 반복 auto-import되는 조건을 제거한다. 기본 경로는 `.beads/issues.jsonl`이며, documented `import.path` custom path는 보존한다.
 3. server-mode에서는 startup auto-import가 실행되지 않는 현재 boundary를 명시적으로 유지하고, stale JSONL이 server-backed writes/readbacks를 덮지 않음을 테스트로 고정한다.
-4. `bd dolt push` dangling refs 실패가 발생하는 경로를 재현하거나, 이미 known-limitation인 경우 CLI가 더 안전하게 classify/recover하도록 만든다.
+4. `bd dolt push` dangling refs 실패가 발생하는 경로를 재현하거나, 이미 known-limitation인 경우 CLI가 더 안전하게 classify하고 사용자가 명시적으로 실행할 복구 안내를 출력하도록 만든다.
 5. plan-backed child Bead seeding에 필요한 `bd create --id` + `--parent`, dependency/readback/reuse 흐름을 idempotent하게 만든다.
 6. `.beads/.~issues.jsonl.*` 같은 editor/temp JSONL 파일이 import/export/sync source로 잘못 취급되지 않음을 보장한다.
 7. 수정 후 전역 `bd`를 이 repo build로 다시 설치하고, active `bd`가 Homebrew가 아니라 local build임을 검증한다.
@@ -31,7 +31,7 @@
   - post-merge source verification과 live runtime install verification 분리
 - Beads storage architecture 전체를 재설계하지 않는다.
 - Beads-side에서 Dolt engine internals, schema tables, lock files, chunk store, commit graph를 직접 들여다보는 workaround를 추가하지 않는다. 필요한 state 판정이 현재 storage interface로 표현되지 않으면 driver interface를 좁게 확장하거나 driver-local helper로 둔다.
-- Dolt upstream 원격 저장소의 chunk atomicity 한계를 근본적으로 해결하지 않는다. 이 repo에서 가능한 commit/push ordering, retry, error classification, guidance까지만 다룬다.
+- Dolt upstream 원격 저장소의 chunk atomicity 한계를 근본적으로 해결하지 않는다. 이 repo에서 가능한 commit/push ordering, error classification, user-facing guidance까지만 다룬다. `bd dolt push` 실패 복구로 command layer가 implicit pull/merge 또는 storage-specific retry loop를 수행하지 않는다.
 - Homebrew formula를 삭제하거나 uninstall하지 않는다. active global `bd`는 `$HOME/.local/bin/bd`로 유지하고, Homebrew `beads`는 unlinked 상태로 둔다.
 
 ## 현재 코드 관찰
@@ -130,17 +130,18 @@ CLI write가 성공했지만 이후 readback에서 이전 상태가 보이는 �
 
 #### 문제 가설
 
-`cmd/bd/dolt_autopush.go` 주석에 따르면 concurrent git+ssh Dolt pushes는 remote manifest가 missing chunk를 참조하는 dangling reference를 만들 수 있다. 이번 작업은 Dolt upstream의 atomicity를 해결하지 않고, Beads CLI가 이 상태를 더 안전하게 다루도록 한다.
+`cmd/bd/dolt_autopush.go` 주석에 따르면 concurrent git+ssh Dolt pushes는 remote manifest가 missing chunk를 참조하는 dangling reference를 만들 수 있다. 이번 작업은 Dolt upstream의 atomicity를 해결하지 않고, Beads CLI가 이 상태를 더 안전하게 분류하고 사용자에게 명시적 복구 절차를 안내하도록 한다. Command layer는 dangling refs 복구를 위해 implicit pull/merge 또는 storage-specific retry loop를 수행하지 않는다.
 
 #### 구현 방향
 
 - `bd dolt push` manual path와 auto-push path를 분리해 본다.
 - 이미 `dolt.auto-push`는 opt-in이므로 기본 auto-push가 dangling refs를 만들지 않는지 확인한다.
 - manual `bd dolt push`에서 dangling/missing chunk 계열 error message를 classify하는 helper를 추가하거나 기존 helper를 확장한다.
-- safe retry 정책은 bounded로 유지한다.
-  - `bd dolt push`가 dangling refs 계열로 실패하면 user-facing message에 `bd dolt pull && bd dolt push` one-time recovery guidance를 제공한다.
-  - CLI 내부 자동 retry를 넣을 경우 정확히 한 번만 수행하고, 재실패 시 recovery guidance와 non-zero exit을 유지한다.
-- remote corruption 자체를 은폐하지 않는다. retry 후에도 실패하면 성공처럼 보고하지 않는다.
+- Command-layer recovery는 classify-and-guide only로 제한한다.
+  - `bd dolt push`가 dangling/missing chunk 계열로 실패하면 user-facing message에 `bd dolt pull && bd dolt push` one-time recovery guidance를 제공한다.
+  - `bd dolt push` 자체가 recovery 목적으로 implicit `pull`, merge, second push, storage-specific retry loop를 실행하지 않는다.
+  - 자동 retry/recovery가 정말 필요하다고 판단되면 이 spec의 즉시 구현 범위에서 제외하고, storage driver interface/driver-local contract 확장으로 별도 설계한다.
+- remote corruption 자체를 은폐하지 않는다. dangling/missing chunk classifier가 match되면 actionable guidance와 함께 non-zero exit을 유지한다.
 
 #### 수용 기준
 
@@ -254,7 +255,7 @@ type -a bd
 - **stale JSONL**: 최신 DB row보다 오래된 JSONL record는 auto-import에서 skip한다.
 - **false empty DB**: empty 판정이 불확실하면 auto-import하지 않고 warning 또는 recovery guidance를 출력한다. 이 판정은 storage interface 또는 driver-local capability를 통해 수행하고 Beads command code가 Dolt internals를 직접 inspect하지 않는다.
 - **write/readback mismatch**: command success로 보지 않고 test failure 또는 actionable error로 처리한다.
-- **dangling refs**: known dangling/missing chunk 계열이면 bounded retry/guidance를 제공하고, 재실패 시 non-zero exit을 유지한다.
+- **dangling refs**: known dangling/missing chunk 계열이면 classify-and-guide only로 처리한다. `bd dolt push`는 implicit pull/merge/retry를 실행하지 않고, `bd dolt pull && bd dolt push` 안내와 함께 non-zero exit을 유지한다.
 - **partial child create**: 재실행 시 duplicate create를 반복하지 않고 existing child를 readback/reuse한다.
 - **Homebrew conflict**: `/opt/homebrew/bin/bd`를 직접 삭제하지 않고 `brew unlink beads` 상태를 유지한다.
 
