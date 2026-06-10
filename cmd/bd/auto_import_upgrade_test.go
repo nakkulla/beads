@@ -267,6 +267,11 @@ func TestEmbeddedAutoImportStaleConfiguredJSONLDoesNotClobberCurrentState(t *tes
 }
 
 func TestServerModeAutoImportStaleConfiguredJSONLDoesNotClobberCurrentState(t *testing.T) {
+	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
+		t.Skip("set BEADS_TEST_EMBEDDED_DOLT=1 to run Dolt server-mode integration tests")
+	}
+	t.Parallel()
+
 	bd := buildEmbeddedBD(t)
 	port := startLocalDoltSQLServerForAutoImportTest(t)
 	database := uniqueTestDBName(t)
