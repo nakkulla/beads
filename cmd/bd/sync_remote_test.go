@@ -49,6 +49,13 @@ func TestNormalizeRemoteURL(t *testing.T) {
 }
 
 func TestCommitBeadsConfigSkipsGitHooks(t *testing.T) {
+	// Previous in-process command tests may leave selector env rebound to
+	// another workspace. This test verifies git behavior in its own temp repo,
+	// so isolate all selector env before resolving RepoContext.
+	t.Setenv("BEADS_DIR", "")
+	t.Setenv("BEADS_DB", "")
+	t.Setenv("BD_DB", "")
+
 	repo := t.TempDir()
 	runGitForCommitConfigTest(t, repo, "init")
 	runGitForCommitConfigTest(t, repo, "config", "user.email", "test@example.com")
