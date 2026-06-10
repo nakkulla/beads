@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/steveyegge/beads/internal/config"
+	storagedolt "github.com/steveyegge/beads/internal/storage/dolt"
 )
 
 type fakeAutoPushTarget struct {
@@ -263,5 +266,44 @@ func TestLoadPushState_CorruptJSON(t *testing.T) {
 	_, err := loadPushState()
 	if err == nil {
 		t.Error("loadPushState with corrupt JSON: expected error, got nil")
+	}
+}
+
+func TestIsDanglingChunkReferenceErr(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{name: "storage sentinel", err: fmt.Errorf("push failed: %w", storagedolt.ErrDanglingReference), want: true},
+		{name: "dangling text", err: errors.New("dolt push failed: dangling chunk reference: hash abc referenced but not present"), want: true},
+		{name: "missing chunk text", err: errors.New("remote manifest references missing chunk abc123"), want: true},
+		{name: "unrelated", err: errors.New("authentication failed"), want: false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isDanglingChunkReferenceErr(tc.err); got != tc.want {
+				t.Fatalf("isDanglingChunkReferenceErr(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDanglingChunkReferenceGuidanceText(t *testing.T) {
+	t.Parallel()
+	msg := danglingChunkReferenceGuidance()
+	for _, want := range []string{
+		"bd dolt pull && bd dolt push",
+		"does not run pull or retry automatically",
+		"non-zero",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("guidance missing %q:\n%s", want, msg)
+		}
 	}
 }
