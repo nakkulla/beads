@@ -378,6 +378,57 @@ func TestEmbeddedCreate(t *testing.T) {
 		assertDepExists(t, beadsDir, "pc", child.ID, parent.ID)
 	})
 
+	t.Run("parent_explicit_child_id", func(t *testing.T) {
+		dir, beadsDir, _ := bdInit(t, bd, "--prefix", "ec")
+		parent := bdCreate(t, bd, dir, "Explicit child parent", "-t", "epic", "-l", "team-a")
+
+		child := bdCreate(t, bd, dir, "Explicit child", "--id", parent.ID+".7", "--parent", parent.ID, "-l", "child-only")
+		if child.ID != parent.ID+".7" {
+			t.Fatalf("explicit child ID = %q, want %q", child.ID, parent.ID+".7")
+		}
+		assertDepExistsWithType(t, beadsDir, "ec", child.ID, parent.ID, string(types.DepParentChild))
+
+		store := openStore(t, beadsDir, "ec")
+		labels, err := store.GetLabels(t.Context(), child.ID)
+		if err != nil {
+			t.Fatalf("GetLabels: %v", err)
+		}
+		labelMap := map[string]bool{}
+		for _, label := range labels {
+			labelMap[label] = true
+		}
+		for _, want := range []string{"team-a", "child-only"} {
+			if !labelMap[want] {
+				t.Fatalf("child labels missing %q: %v", want, labels)
+			}
+		}
+
+		auto := bdCreate(t, bd, dir, "Auto child after explicit", "--parent", parent.ID)
+		if auto.ID != parent.ID+".8" {
+			t.Fatalf("next auto child ID = %q, want %q", auto.ID, parent.ID+".8")
+		}
+	})
+
+	t.Run("parent_explicit_child_id_rejects_wrong_prefix", func(t *testing.T) {
+		dir, _, _ := bdInit(t, bd, "--prefix", "wp")
+		parent := bdCreate(t, bd, dir, "Wrong prefix parent", "-t", "epic")
+		out := bdCreateFail(t, bd, dir, "Wrong prefix child", "--id", "wp-other.1", "--parent", parent.ID)
+		if !strings.Contains(out, "must start with parent prefix") {
+			t.Fatalf("wrong-prefix error missing parent-prefix guidance:\n%s", out)
+		}
+	})
+
+	t.Run("parent_explicit_child_id_duplicate_is_not_recreated", func(t *testing.T) {
+		dir, _, _ := bdInit(t, bd, "--prefix", "dc")
+		parent := bdCreate(t, bd, dir, "Duplicate child parent", "-t", "epic")
+		childID := parent.ID + ".3"
+		_ = bdCreate(t, bd, dir, "Duplicate child first", "--id", childID, "--parent", parent.ID)
+		out := bdCreateFail(t, bd, dir, "Duplicate child second", "--id", childID, "--parent", parent.ID)
+		if !strings.Contains(strings.ToLower(out), "duplicate") && !strings.Contains(strings.ToLower(out), "already exists") {
+			t.Fatalf("duplicate explicit child error should mention duplicate/already exists:\n%s", out)
+		}
+	})
+
 	t.Run("parent_label_inheritance", func(t *testing.T) {
 		dir, beadsDir, _ := bdInit(t, bd, "--prefix", "pi")
 		parent := bdCreate(t, bd, dir, "Parent with labels", "-t", "epic", "-l", "team-a,priority:high")

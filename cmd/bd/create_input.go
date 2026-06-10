@@ -147,8 +147,8 @@ func gatherCreateInput(cmd *cobra.Command, args []string) createInput {
 	in.waitsFor, _ = cmd.Flags().GetString("waits-for")
 	in.waitsForGate, _ = cmd.Flags().GetString("waits-for-gate")
 
-	if in.explicitID != "" && in.parentID != "" {
-		FatalError("cannot specify both --id and --parent flags")
+	if in.explicitID != "" && in.parentID != "" && !strings.HasPrefix(in.explicitID, in.parentID+".") {
+		FatalError("explicit child ID %q must start with parent prefix %q when --parent is set", in.explicitID, in.parentID+".")
 	}
 
 	in.labels, _ = cmd.Flags().GetStringSlice("labels")

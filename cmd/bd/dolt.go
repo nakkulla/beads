@@ -19,6 +19,7 @@ import (
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage"
+	storagedolt "github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
 	"github.com/steveyegge/beads/internal/ui"
 	"golang.org/x/term"
@@ -157,6 +158,32 @@ func isDivergedHistoryErr(err error) bool {
 		strings.Contains(msg, "cannot find common ancestor")
 }
 
+func isDanglingChunkReferenceErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, storagedolt.ErrDanglingReference) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "dangling chunk") ||
+		strings.Contains(msg, "dangling reference") ||
+		(strings.Contains(msg, "missing chunk") && strings.Contains(msg, "manifest")) ||
+		strings.Contains(msg, "referenced but not present")
+}
+
+func danglingChunkReferenceGuidance() string {
+	return "\nDolt remote/local chunk integrity problem detected.\n" +
+		"The push was not recovered automatically: bd dolt push does not run pull or retry automatically.\n" +
+		"Run this explicit one-time recovery if you want to reconcile before pushing again:\n" +
+		"  bd dolt pull && bd dolt push\n" +
+		"If the command still fails, keep the non-zero result and inspect the Dolt remote before forcing any history change.\n"
+}
+
+func printDanglingChunkReferenceGuidance() {
+	fmt.Fprint(os.Stderr, danglingChunkReferenceGuidance())
+}
+
 // printNoRemoteGuidance prints an informational message (to stdout) when
 // push or pull is attempted but no Dolt remote is configured. Exits 0 because
 // the absence of a remote is a valid configuration — not an error.
@@ -262,6 +289,8 @@ The remote must already exist (see 'bd dolt remote add').`,
 					fmt.Fprintln(os.Stderr, "Use 'bd dolt remote list' to see configured remotes.")
 				} else if isDivergedHistoryErr(err) {
 					printDivergedHistoryGuidance("push --force")
+				} else if isDanglingChunkReferenceErr(err) {
+					printDanglingChunkReferenceGuidance()
 				}
 				os.Exit(1)
 			}
@@ -294,6 +323,8 @@ The remote must already exist (see 'bd dolt remote add').`,
 					op = "push --force"
 				}
 				printDivergedHistoryGuidance(op)
+			} else if isDanglingChunkReferenceErr(pushErr) {
+				printDanglingChunkReferenceGuidance()
 			}
 			os.Exit(1)
 		}

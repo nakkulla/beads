@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/steveyegge/beads/internal/testutil"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -216,6 +217,177 @@ func TestEmbeddedAutoImportJSONLSkipsNonEmpty(t *testing.T) {
 	if issues[0].ID != existing.ID {
 		t.Errorf("expected issue %s, got %s", existing.ID, issues[0].ID)
 	}
+}
+
+func TestEmbeddedAutoImportStaleConfiguredJSONLDoesNotClobberCurrentState(t *testing.T) {
+	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
+		t.Skip("set BEADS_TEST_EMBEDDED_DOLT=1 to run embedded dolt integration tests")
+	}
+	t.Parallel()
+
+	bd := buildEmbeddedBD(t)
+	dir, beadsDir, _ := bdInit(t, bd, "--prefix", "sj")
+	issue := bdCreate(t, bd, dir, "current title", "--type", "task", "--priority", "1")
+
+	stale := types.Issue{
+		ID:        issue.ID,
+		Title:     "stale JSONL title",
+		Status:    types.StatusOpen,
+		IssueType: types.TypeTask,
+		Priority:  4,
+		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		UpdatedAt: time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+	b, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatalf("marshal stale issue: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "issues.jsonl"), append(b, '\n'), 0o644); err != nil {
+		t.Fatalf("write stale issues.jsonl: %v", err)
+	}
+
+	bdUpdate(t, bd, dir, issue.ID, "--title", "newer title")
+	shown := bdShow(t, bd, dir, issue.ID)
+	if shown.Title != "newer title" {
+		t.Fatalf("bd show title = %q, want newer title", shown.Title)
+	}
+	listed := bdListJSON(t, bd, dir)
+	found := false
+	for _, got := range listed {
+		if got.ID == issue.ID {
+			found = true
+			if got.Title != "newer title" {
+				t.Fatalf("bd list title = %q, want newer title", got.Title)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("bd list did not include %s", issue.ID)
+	}
+}
+
+func TestServerModeAutoImportStaleConfiguredJSONLDoesNotClobberCurrentState(t *testing.T) {
+	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
+		t.Skip("set BEADS_TEST_EMBEDDED_DOLT=1 to run Dolt server-mode integration tests")
+	}
+	t.Parallel()
+
+	bd := buildEmbeddedBD(t)
+	port := startLocalDoltSQLServerForAutoImportTest(t)
+	database := uniqueTestDBName(t)
+	dir, beadsDir, _ := bdInit(t, bd,
+		"--server",
+		"--external",
+		"--server-host", "127.0.0.1",
+		"--server-port", fmt.Sprintf("%d", port),
+		"--database", database,
+		"--prefix", "sjs",
+		"--non-interactive",
+		"--skip-hooks",
+		"--skip-agents",
+	)
+	issue := bdCreate(t, bd, dir, "server current title", "--type", "task")
+
+	stale := types.Issue{
+		ID:        issue.ID,
+		Title:     "server stale JSONL title",
+		Status:    types.StatusOpen,
+		IssueType: types.TypeTask,
+		Priority:  4,
+		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		UpdatedAt: time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+	b, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatalf("marshal stale issue: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "issues.jsonl"), append(b, '\n'), 0o644); err != nil {
+		t.Fatalf("write stale issues.jsonl: %v", err)
+	}
+
+	bdUpdate(t, bd, dir, issue.ID, "--title", "server newer title")
+	shown := bdShow(t, bd, dir, issue.ID)
+	if shown.Title != "server newer title" {
+		t.Fatalf("bd show title = %q, want server newer title", shown.Title)
+	}
+	listed := bdListJSON(t, bd, dir)
+	found := false
+	for _, got := range listed {
+		if got.ID == issue.ID {
+			found = true
+			if got.Title != "server newer title" {
+				t.Fatalf("bd list title = %q, want server newer title", got.Title)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("bd list did not include %s", issue.ID)
+	}
+}
+
+func startLocalDoltSQLServerForAutoImportTest(t *testing.T) int {
+	t.Helper()
+	testutil.RequireDoltBinary(t)
+
+	port, err := testutil.FindFreePort()
+	if err != nil {
+		t.Fatalf("find free port: %v", err)
+	}
+	home := t.TempDir()
+	dataDir := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("mkdir dolt data dir: %v", err)
+	}
+	env := append(os.Environ(), "HOME="+home)
+	runDolt := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("dolt", args...)
+		cmd.Dir = dataDir
+		cmd.Env = env
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("dolt %s failed: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+	runDolt("config", "--global", "--add", "user.name", "beads-test")
+	runDolt("config", "--global", "--add", "user.email", "test@beads.local")
+	runDolt("init")
+
+	logPath := filepath.Join(t.TempDir(), "dolt-sql-server.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		t.Fatalf("create dolt server log: %v", err)
+	}
+	t.Cleanup(func() { _ = logFile.Close() })
+	server := exec.Command("dolt", "sql-server", "-H", "127.0.0.1", "-P", fmt.Sprintf("%d", port), "--no-auto-commit", "--data-dir", dataDir)
+	server.Env = env
+	server.Stdout = logFile
+	server.Stderr = logFile
+	if err := server.Start(); err != nil {
+		t.Fatalf("start dolt sql-server: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- server.Wait() }()
+	t.Cleanup(func() {
+		if server.Process != nil {
+			_ = server.Process.Kill()
+		}
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+	})
+
+	if !testutil.WaitForServer(port, 10*time.Second) {
+		select {
+		case err := <-done:
+			data, _ := os.ReadFile(logPath)
+			t.Fatalf("dolt sql-server exited before accepting connections: %v\n%s", err, data)
+		default:
+			data, _ := os.ReadFile(logPath)
+			t.Fatalf("dolt sql-server did not accept connections on port %d\n%s", port, data)
+		}
+	}
+	return port
 }
 
 // bdCreateAllowError runs "bd create --json" and returns the issue on success,
