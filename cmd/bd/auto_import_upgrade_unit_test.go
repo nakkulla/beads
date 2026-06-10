@@ -161,6 +161,26 @@ func TestMaybeAutoImportJSONL_FallbackImporter_SkipsWhenStatisticsReportNonEmpty
 	}
 }
 
+func TestConfiguredImportJSONLPathExactFileIgnoresTempSiblings(t *testing.T) {
+	initConfigForTest(t)
+	dir := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(dir, ".~issues.jsonl.tmp"), []byte("temp\n"), 0o600); err != nil {
+		t.Fatalf("write temp sibling: %v", err)
+	}
+	if got, want := configuredImportJSONLPath(dir), filepath.Join(dir, "issues.jsonl"); got != want {
+		t.Fatalf("default configuredImportJSONLPath() = %q, want %q", got, want)
+	}
+
+	config.Set("import.path", "beads.jsonl")
+	if err := os.WriteFile(filepath.Join(dir, ".~beads.jsonl.tmp"), []byte("temp\n"), 0o600); err != nil {
+		t.Fatalf("write custom temp sibling: %v", err)
+	}
+	if got, want := configuredImportJSONLPath(dir), filepath.Join(dir, "beads.jsonl"); got != want {
+		t.Fatalf("custom configuredImportJSONLPath() = %q, want %q", got, want)
+	}
+}
+
 func TestShouldRunAutoImportJSONL(t *testing.T) {
 	store := &fakeFallbackStore{}
 	writeCmd := &cobra.Command{Use: "update"}
@@ -190,6 +210,14 @@ func TestShouldRunAutoImportJSONL(t *testing.T) {
 				t.Fatalf("shouldRunAutoImportJSONL() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestShouldRunAutoImportJSONL_ServerModeDisabledBoundary(t *testing.T) {
+	store := &fakeFallbackStore{}
+	cmd := &cobra.Command{Use: "update"}
+	if shouldRunAutoImportJSONL(cmd, store, false, false, true) {
+		t.Fatal("server-mode startup auto-import must stay disabled; stale JSONL must not be applied by server-backed commands")
 	}
 }
 
