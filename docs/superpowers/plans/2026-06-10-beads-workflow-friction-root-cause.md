@@ -61,6 +61,7 @@
 
 Run:
 ```bash
+bd dolt pull
 git status --short --branch
 bd show beads-urc --json | jq '.[0] | {id,status,labels,metadata,spec_id}'
 shasum -a 256 docs/superpowers/specs/2026-06-10-beads-workflow-friction-root-cause-design.md
@@ -544,7 +545,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 	"time"
 
 	storagedolt "github.com/steveyegge/beads/internal/storage/dolt"
