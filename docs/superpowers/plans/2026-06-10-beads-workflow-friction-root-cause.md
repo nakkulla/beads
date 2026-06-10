@@ -1,6 +1,6 @@
 # Beads Workflow Friction Root Cause Implementation Plan
 
-> **For agentic workers:** REQUIRED EXECUTION SKILL: use the workflow-selected execution skill to implement this plan task-by-task. For Beads-backed work, use `superpowers:executing-plans` by default; use `superpowers:subagent-driven-development` only when the parent Bead has `metadata.execution_mode=subagent_driven` or the user explicitly requested subagent implementation. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED EXECUTION SKILL: use the workflow-selected execution skill to implement this plan task-by-task. For Beads-backed work, use `superpowers:executing-plans` by default; use `superpowers:subagent-driven-development` only when the parent Bead has `metadata.execution_mode=subagent_driven` or the user explicitly requested subagent implementation. Use step headings only; Beads issues remain the source of task tracking.
 
 **Goal:** Fix the Beads-side root causes and regression gaps behind workflow friction around JSONL auto-import, write/readback consistency, Dolt push error guidance, child Bead seeding, and dogfood installation.
 
@@ -41,7 +41,7 @@
 
 ## Execution Rules
 
-- Work from `/Users/isy_macstudio/External/beads/.worktrees/beads-urc` on branch `beads-urc`.
+- Work from the `beads-urc` worktree (for example `.worktrees/beads-urc` under the repo root) on branch `beads-urc`.
 - Before implementing, run the PR preflight command from the reviewed spec.
 - For each task: write/adjust the focused test first, run the focused test to see the expected failure or characterization result, implement minimal code, rerun focused tests, commit.
 - Do not run `make install-force` until all code tests pass.
@@ -57,7 +57,7 @@
 - Read: `docs/PROJECT_CHARTER.md`
 - Read: `docs/superpowers/specs/2026-06-10-beads-workflow-friction-root-cause-design.md`
 
-- [ ] **Step 1: Verify workspace and reviewed spec metadata**
+#### Step 1: Verify workspace and reviewed spec metadata
 
 Run:
 ```bash
@@ -77,7 +77,7 @@ Expected Bead facts:
 - `metadata.spec_review_verdict` is `APPROVE`.
 - `metadata.spec_content_hash` equals the printed SHA-256 hash.
 
-- [ ] **Step 2: Run PR preflight search before implementation**
+#### Step 2: Run PR preflight search before implementation
 
 Run:
 ```bash
@@ -86,7 +86,7 @@ scripts/pr-preflight.sh --search "auto import JSONL readback child create dolt p
 
 Expected: command exits 0 and reports any related PRs/issues. If it reports an external contributor PR touching the same files, stop and inspect `PR_MAINTAINER_GUIDELINES.md` before editing.
 
-- [ ] **Step 3: Run narrow baseline tests for existing touched packages**
+#### Step 3: Run narrow baseline tests for existing touched packages
 
 Run:
 ```bash
@@ -95,7 +95,7 @@ go test ./cmd/bd -run 'TestMaybeAutoImportJSONL|TestIsDoltAutoPushEnabled|TestPu
 
 Expected: PASS. If this fails before edits, record the failing test names in Bead notes and fix only if required for this scope.
 
-- [ ] **Step 4: Commit baseline evidence if only Beads metadata changed**
+#### Step 4: Commit baseline evidence if only Beads metadata changed
 
 No code commit is expected for this task. If previous steps produced only terminal evidence, do not commit.
 
@@ -111,7 +111,7 @@ No code commit is expected for this task. If previous steps produced only termin
 - Read: `cmd/bd/auto_import_upgrade.go`
 - Read: `cmd/bd/proxied_integration_helpers_test.go`
 
-- [ ] **Step 1: Add unit coverage for exact configured import path and temp siblings**
+#### Step 1: Add unit coverage for exact configured import path and temp siblings
 
 Append this test to `cmd/bd/auto_import_upgrade_unit_test.go` near `TestMaybeAutoImportJSONL_UsesConfiguredImportPath`:
 
@@ -137,7 +137,7 @@ func TestConfiguredImportJSONLPathExactFileIgnoresTempSiblings(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Add explicit unit coverage for server-mode disabled boundary**
+#### Step 2: Add explicit unit coverage for server-mode disabled boundary
 
 Add this test below `TestShouldRunAutoImportJSONL`:
 
@@ -151,7 +151,7 @@ func TestShouldRunAutoImportJSONL_ServerModeDisabledBoundary(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run the new unit tests**
+#### Step 3: Run the new unit tests
 
 Run:
 ```bash
@@ -160,7 +160,7 @@ go test ./cmd/bd -run 'TestConfiguredImportJSONLPathExactFileIgnoresTempSiblings
 
 Expected: PASS. If `TestConfiguredImportJSONLPathExactFileIgnoresTempSiblings` fails, change only `cmd/bd/import_path.go` so `configuredImportJSONLPath` returns the exact configured relative file and never glob-selects siblings.
 
-- [ ] **Step 4: Add embedded CLI regression for stale configured JSONL not clobbering current DB**
+#### Step 4: Add embedded CLI regression for stale configured JSONL not clobbering current DB
 
 Append this test to `cmd/bd/auto_import_upgrade_test.go` after `TestEmbeddedAutoImportJSONLSkipsNonEmpty`:
 
@@ -213,7 +213,7 @@ func TestEmbeddedAutoImportStaleConfiguredJSONLDoesNotClobberCurrentState(t *tes
 }
 ```
 
-- [ ] **Step 5: Run the embedded stale JSONL regression**
+#### Step 5: Run the embedded stale JSONL regression
 
 Run:
 ```bash
@@ -222,7 +222,7 @@ CGO_ENABLED=1 BEADS_TEST_EMBEDDED_DOLT=1 go test -tags gms_pure_go ./cmd/bd -run
 
 Expected: PASS. If it fails by reverting the title, fix `cmd/bd/auto_import_upgrade.go` so non-empty DB state prevents auto-import before any parse/import path can run.
 
-- [ ] **Step 6: Add proxied/server-mode stale JSONL read/write/readback regression**
+#### Step 6: Add proxied/server-mode stale JSONL read/write/readback regression
 
 Add this subtest to `cmd/bd/create_proxied_integration_test.go` inside `TestProxiedServerCreate`, near other read/write create tests:
 
@@ -272,7 +272,7 @@ t.Run("server_mode_stale_configured_jsonl_does_not_clobber", func(t *testing.T) 
 })
 ```
 
-- [ ] **Step 7: Run the proxied/server-mode stale JSONL regression**
+#### Step 7: Run the proxied/server-mode stale JSONL regression
 
 Run:
 ```bash
@@ -281,7 +281,7 @@ CGO_ENABLED=1 BEADS_TEST_PROXIED_SERVER=1 go test -tags gms_pure_go ./cmd/bd -ru
 
 Expected: PASS. If this fails by applying the stale JSONL title, keep server-mode startup auto-import disabled and fix the server-backed command path so configured JSONL is not treated as a live source.
 
-- [ ] **Step 8: Commit auto-import and server-mode coverage**
+#### Step 8: Commit auto-import and server-mode coverage
 
 Run:
 ```bash
@@ -300,7 +300,7 @@ Expected: commit succeeds. If `cmd/bd/import_path.go` did not change, omit it fr
 - Reuse helpers from: `cmd/bd/create_embedded_test.go`, `cmd/bd/update_embedded_test.go`, `cmd/bd/close_embedded_test.go`
 - Read if test fails: `cmd/bd/export_auto.go`, `cmd/bd/main.go`, `cmd/bd/update.go`, `cmd/bd/close.go`
 
-- [ ] **Step 1: Create the embedded consistency test file**
+#### Step 1: Create the embedded consistency test file
 
 Create `cmd/bd/write_readback_embedded_test.go` with this content:
 
@@ -436,7 +436,7 @@ func readExportedIssue(t *testing.T, path, id string) *types.Issue {
 }
 ```
 
-- [ ] **Step 2: Run the focused consistency test**
+#### Step 2: Run the focused consistency test
 
 Run:
 ```bash
@@ -445,7 +445,7 @@ CGO_ENABLED=1 BEADS_TEST_EMBEDDED_DOLT=1 go test -tags gms_pure_go ./cmd/bd -run
 
 Expected before any implementation fix: FAIL if create/update/close/readback/export order is broken. If it passes, keep it as regression coverage and continue.
 
-- [ ] **Step 3: Fix only if the consistency test fails**
+#### Step 3: Fix only if the consistency test fails
 
 If the failure shows `bd show` and `bd list` disagree, inspect the write path in `cmd/bd/update.go` or `cmd/bd/close.go` and make the write complete before returning. If the failure shows export stale or missing, inspect `cmd/bd/export_auto.go` and ensure auto-export runs after the command's write commit/export-safe point.
 
@@ -458,7 +458,7 @@ commandDidWrite.Store(true)
 
 If the existing command already sets `commandDidWrite`, do not add a duplicate flag; instead move the existing mark later so `PersistentPostRun` sees a committed/current store state.
 
-- [ ] **Step 4: Rerun focused and neighboring tests**
+#### Step 4: Rerun focused and neighboring tests
 
 Run:
 ```bash
@@ -467,7 +467,7 @@ CGO_ENABLED=1 BEADS_TEST_EMBEDDED_DOLT=1 go test -tags gms_pure_go ./cmd/bd -run
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit readback consistency work**
+#### Step 5: Commit readback consistency work
 
 Run:
 ```bash
@@ -489,7 +489,7 @@ Expected: commit succeeds. Omit files that did not change.
 - Read: `internal/storage/dolt/store.go:2030-2185`
 - Read: `docs/PROJECT_CHARTER.md`
 
-- [ ] **Step 1: Add classifier tests**
+#### Step 1: Add classifier tests
 
 Append these tests to `cmd/bd/dolt_autopush_test.go`:
 
@@ -552,7 +552,7 @@ import (
 )
 ```
 
-- [ ] **Step 2: Run classifier tests and confirm failure**
+#### Step 2: Run classifier tests and confirm failure
 
 Run:
 ```bash
@@ -561,7 +561,7 @@ go test ./cmd/bd -run 'TestIsDanglingChunkReferenceErr|TestDanglingChunkReferenc
 
 Expected: FAIL because `isDanglingChunkReferenceErr` and `danglingChunkReferenceGuidance` do not exist.
 
-- [ ] **Step 3: Implement classifier and guidance in `cmd/bd/dolt.go`**
+#### Step 3: Implement classifier and guidance in `cmd/bd/dolt.go`
 
 Add `storagedolt` import to `cmd/bd/dolt.go`:
 
@@ -599,7 +599,7 @@ func printDanglingChunkReferenceGuidance() {
 }
 ```
 
-- [ ] **Step 4: Wire guidance into manual push paths without retrying**
+#### Step 4: Wire guidance into manual push paths without retrying
 
 In `doltPushCmd` error handling, add `isDanglingChunkReferenceErr` checks after diverged-history checks for both `PushRemote` and default push paths:
 
@@ -627,7 +627,7 @@ if isDivergedHistoryErr(pushErr) {
 
 Do not call `st.Pull`, `st.Push`, `st.ForcePush`, `st.PushRemote`, or any merge/retry helper from this error path.
 
-- [ ] **Step 5: Wire guidance into opt-in auto-push warning without retrying**
+#### Step 5: Wire guidance into opt-in auto-push warning without retrying
 
 In `cmd/bd/dolt_autopush.go`, inside `maybeAutoPush` failure output, add:
 
@@ -641,7 +641,7 @@ if isDivergedHistoryErr(err) {
 
 Do not change throttle behavior and do not retry auto-push.
 
-- [ ] **Step 6: Rerun Dolt classifier and auto-push tests**
+#### Step 6: Rerun Dolt classifier and auto-push tests
 
 Run:
 ```bash
@@ -650,7 +650,7 @@ go test ./cmd/bd -run 'TestIsDanglingChunkReferenceErr|TestDanglingChunkReferenc
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit Dolt push guidance work**
+#### Step 7: Commit Dolt push guidance work
 
 Run:
 ```bash
@@ -670,7 +670,7 @@ Expected: commit succeeds.
 - Modify: `cmd/bd/create_proxied_integration_test.go`
 - Read if behavior is surprising: `internal/storage/issueops/create.go`, `internal/storage/issueops/child_id.go`, `internal/storage/child_counter_reservation.go`
 
-- [ ] **Step 1: Add embedded CLI tests for explicit child create**
+#### Step 1: Add embedded CLI tests for explicit child create
 
 Add this subtest block inside `TestEmbeddedCreate` in `cmd/bd/create_embedded_test.go`, near existing parent subtests:
 
@@ -727,7 +727,7 @@ t.Run("parent_explicit_child_id_duplicate_is_not_recreated", func(t *testing.T) 
 })
 ```
 
-- [ ] **Step 2: Run embedded child tests and confirm failure**
+#### Step 2: Run embedded child tests and confirm failure
 
 Run:
 ```bash
@@ -736,7 +736,7 @@ CGO_ENABLED=1 BEADS_TEST_EMBEDDED_DOLT=1 go test -tags gms_pure_go ./cmd/bd -run
 
 Expected: FAIL with `cannot specify both --id and --parent flags`.
 
-- [ ] **Step 3: Implement explicit child create mode in `cmd/bd/create.go`**
+#### Step 3: Implement explicit child create mode in `cmd/bd/create.go`
 
 Replace the existing conflict block:
 
@@ -783,7 +783,7 @@ if parentID != "" && !explicitChildID {
 
 This preserves existing auto child allocation and lets `CreateIssue`/`ReconcileChildCounters` advance child counters for explicit hierarchical IDs. If the explicit child counter is not committed/staged, inspect `issueops.CreateIssueDirtyTables` and use `CreateIssueResult.ChangedChildCounterTables` rather than adding command-layer storage introspection.
 
-- [ ] **Step 4: Rerun embedded child tests**
+#### Step 4: Rerun embedded child tests
 
 Run:
 ```bash
@@ -792,7 +792,7 @@ CGO_ENABLED=1 BEADS_TEST_EMBEDDED_DOLT=1 go test -tags gms_pure_go ./cmd/bd -run
 
 Expected: PASS.
 
-- [ ] **Step 5: Add proxied/server-mode parity subtest**
+#### Step 5: Add proxied/server-mode parity subtest
 
 Add this subtest to `cmd/bd/create_proxied_integration_test.go` near the existing `parent_child` subtest:
 
@@ -820,7 +820,7 @@ t.Run("parent_explicit_child_id", func(t *testing.T) {
 })
 ```
 
-- [ ] **Step 6: Run proxied create parity test**
+#### Step 6: Run proxied create parity test
 
 Run:
 ```bash
@@ -833,7 +833,7 @@ Expected: PASS. If the exact parent test name differs, run:
 CGO_ENABLED=1 BEADS_TEST_PROXIED_SERVER=1 go test -tags gms_pure_go ./cmd/bd -run 'parent_explicit_child_id'
 ```
 
-- [ ] **Step 7: Commit child create work**
+#### Step 7: Commit child create work
 
 Run:
 ```bash
@@ -851,7 +851,7 @@ Expected: commit succeeds.
 - Read: changed files from Tasks 2-5
 - Read if failures occur: exact failing test files
 
-- [ ] **Step 1: Run all scoped tests for touched areas**
+#### Step 1: Run all scoped tests for touched areas
 
 Run:
 ```bash
@@ -862,7 +862,7 @@ CGO_ENABLED=1 BEADS_TEST_PROXIED_SERVER=1 go test -tags gms_pure_go ./cmd/bd -ru
 
 Expected: PASS.
 
-- [ ] **Step 2: Audit reviewed spec goals against changed tests/code**
+#### Step 2: Audit reviewed spec goals against changed tests/code
 
 Run:
 ```bash
@@ -876,7 +876,7 @@ Expected:
 - Matches exist for explicit child ID tests.
 - Matches exist for write/readback consistency test.
 
-- [ ] **Step 3: Commit any fixups**
+#### Step 3: Commit any fixups
 
 If the audit reveals a missing spec goal, add the missing test/code now and commit with a narrow Korean message. If no gaps are found, do not create a commit.
 
@@ -888,7 +888,7 @@ If the audit reveals a missing spec goal, add the missing test/code now and comm
 - Read: `Makefile`
 - Read if failures occur: failing package/test files
 
-- [ ] **Step 1: Run default local test suite**
+#### Step 1: Run default local test suite
 
 Run:
 ```bash
@@ -897,7 +897,7 @@ make test
 
 Expected: PASS. If it fails, inspect the first failing package and fix only failures caused by this branch.
 
-- [ ] **Step 2: Run shipped-config CGO package tests for touched CLI package**
+#### Step 2: Run shipped-config CGO package tests for touched CLI package
 
 Run:
 ```bash
@@ -906,7 +906,7 @@ CGO_ENABLED=1 go test -tags gms_pure_go ./cmd/bd/...
 
 Expected: PASS. If this is too slow or environment-blocked, record the exact blocker and rerun the focused `CGO_ENABLED=1 BEADS_TEST_EMBEDDED_DOLT=1` commands from Tasks 2-6.
 
-- [ ] **Step 3: Check git status**
+#### Step 3: Check git status
 
 Run:
 ```bash
@@ -923,9 +923,9 @@ Expected: clean worktree on `beads-urc`.
 - No source edits expected.
 - Runtime install target: `$HOME/.local/bin/bd`
 
-- [ ] **Step 1: Install branch build globally**
+#### Step 1: Install branch build globally
 
-Run from `/Users/isy_macstudio/External/beads/.worktrees/beads-urc`:
+Run from the repo/worktree root for branch `beads-urc`:
 
 ```bash
 make install-force
@@ -934,7 +934,7 @@ hash -r
 
 Expected: install succeeds. This step intentionally updates the global `bd` binary after tests pass.
 
-- [ ] **Step 2: Verify active `bd` is local build, not Homebrew**
+#### Step 2: Verify active `bd` is local build, not Homebrew
 
 Run:
 ```bash
@@ -948,7 +948,7 @@ Expected:
 - `bd --version` contains the current branch commit SHA or build version derived from this checkout.
 - `/opt/homebrew/bin/bd` is absent from active resolution or appears after `$HOME/.local/bin/bd`.
 
-- [ ] **Step 3: Dogfood current Bead readback using installed binary**
+#### Step 3: Dogfood current Bead readback using installed binary
 
 Run:
 ```bash
@@ -960,7 +960,7 @@ Expected:
 - `labels` still include `reviewed:spec`.
 - No stale JSONL rollback occurs after readback.
 
-- [ ] **Step 4: Commit install evidence only if source files changed during install**
+#### Step 4: Commit install evidence only if source files changed during install
 
 Run:
 ```bash
@@ -977,7 +977,7 @@ Expected: clean. If generated source files changed, inspect them; commit only if
 - Beads metadata: `beads-urc`
 - GitHub PR target: `gastownhall/beads`
 
-- [ ] **Step 1: Run formal implementation-review gate**
+#### Step 1: Run formal implementation-review gate
 
 Use workflow review-gate dispatch for implementation review on the final diff:
 
@@ -989,11 +989,11 @@ git diff origin/main...HEAD -- cmd/bd internal docs/superpowers/plans docs/super
 
 Expected: diff contains only `beads-urc` plan/spec and implementation files. Formal review must return `APPROVE` or `APPROVE_WITH_CHANGES` before PR Delivery.
 
-- [ ] **Step 2: Apply required review fixes and rerun focused tests**
+#### Step 2: Apply required review fixes and rerun focused tests
 
 If implementation review returns `REVISE`, fix each finding in scope, rerun the narrow test covering the fix, commit, then re-review according to workflow review-gate rules.
 
-- [ ] **Step 3: Push branch**
+#### Step 3: Push branch
 
 Run:
 ```bash
@@ -1002,7 +1002,7 @@ git push -u origin beads-urc
 
 Expected: push succeeds.
 
-- [ ] **Step 4: Create PR after non-blocking implementation review**
+#### Step 4: Create PR after non-blocking implementation review
 
 Run:
 ```bash
@@ -1029,7 +1029,7 @@ Before running, create `/tmp/beads-urc-pr-body.md` with:
 - `bd show beads-urc --json`
 ```
 
-- [ ] **Step 5: Record PR Delivery metadata and resolve Bead**
+#### Step 5: Record PR Delivery metadata and resolve Bead
 
 After PR creation, update Beads metadata and resolve according to workflow lifecycle:
 

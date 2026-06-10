@@ -110,7 +110,7 @@ func readExportedIssue(t *testing.T, path, id string) *types.Issue {
 	if err != nil {
 		t.Fatalf("read export %s: %v", path, err)
 	}
-	for lineNo, line := range strings.Split(string(data), "\n") {
+	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -122,7 +122,6 @@ func readExportedIssue(t *testing.T, path, id string) *types.Issue {
 		if issue.ID == id {
 			return &issue
 		}
-		_ = lineNo
 	}
 	t.Fatalf("export %s did not contain issue %s", path, id)
 	return nil
