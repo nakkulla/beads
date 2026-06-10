@@ -15,7 +15,12 @@ beads_test_env_enter() {
     fi
 
     local root
-    root="$(mktemp -d "${TMPDIR:-/tmp}/beads-test-env-XXXXXX")"
+    local tmp_base="${TMPDIR:-/tmp}"
+    tmp_base="${tmp_base%/}"
+    if [[ -z "$tmp_base" ]]; then
+        tmp_base="/tmp"
+    fi
+    root="$(mktemp -d "$tmp_base/beads-test-env-XXXXXX")"
     export BEADS_TEST_ENV_ROOT="$root"
     export BEADS_TEST_ENV_ACTIVE=1
 

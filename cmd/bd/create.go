@@ -411,8 +411,11 @@ var createCmd = &cobra.Command{
 			setStore(targetStore)
 		}
 
-		if explicitID != "" && parentID != "" {
-			return HandleError("cannot specify both --id and --parent flags")
+		// --id + --parent is explicit child creation mode. The explicit
+		// ID must still belong to the requested parent hierarchy.
+		explicitChildID := explicitID != "" && parentID != ""
+		if explicitChildID && !strings.HasPrefix(explicitID, parentID+".") {
+			return HandleError("explicit child ID %q must start with parent prefix %q when --parent is set", explicitID, parentID+".")
 		}
 
 		parentLookupStore := store
@@ -449,7 +452,7 @@ var createCmd = &cobra.Command{
 		}
 
 		createCtx := rootCtx
-		if parentID != "" {
+		if parentID != "" && !explicitChildID {
 			childID, err := store.GetNextChildID(rootCtx, parentID)
 			if err != nil {
 				return HandleError("%v", err)
@@ -476,6 +479,14 @@ var createCmd = &cobra.Command{
 
 			if err := validation.ValidateIDPrefixAllowed(explicitID, dbPrefix, allowedPrefixes, forceCreate); err != nil {
 				return HandleError("%v", err)
+			}
+		}
+
+		if explicitChildID {
+			if _, err := store.GetIssue(createCtx, explicitID); err == nil {
+				FatalError("issue %s already exists; duplicate explicit child create is not allowed", explicitID)
+			} else if !errors.Is(err, storage.ErrNotFound) {
+				FatalError("failed to check explicit child ID %s: %v", explicitID, err)
 			}
 		}
 

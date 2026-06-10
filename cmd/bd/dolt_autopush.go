@@ -175,6 +175,8 @@ func maybeAutoPush(ctx context.Context) {
 				printAncestorPKMismatchGuidance(err)
 			} else if isDivergedHistoryErr(err) {
 				printDivergedHistoryGuidance("push")
+			} else if isDanglingChunkReferenceErr(err) {
+				printDanglingChunkReferenceGuidance()
 			}
 		}
 		debug.Logf("dolt auto-push: push error: %v\n", err)
