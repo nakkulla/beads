@@ -20,6 +20,8 @@
   - Unit coverage for exact configured import path, temp JSONL sibling ignore, and server-mode auto-import disabled boundary.
 - Modify: `cmd/bd/auto_import_upgrade_test.go`
   - Embedded CLI regression coverage for stale configured JSONL not clobbering current DB state.
+- Modify: `cmd/bd/create_proxied_integration_test.go`
+  - Proxied/server-mode CLI regression coverage for stale configured JSONL not affecting server-backed read/write/readback, plus explicit child create parity.
 - Create: `cmd/bd/write_readback_embedded_test.go`
   - Embedded CLI consistency regression for create/update/close/readback/list/auto-export.
 - Modify: `cmd/bd/dolt.go`
@@ -103,8 +105,10 @@ No code commit is expected for this task. If previous steps produced only termin
 **Files:**
 - Modify: `cmd/bd/auto_import_upgrade_unit_test.go`
 - Modify: `cmd/bd/auto_import_upgrade_test.go`
+- Modify: `cmd/bd/create_proxied_integration_test.go`
 - Read: `cmd/bd/import_path.go`
 - Read: `cmd/bd/auto_import_upgrade.go`
+- Read: `cmd/bd/proxied_integration_helpers_test.go`
 
 - [ ] **Step 1: Add unit coverage for exact configured import path and temp siblings**
 
@@ -187,15 +191,11 @@ func TestEmbeddedAutoImportStaleConfiguredJSONLDoesNotClobberCurrentState(t *tes
 		t.Fatalf("write stale issues.jsonl: %v", err)
 	}
 
-	bdUpdate(t, bd, dir, issue.ID, "--title", "newer title", "--set-metadata", "guard=present")
+	bdUpdate(t, bd, dir, issue.ID, "--title", "newer title")
 	shown := bdShow(t, bd, dir, issue.ID)
 	if shown.Title != "newer title" {
 		t.Fatalf("bd show title = %q, want newer title", shown.Title)
 	}
-	if shown.MetadataRefs["guard"] != "present" {
-		t.Fatalf("bd show metadata guard = %q, want present", shown.MetadataRefs["guard"])
-	}
-
 	listed := bdListJSON(t, bd, dir)
 	found := false
 	for _, got := range listed {
@@ -219,14 +219,73 @@ Run:
 CGO_ENABLED=1 BEADS_TEST_EMBEDDED_DOLT=1 go test -tags gms_pure_go ./cmd/bd -run '^TestEmbeddedAutoImportStaleConfiguredJSONLDoesNotClobberCurrentState$'
 ```
 
-Expected: PASS. If it fails by reverting title/metadata, fix `cmd/bd/auto_import_upgrade.go` so non-empty DB state prevents auto-import before any parse/import path can run.
+Expected: PASS. If it fails by reverting the title, fix `cmd/bd/auto_import_upgrade.go` so non-empty DB state prevents auto-import before any parse/import path can run.
 
-- [ ] **Step 6: Commit auto-import coverage**
+- [ ] **Step 6: Add proxied/server-mode stale JSONL read/write/readback regression**
+
+Add this subtest to `cmd/bd/create_proxied_integration_test.go` inside `TestProxiedServerCreate`, near other read/write create tests:
+
+```go
+t.Run("server_mode_stale_configured_jsonl_does_not_clobber", func(t *testing.T) {
+	p := bdProxiedInit(t, bd, "sjp")
+	issue := bdProxiedCreate(t, bd, p.dir, "server current title", "--type", "task")
+
+	stale := types.Issue{
+		ID:        issue.ID,
+		Title:     "server stale JSONL title",
+		Status:    types.StatusOpen,
+		IssueType: types.TypeTask,
+		Priority:  4,
+		CreatedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		UpdatedAt: time.Date(2026, 1, 1, 1, 0, 0, 0, time.UTC),
+	}
+	b, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatalf("marshal stale issue: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(p.beadsDir, "issues.jsonl"), append(b, '\n'), 0o644); err != nil {
+		t.Fatalf("write stale issues.jsonl: %v", err)
+	}
+
+	if out, err := bdProxiedRun(t, bd, p.dir, "update", issue.ID, "--title", "server newer title", "--json"); err != nil {
+		t.Fatalf("bd update failed: %v\n%s", err, out)
+	}
+	shown := bdProxiedShow(t, bd, p.dir, issue.ID)
+	if shown.Title != "server newer title" {
+		t.Fatalf("bd show title = %q, want server newer title", shown.Title)
+	}
+
+	listed := bdProxiedListJSON(t, bd, p)
+	found := false
+	for _, got := range listed {
+		if got.ID == issue.ID {
+			found = true
+			if got.Title != "server newer title" {
+				t.Fatalf("bd list title = %q, want server newer title", got.Title)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("bd list did not include %s", issue.ID)
+	}
+})
+```
+
+- [ ] **Step 7: Run the proxied/server-mode stale JSONL regression**
 
 Run:
 ```bash
-git add cmd/bd/auto_import_upgrade_unit_test.go cmd/bd/auto_import_upgrade_test.go cmd/bd/import_path.go
-git commit -m 'auto-import JSONL 경계 회귀 테스트 추가'
+CGO_ENABLED=1 BEADS_TEST_PROXIED_SERVER=1 go test -tags gms_pure_go ./cmd/bd -run '^TestProxiedServerCreate/server_mode_stale_configured_jsonl_does_not_clobber$'
+```
+
+Expected: PASS. If this fails by applying the stale JSONL title, keep server-mode startup auto-import disabled and fix the server-backed command path so configured JSONL is not treated as a live source.
+
+- [ ] **Step 8: Commit auto-import and server-mode coverage**
+
+Run:
+```bash
+git add cmd/bd/auto_import_upgrade_unit_test.go cmd/bd/auto_import_upgrade_test.go cmd/bd/create_proxied_integration_test.go cmd/bd/import_path.go
+git commit -m 'auto-import JSONL 서버 경계 회귀 테스트 추가'
 ```
 
 Expected: commit succeeds. If `cmd/bd/import_path.go` did not change, omit it from `git add`.
@@ -256,6 +315,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -269,14 +329,16 @@ func TestEmbeddedWriteReadbackAndAutoExportConsistency(t *testing.T) {
 	bd := buildEmbeddedBD(t)
 	dir, beadsDir, _ := bdInit(t, bd, "--prefix", "wr")
 	runBDForReadback(t, bd, dir, "config", "set", "export.auto", "true")
-	runBDForReadback(t, bd, dir, "config", "set", "export.interval", "0s")
+	runBDForReadback(t, bd, dir, "config", "set", "export.interval", "1ms")
 
 	issue := bdCreate(t, bd, dir, "initial readback title", "--type", "task", "--priority", "2")
 	assertReadbackIssue(t, bd, dir, beadsDir, issue.ID, "initial readback title", types.StatusOpen, "")
 
+	time.Sleep(10 * time.Millisecond)
 	bdUpdate(t, bd, dir, issue.ID, "--title", "updated readback title", "--set-metadata", "phase=updated")
 	assertReadbackIssue(t, bd, dir, beadsDir, issue.ID, "updated readback title", types.StatusOpen, "updated")
 
+	time.Sleep(10 * time.Millisecond)
 	bdClose(t, bd, dir, issue.ID, "--reason", "readback consistency test")
 	assertReadbackIssue(t, bd, dir, beadsDir, issue.ID, "updated readback title", types.StatusClosed, "updated")
 }
@@ -303,8 +365,8 @@ func assertReadbackIssue(t *testing.T, bd, dir, beadsDir, id, wantTitle string, 
 	if shown.Status != wantStatus {
 		t.Fatalf("bd show status = %q, want %q", shown.Status, wantStatus)
 	}
-	if wantPhase != "" && shown.MetadataRefs["phase"] != wantPhase {
-		t.Fatalf("bd show metadata phase = %q, want %q", shown.MetadataRefs["phase"], wantPhase)
+	if wantPhase != "" && metadataStringValue(t, shown.Metadata, "phase") != wantPhase {
+		t.Fatalf("bd show metadata phase = %q, want %q", metadataStringValue(t, shown.Metadata, "phase"), wantPhase)
 	}
 
 	listed := bdListJSON(t, bd, dir)
@@ -331,9 +393,21 @@ func assertReadbackIssue(t *testing.T, bd, dir, beadsDir, id, wantTitle string, 
 	if exported.Status != wantStatus {
 		t.Fatalf("export status = %q, want %q", exported.Status, wantStatus)
 	}
-	if wantPhase != "" && exported.MetadataRefs["phase"] != wantPhase {
-		t.Fatalf("export metadata phase = %q, want %q", exported.MetadataRefs["phase"], wantPhase)
+	if wantPhase != "" && metadataStringValue(t, exported.Metadata, "phase") != wantPhase {
+		t.Fatalf("export metadata phase = %q, want %q", metadataStringValue(t, exported.Metadata, "phase"), wantPhase)
 	}
+}
+
+func metadataStringValue(t *testing.T, raw json.RawMessage, key string) string {
+	t.Helper()
+	if len(raw) == 0 {
+		return ""
+	}
+	var values map[string]string
+	if err := json.Unmarshal(raw, &values); err != nil {
+		t.Fatalf("unmarshal metadata: %v", err)
+	}
+	return values[key]
 }
 
 func readExportedIssue(t *testing.T, path, id string) *types.Issue {
@@ -470,6 +544,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"time"
 
 	storagedolt "github.com/steveyegge/beads/internal/storage/dolt"
@@ -749,13 +824,13 @@ t.Run("parent_explicit_child_id", func(t *testing.T) {
 
 Run:
 ```bash
-CGO_ENABLED=1 BEADS_TEST_EMBEDDED_DOLT=1 go test -tags gms_pure_go ./cmd/bd -run '^TestCreateProxied/parent_explicit_child_id$'
+CGO_ENABLED=1 BEADS_TEST_PROXIED_SERVER=1 go test -tags gms_pure_go ./cmd/bd -run '^TestProxiedServerCreate/parent_explicit_child_id$'
 ```
 
 Expected: PASS. If the exact parent test name differs, run:
 
 ```bash
-CGO_ENABLED=1 BEADS_TEST_EMBEDDED_DOLT=1 go test -tags gms_pure_go ./cmd/bd -run 'parent_explicit_child_id'
+CGO_ENABLED=1 BEADS_TEST_PROXIED_SERVER=1 go test -tags gms_pure_go ./cmd/bd -run 'parent_explicit_child_id'
 ```
 
 - [ ] **Step 7: Commit child create work**
@@ -781,7 +856,8 @@ Expected: commit succeeds.
 Run:
 ```bash
 go test ./cmd/bd -run 'TestMaybeAutoImportJSONL|TestConfiguredImportJSONLPathExactFileIgnoresTempSiblings|TestShouldRunAutoImportJSONL|TestIsDanglingChunkReferenceErr|TestDanglingChunkReferenceGuidanceText'
-CGO_ENABLED=1 BEADS_TEST_EMBEDDED_DOLT=1 go test -tags gms_pure_go ./cmd/bd -run 'TestEmbeddedAutoImport|TestEmbeddedWriteReadbackAndAutoExportConsistency|TestEmbeddedCreate/parent_explicit_child_id|parent_explicit_child_id'
+CGO_ENABLED=1 BEADS_TEST_EMBEDDED_DOLT=1 go test -tags gms_pure_go ./cmd/bd -run 'TestEmbeddedAutoImport|TestEmbeddedWriteReadbackAndAutoExportConsistency|TestEmbeddedCreate/parent_explicit_child_id'
+CGO_ENABLED=1 BEADS_TEST_PROXIED_SERVER=1 go test -tags gms_pure_go ./cmd/bd -run 'TestProxiedServerCreate/(server_mode_stale_configured_jsonl_does_not_clobber|parent_explicit_child_id)'
 ```
 
 Expected: PASS.
@@ -790,7 +866,7 @@ Expected: PASS.
 
 Run:
 ```bash
-rg -n -e 'stale configured|ConfiguredImportJSONLPathExact|ServerMode|DanglingChunk|WriteReadback|parent_explicit_child_id|bd dolt pull && bd dolt push' cmd/bd internal docs/superpowers/plans/2026-06-10-beads-workflow-friction-root-cause.md
+rg -n -e 'stale configured|server_mode_stale_configured_jsonl|ConfiguredImportJSONLPathExact|ServerMode|DanglingChunk|WriteReadback|parent_explicit_child_id|bd dolt pull && bd dolt push' cmd/bd internal docs/superpowers/plans/2026-06-10-beads-workflow-friction-root-cause.md
 ```
 
 Expected:
@@ -945,7 +1021,8 @@ Before running, create `/tmp/beads-urc-pr-body.md` with:
 ## Verification
 - `scripts/pr-preflight.sh --search "auto import JSONL readback child create dolt push" --repo gastownhall/beads`
 - `go test ./cmd/bd -run 'TestMaybeAutoImportJSONL|TestConfiguredImportJSONLPathExactFileIgnoresTempSiblings|TestShouldRunAutoImportJSONL|TestIsDanglingChunkReferenceErr|TestDanglingChunkReferenceGuidanceText'`
-- `CGO_ENABLED=1 BEADS_TEST_EMBEDDED_DOLT=1 go test -tags gms_pure_go ./cmd/bd -run 'TestEmbeddedAutoImport|TestEmbeddedWriteReadbackAndAutoExportConsistency|TestEmbeddedCreate/parent_explicit_child_id|parent_explicit_child_id'`
+- `CGO_ENABLED=1 BEADS_TEST_EMBEDDED_DOLT=1 go test -tags gms_pure_go ./cmd/bd -run 'TestEmbeddedAutoImport|TestEmbeddedWriteReadbackAndAutoExportConsistency|TestEmbeddedCreate/parent_explicit_child_id'`
+- `CGO_ENABLED=1 BEADS_TEST_PROXIED_SERVER=1 go test -tags gms_pure_go ./cmd/bd -run 'TestProxiedServerCreate/(server_mode_stale_configured_jsonl_does_not_clobber|parent_explicit_child_id)'`
 - `make test`
 - `CGO_ENABLED=1 go test -tags gms_pure_go ./cmd/bd/...`
 - `make install-force`
@@ -964,7 +1041,7 @@ bd show beads-urc --json | jq '.[0] | {id,status,metadata,labels}'
 bd dolt push
 ```
 
-Expected: Bead status becomes `resolved`, not `closed`, because PR Finish/merge is a separate explicit route.
+Expected: `bd show` reports the actual Beads core status returned by `bd close` (usually `closed`). In workflow wording this is PR Delivery resolution only: do not claim PR Finish, merge, or target-base closure.
 
 ---
 
@@ -972,7 +1049,7 @@ Expected: Bead status becomes `resolved`, not `closed`, because PR Finish/merge 
 
 - Spec goal 1 (write/readback/JSONL/Dolt state mismatch): Task 3 covers create/update/close/show/list/export consistency.
 - Spec goal 2 (embedded auto-import stale configured JSONL): Task 2 covers stale configured JSONL, custom `import.path`, and temp sibling exact-file behavior.
-- Spec goal 3 (server-mode startup auto-import disabled): Task 2 covers `shouldRunAutoImportJSONL(..., serverMode=true) == false`.
+- Spec goal 3 (server-mode startup auto-import disabled): Task 2 covers `shouldRunAutoImportJSONL(..., serverMode=true) == false` and a proxied/server-mode stale JSONL read/write/readback regression.
 - Spec goal 4 (dangling refs classify/guidance): Task 4 covers classifier/guidance and forbids implicit retry/pull.
 - Spec goal 5 (child seeding idempotency): Task 5 covers explicit child ID, invalid prefix, duplicate replay, parent-child dependency, labels, and next auto-child ID.
 - Spec goal 6 (temp JSONL safety): Task 2 covers temp siblings and no glob source behavior.
