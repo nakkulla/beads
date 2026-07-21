@@ -626,34 +626,39 @@ func excludeWispsBlockedByExternalInTx(ctx context.Context, tx DBTX, wispIDs, un
 			if rEnd > len(unsatisfiedExternalRefs) {
 				rEnd = len(unsatisfiedExternalRefs)
 			}
-			refPH, refArgs := buildSQLInClause(unsatisfiedExternalRefs[rStart:rEnd])
-			args := make([]interface{}, 0, len(wispArgs)+len(refArgs))
-			args = append(args, wispArgs...)
-			args = append(args, refArgs...)
-			query := fmt.Sprintf(`
-				SELECT DISTINCT issue_id FROM wisp_dependencies
-				WHERE type IN ('blocks','conditional-blocks')
-				  AND issue_id IN (%s)
-				  AND depends_on_external IN (%s)
-			`, wispPH, refPH)
-			rows, err := tx.QueryContext(ctx, query, args...)
+			err := func() error {
+				refPH, refArgs := buildSQLInClause(unsatisfiedExternalRefs[rStart:rEnd])
+				args := make([]interface{}, 0, len(wispArgs)+len(refArgs))
+				args = append(args, wispArgs...)
+				args = append(args, refArgs...)
+				query := fmt.Sprintf(`
+					SELECT DISTINCT issue_id FROM wisp_dependencies
+					WHERE type IN ('blocks','conditional-blocks')
+					  AND issue_id IN (%s)
+					  AND depends_on_external IN (%s)
+				`, wispPH, refPH)
+				rows, err := tx.QueryContext(ctx, query, args...)
+				if err != nil {
+					return err
+				}
+				defer func() { _ = rows.Close() }()
+				for rows.Next() {
+					var id string
+					if err := rows.Scan(&id); err != nil {
+						return fmt.Errorf("scan external-blocked wisp: %w", err)
+					}
+					excluded[id] = struct{}{}
+				}
+				if err := rows.Err(); err != nil {
+					return fmt.Errorf("external-blocked wisp rows: %w", err)
+				}
+				return nil
+			}()
 			if err != nil {
 				if isTableNotExistError(err) {
 					return nil
 				}
 				return fmt.Errorf("get ready work: filter external-blocked wisps: %w", err)
-			}
-			for rows.Next() {
-				var id string
-				if err := rows.Scan(&id); err != nil {
-					_ = rows.Close()
-					return fmt.Errorf("scan external-blocked wisp: %w", err)
-				}
-				excluded[id] = struct{}{}
-			}
-			_ = rows.Close()
-			if err := rows.Err(); err != nil {
-				return fmt.Errorf("external-blocked wisp rows: %w", err)
 			}
 		}
 	}

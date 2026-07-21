@@ -77,30 +77,35 @@ func collectBlockingExternalRefs(ctx context.Context, tx DBTX) ([]string, error)
 	seen := make(map[string]struct{})
 	var out []string
 	for _, depTable := range []string{"dependencies", "wisp_dependencies"} {
-		query := fmt.Sprintf(
-			"SELECT DISTINCT depends_on_external FROM %s WHERE depends_on_external IS NOT NULL AND type IN (%s)",
-			depTable, blockingExternalDepTypesSQL)
-		rows, err := tx.QueryContext(ctx, query)
+		err := func() error {
+			query := fmt.Sprintf(
+				"SELECT DISTINCT depends_on_external FROM %s WHERE depends_on_external IS NOT NULL AND type IN (%s)",
+				depTable, blockingExternalDepTypesSQL)
+			rows, err := tx.QueryContext(ctx, query)
+			if err != nil {
+				if depTable == "wisp_dependencies" && isTableNotExistError(err) {
+					return nil
+				}
+				return fmt.Errorf("collect external refs from %s: %w", depTable, err)
+			}
+			defer func() { _ = rows.Close() }()
+			for rows.Next() {
+				var ref string
+				if err := rows.Scan(&ref); err != nil {
+					return fmt.Errorf("collect external refs from %s: scan: %w", depTable, err)
+				}
+				if _, dup := seen[ref]; !dup {
+					seen[ref] = struct{}{}
+					out = append(out, ref)
+				}
+			}
+			if err := rows.Err(); err != nil {
+				return fmt.Errorf("collect external refs from %s: rows: %w", depTable, err)
+			}
+			return nil
+		}()
 		if err != nil {
-			if depTable == "wisp_dependencies" && isTableNotExistError(err) {
-				continue
-			}
-			return nil, fmt.Errorf("collect external refs from %s: %w", depTable, err)
-		}
-		for rows.Next() {
-			var ref string
-			if err := rows.Scan(&ref); err != nil {
-				_ = rows.Close()
-				return nil, fmt.Errorf("collect external refs from %s: scan: %w", depTable, err)
-			}
-			if _, dup := seen[ref]; !dup {
-				seen[ref] = struct{}{}
-				out = append(out, ref)
-			}
-		}
-		_ = rows.Close()
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("collect external refs from %s: rows: %w", depTable, err)
+			return nil, err
 		}
 	}
 	sort.Strings(out)
