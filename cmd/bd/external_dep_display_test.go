@@ -36,6 +36,27 @@ func TestFormatDependencyLineExternalRef(t *testing.T) {
 	}
 }
 
+// TestExternalDepListLine verifies the shared dep-list line renderer (used by
+// both the direct and proxied-server single-ID list paths) shows the ref, the
+// (external) marker, and the edge type — never fabricated status/priority.
+func TestExternalDepListLine(t *testing.T) {
+	const ref = "external:beads-ui:plan-review-runner-authz"
+	line := externalDepListLine(syntheticExternalDep(ref, types.DepBlocks))
+
+	if !strings.Contains(line, ref) {
+		t.Errorf("dep list line %q does not contain external ref %q", line, ref)
+	}
+	if !strings.Contains(line, "(external)") {
+		t.Errorf("dep list line %q missing (external) marker", line)
+	}
+	if !strings.Contains(line, "via blocks") {
+		t.Errorf("dep list line %q missing dependency type", line)
+	}
+	if strings.Contains(line, "[P") || strings.Contains(line, "(open)") {
+		t.Errorf("dep list line %q shows fabricated priority/status for an external ref", line)
+	}
+}
+
 // TestShowJSONIncludesExternalDependency verifies the bd show --json
 // dependencies array carries the external edge additively with its id and type,
 // with no nil-pointer serialization issues.

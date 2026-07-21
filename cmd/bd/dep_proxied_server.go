@@ -388,6 +388,13 @@ func runDepListProxiedServer(cmd *cobra.Command, ctx context.Context, args []str
 	}
 
 	for _, iss := range allIssues {
+		// External refs (external:<project>:<capability>) have no backing
+		// issue row — no status/title/priority to show (same contract as the
+		// direct-path loop in dep.go).
+		if IsExternalRef(iss.ID) {
+			fmt.Println(externalDepListLine(iss))
+			continue
+		}
 		var idStr string
 		switch iss.Status {
 		case types.StatusOpen:

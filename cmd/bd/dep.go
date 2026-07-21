@@ -880,7 +880,7 @@ Examples:
 			// issue row — no status/title/priority to show. Render the ref with
 			// an (external) marker instead of fabricated fields.
 			if IsExternalRef(iss.ID) {
-				fmt.Printf("  %s %s via %s\n", iss.ID, ui.RenderMuted("(external)"), iss.DependencyType)
+				fmt.Println(externalDepListLine(iss))
 				continue
 			}
 			var idStr string
@@ -1516,6 +1516,14 @@ func validateExternalRef(ref string) error {
 // IsExternalRef returns true if the dependency reference is an external reference.
 func IsExternalRef(ref string) bool {
 	return strings.HasPrefix(ref, "external:")
+}
+
+// externalDepListLine renders a dep-list line for a synthesized external
+// dependency entry. External refs have no backing issue row, so only the ref,
+// an (external) marker, and the edge type are shown — never fabricated
+// status/title/priority. Shared by the direct and proxied-server list paths.
+func externalDepListLine(iss *types.IssueWithDependencyMetadata) string {
+	return fmt.Sprintf("  %s %s via %s", iss.ID, ui.RenderMuted("(external)"), iss.DependencyType)
 }
 
 // ParseExternalRef parses an external reference into project and capability.
