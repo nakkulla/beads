@@ -122,8 +122,9 @@ func collectViperEntries() []configEntry {
 		seen[key] = true
 
 		// Skip map-type keys that Viper flattens into individual dotted paths.
-		// These are container keys (directory.labels, external_projects, repos)
-		// whose individual sub-keys are already included.
+		// These are container keys (directory.labels, external_projects,
+		// external_databases, repos) whose individual sub-keys are already
+		// included.
 		if isContainerKey(key) {
 			continue
 		}
@@ -164,9 +165,10 @@ func collectViperEntries() []configEntry {
 }
 
 // isContainerKey returns true for keys that are map/struct containers
-// (e.g., "directory.labels", "external_projects") rather than scalar values.
+// (e.g., "directory.labels", "external_projects", "external_databases")
+// rather than scalar values.
 func isContainerKey(key string) bool {
-	containers := []string{"directory.labels", "external_projects", "repos"}
+	containers := []string{"directory.labels", "external_projects", "external_databases", "repos"}
 	for _, c := range containers {
 		if key == c {
 			return true
