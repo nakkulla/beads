@@ -10,11 +10,14 @@
 `external:<project>:<capability>` 의존은 현재 저장·문법검증·`bd ship` 라벨링까지만 존재하고,
 쿼리 시점 해석·차단이 미구현이다. 이번 실측(repair-v1.1.0 기준)으로 확인한 사실:
 
-- `bd ready`는 비정규화 칼럼 `issues.is_blocked = 0`만 필터한다
-  (`internal/storage/issueops/ready_work.go:70`). external 타깃은 direct 마킹
-  (`internal/storage/issueops/dependencies.go:274-301`의 `default: return nil`)뿐 아니라
-  재계산 패스(`internal/storage/issueops/blocked_state.go`)에도 분기가 없어,
-  external 의존만 있는 이슈는 어떤 쓰기 경로로도 `is_blocked=1`이 되지 않는다.
+- `bd ready`는 비정규화 칼럼 `issues.is_blocked = 0`만 필터한다. 구현 기준
+  repair-v1.1.0에서 이 조건은 공유 SQL 빌더 `internal/storage/sqlbuild/ready.go:96`
+  (`BuildReadyWorkWhere`)에 있고, `issueops`(`ready_work.go:43`)와
+  `domain/db`(`ready_work.go:31`) 두 스택이 모두 이 빌더를 사용한다. external
+  타깃은 direct 마킹(`internal/storage/issueops/dependencies.go:278`의
+  `default: return nil`)뿐 아니라 재계산 패스
+  (`internal/storage/issueops/blocked_state.go`)에도 분기가 없어, external 의존만
+  있는 이슈는 어떤 쓰기 경로로도 `is_blocked=1`이 되지 않는다.
   → external blocking 의존이 걸린 이슈가 오늘도 `bd ready`에 노출된다.
 - `bd ship`(`cmd/bd/ship.go`)은 로컬 스토어에 `provides:<capability>` 라벨을 쓰는 것이
   전부이며, 이 라벨을 읽는 소비자는 코드 전체에 없다. `ResolveExternalProjectPath`
@@ -23,7 +26,8 @@
   `FlushWorkingSet`이 단일 커넥션에서 `` `<db>`.dolt_status `` qualified query를 수행한다.
   중앙 dolt 단일 서버(shared server) 환경에서 프로젝트별 DB는 같은 서버에 공존한다.
 - 표시 누락 원인: `GetDependenciesWithMetadataInTx`가 issues/wisps만 hydrate하고
-  external 행을 조용히 drop한다(`internal/storage/issueops/dependencies.go:889-891`).
+  external 행을 조용히 drop한다(`internal/storage/issueops/dependencies.go:901-902`,
+  함수는 `:853`).
   `bd show`·단일 ID `bd dep list`·`--direction=up`에서 재현되고, `bd dep tree`와
   배치 다중 ID down 경로는 external을 표시한다. counts 경로
   (`GetDependencyCountsInTx`, `internal/storage/dolt/counts.go:88-104`)는 external을
@@ -31,9 +35,13 @@
 - bead 원문이 참조한 `blocked_issues_cache`는 SQLite 백엔드와 함께 제거된 테이블이다
   (현행 문서 `docs/INTERNALS.md:184-232`는 stale). 현재 메커니즘은 쓰기 시점 동기
   재계산이며 TTL 캐시는 존재하지 않는다.
-- ready SQL 빌더는 두 곳에 병렬 존재한다: `internal/storage/issueops/ready_work.go`
-  (dolt/embeddeddolt 스토어가 위임)와 `internal/storage/domain/db/ready_work.go:69-79`
-  (domain 리포지토리 계층, 동일하게 `is_blocked = 0` 하드코딩).
+- ready 진입점은 하나가 아니다: `cmd/bd/ready.go`는 `GetReadyWork`(260·270행,
+  499행은 claim 흐름)와 별도 counts 진입점 `GetReadyWorkWithCounts`(233·242행,
+  구현 `internal/storage/issueops/ready_work_counts.go:13`)를 함께 쓰고,
+  dolt/embedded/domain-db 스토어와 proxied-server 모드가 각각 이 진입점들을
+  노출한다. WHERE 절 자체는 `sqlbuild.BuildReadyWorkWhere`로 수렴하며, 사전 계산
+  ID 집합을 전달하는 `sqlbuild.ReadyWorkWhereInputs`(`ready.go:74`)가 이미
+  존재한다.
 
 ## 2. 목표
 
@@ -86,28 +94,44 @@ external_databases:
 
 `internal/storage/issueops`에 헬퍼를 추가한다(예: `external_resolution.go`).
 
-- 입력: tx(또는 커넥션)와 distinct external ref 목록.
-- 출력: `map[ref] → {satisfied | unsatisfied | unresolvable(reason)}`.
+- 입력: tx(또는 커넥션), distinct external ref 목록, 그리고 스토리지 어댑터가
+  **명시적으로 전달하는 resolver options** — `serverMode`(현재 스토어의 dolt_mode가
+  server 계열인지)와 `external_databases` 매핑. 두 backend가 같은 `DBTX` 형태를
+  쓰므로 모드 판별을 커넥션에서 추론하지 않는다.
+- 출력: `map[ref] → {satisfied | unsatisfied | unresolvable(reason)}` + 구조화된
+  diagnostics(프로젝트별 사유·ref 목록 — §4.3의 UX·diagnostics 계약 참조).
+- 비서버 모드: 쿼리를 시도하지 않고 전 ref를 unresolvable("server mode required")로
+  처리한다(fail-closed 확정 요구사항 보장).
+- DB 이름 안전성: 매핑 값은 공유 식별자 검증기로 MySQL 식별자 유효성을 확인한 뒤
+  backtick quote해 사용한다. 검증 실패 값은 unresolvable 처리한다.
 - 같은 프로젝트의 여러 capability는 IN 절로 묶어 **프로젝트당 크로스 DB 1쿼리**.
   쿼리 형태(개념): 대상 DB의 issues·라벨 테이블을 조인해
   `status='closed' AND label IN ('provides:<c1>', ...)`인 라벨 집합을 가져온다.
 - 판정 규칙:
   - 매핑 존재 + 쿼리 성공 + closed 이슈에 라벨 존재 → satisfied.
   - 매핑 존재 + 쿼리 성공 + 라벨 부재(또는 open 이슈에만 존재) → unsatisfied.
-  - 매핑 누락 / DB 부재 / 쿼리 오류 / 비서버 모드 → unresolvable(사유 보존).
+  - 매핑 누락 / 매핑 값 식별자 검증 실패 / DB 부재 / 쿼리 오류 / 비서버 모드 →
+    unresolvable(사유 보존).
   - ready 필터 관점에서 unsatisfied와 unresolvable은 동일하게 차단(fail-closed),
     단 사유는 구분 보존해 UX 경고에 사용한다.
-- 호출 내 메모이제이션: 한 번의 `bd ready` 실행에서 같은 ref를 재해석하지 않는다.
+- 호출 내 메모이제이션: 한 top-level ready 호출 안에서 같은 ref를 재해석하지
+  않는다. counts 재조회 등 명령 내 반복 호출의 경고 중복 방지는 §4.3의
+  diagnostics 계약(cmd 계층 dedup)이 담당한다.
 
 ### 4.3 ready 경로 통합 (접근안 A)
 
-`GetReadyWorkInTx`(`internal/storage/issueops/ready_work.go`)에서:
+해석은 **top-level ready 호출당 1회** 수행하고, 결과를 공유 SQL 빌더 입력으로
+주입한다. 구현 기준(repair-v1.1.0) 호출 그래프에 맞춘 통합 지점:
 
-1. 로컬 1쿼리로 blocking 타입 external ref의 distinct 목록을 수집한다.
-   blocking 타입 집합은 `blocked_state.go`가 쓰는 집합과 동일하게 맞춘다
-   (`blocks`/`conditional-blocks` 계열 — 구현 시 동일 상수를 공유).
-2. 해석기를 호출해 미충족(unsatisfied + unresolvable) ref 목록을 얻는다.
-3. 미충족 ref 목록을 ready SELECT의 `NOT EXISTS` 조건으로 바인딩한다(개념):
+1. top-level ready 진입점 — `GetReadyWork`·`GetReadyWorkWithCounts`
+   (dolt/embedded/domain-db 스토어, proxied-server 모드, `cmd/bd/ready.go:499`의
+   claim 흐름 포함) — 마다 해석 패스를 1회 실행한다: 로컬 1쿼리로 blocking 타입
+   external ref의 distinct 목록을 수집하고(blocking 타입 집합은 `blocked_state.go`와
+   동일 상수 공유), 해석기를 호출해 미충족(unsatisfied + unresolvable) ref 목록을
+   얻는다.
+2. 미충족 ref 목록을 `sqlbuild.ReadyWorkWhereInputs`의 새 필드로 전달하고,
+   `BuildReadyWorkWhere`(`sqlbuild/ready.go:86`)가 `NOT EXISTS` 조건을 렌더링한다
+   (개념):
 
    ```sql
    AND NOT EXISTS (
@@ -118,24 +142,23 @@ external_databases:
    )
    ```
 
-   SQL 주입이므로 LIMIT/정렬 정합성이 유지된다. ref가 하나도 없으면 predicate를
-   주입하지 않아 오버헤드 0.
-4. wisp ready 경로(`getReadyWispsInTx`, `wisp_dependencies.depends_on_external`)에도
-   동일 predicate를 적용한다.
-5. predicate 조각은 공유 헬퍼로 제공해 SQL 빌더 중복을 억제한다.
+   공유 빌더 주입이므로 issueops·domain/db 두 스택과 counts 경로가 동일 조건을
+   얻고, LIMIT/정렬 정합성이 유지된다. ref가 하나도 없으면 필드를 비워 predicate
+   미주입(오버헤드 0).
+3. wisp ready 경로(`getReadyWispsInTx`, `ready_work.go:155`; wisp 재확인 쿼리
+   `:387`)에도 같은 미충족 ref 목록으로 `wisp_dependencies.depends_on_external`
+   대상 동일 predicate를 적용한다.
 
-**조사 태스크(구현 1단계)**: `bd ready`의 실사용 경로가 issueops 위임인지
-`domain/db/ready_work.go`인지 호출 그래프로 확정한다. domain/db 경로가 live면 공유
-predicate 헬퍼를 그쪽에도 적용하고, 미사용이면 그 확증(호출자 부재 근거)을 구현
-노트에 기록한다.
-
-**UX**: 해석 **오류**(unresolvable)로 제외가 발생하면 `bd ready` stderr에 경고 1줄
-(프로젝트명·사유). 정상 미충족(unsatisfied)은 조용히 제외한다(그것이 게이트의
-정상 동작이므로).
+**UX·diagnostics 계약**: 해석 결과의 unresolvable 사유는 구조화된 diagnostics로
+top-level 호출자까지 반환한다 — 스토리지 계층은 stderr에 직접 쓰지 않는다.
+`cmd` 계층이 **명령 실행당 프로젝트별 최대 1줄**의 stderr 경고를 출력한다:
+`bd ready`가 counts 재조회 등으로 해석을 반복해도 경고는 중복되지 않고,
+`--json` 출력(stdout)은 오염되지 않는다. 정상 미충족(unsatisfied)은 조용히
+제외한다(그것이 게이트의 정상 동작이므로).
 
 ### 4.4 표시 복원
 
-`GetDependenciesWithMetadataInTx`(`internal/storage/issueops/dependencies.go:842-899`)가
+`GetDependenciesWithMetadataInTx`(`internal/storage/issueops/dependencies.go:853`)가
 external 행을 drop하지 않고 합성 엔트리로 반환한다:
 
 - ID = external ref 문자열, dependency_type = 엣지의 타입 유지. 로컬에 존재하지 않는
@@ -152,18 +175,25 @@ external 행을 drop하지 않고 합성 엔트리로 반환한다:
   tx 밖 단일 커넥션 사례다. 구현 초기에 tx 내 동작을 통합 테스트로 먼저 검증하고,
   막히면 해석기를 tx 밖 별도 커넥션으로 우회한다(해석은 읽기 전용이라 tx 일관성
   요구가 낮다).
-- **비서버 모드**: embedded/owned 모드에서는 다른 프로젝트 DB가 같은 엔진에 없어
-  전부 unresolvable → 차단된다. fail-closed 정책의 의도된 결과이며, 사용자 확정
-  사항(2026-07-21). 경고 사유로 "server mode required"를 명시한다.
+- **비서버 모드**: embedded/owned 모드는 resolver options의 `serverMode`로 명시
+  판별해 쿼리 시도 없이 전부 unresolvable → 차단된다(커넥션에서 추론하지 않음).
+  fail-closed 정책의 의도된 결과이며, 사용자 확정 사항(2026-07-21). 경고 사유는
+  "server mode required".
 
 ## 5. 테스트·수용 기준
 
-- 단위: ref 파싱·매핑 조회·판정 상태머신(4.2의 판정 규칙 전 분기).
+- 단위: ref 파싱·매핑 조회·판정 상태머신(4.2의 판정 규칙 전 분기 — 비서버 모드
+  전 ref unresolvable, 매핑 값 식별자 검증 실패 unresolvable 포함).
 - 통합(`BEADS_TEST_EMBEDDED_DOLT=1` 포함): 한 서버에 2 DB 픽스처 —
   - provides 라벨 + closed → ready 노출, 라벨 부재/open → 제외.
   - 매핑 누락 → fail-closed 제외 + stderr 경고.
   - wisp 경로 동일 동작.
   - LIMIT 정합(미충족 이슈가 LIMIT 안에서 제외돼도 개수 유지).
+  - ready 진입점 변형 열거: classic `GetReadyWork` plain/counts,
+    proxied-server 모드 plain/counts, claim 흐름(`cmd/bd/ready.go:499`) 각각에서
+    external 차단이 적용됨.
+  - 경고 계약: counts 재조회를 포함한 한 번의 `bd ready` 실행에서 프로젝트별
+    stderr 경고 최대 1줄(중복 없음), `--json` stdout 무오염.
   - 표시 복원: `bd show`/`dep list` external 엣지와 counts 정합.
 - 빌드: `make build`(gms_pure_go) + 수리 동봉 테스트 전체 green.
 - 설치 게이트: 스크래치 워크스페이스 auto-import 회귀 실측 통과 전
