@@ -77,6 +77,10 @@ external_databases:
   (`internal/config/yaml_config.go`), `bd config show` 표시(`cmd/bd/config_show.go`)에
   함께 등록한다.
 - 매핑에 없는 프로젝트는 unresolvable → fail-closed.
+- in-repo 문서 정합화도 구현 범위다: `docs/CONFIG.md`에 `external_databases` 키와
+  쿼리 시점 게이팅·fail-closed 동작을 문서화한다. `cmd/bd/dep.go`의 기존 help text
+  ("block the issue until the capability is shipped")는 이 구현으로 비로소 사실이
+  되므로 수정 불요.
 
 ### 4.2 해석기
 
@@ -173,6 +177,11 @@ external 행을 drop하지 않고 합성 엔트리로 반환한다:
   repair-v1.1.0 대상 PR. fork main 반영 여부는 별도 판단으로 남긴다.
 - 롤아웃: 기존 플릿 레포의 `external_databases` 등록은 운영 단계로 수행
   (`scripts/nas-dolt-server/repo-db-registry.yaml`을 소스로 수동 작성).
-- 후속(cross-workspace, admission=user_request): dotfiles 워크스페이스에
-  `bd-setup`/`bd-recover` 스킬이 신규 레포 온보딩 시 `external_databases`를 세팅하도록
-  갱신하는 follow-up bead를 만든다. 이 스펙의 구현 범위에는 포함하지 않는다.
+- 후속(cross-workspace, admission=user_request): dotfiles 워크스페이스의 스킬 정합화
+  follow-up bead **dotfiles-5geh** 생성 완료(2026-07-21, status=blocked) —
+  ① `bd-usage`에 external 의존 쿼리 시점 게이팅(fail-closed)·`external_databases`·
+  `provides:`(closed) 충족 판정 의미론 문서화, ② `bd-setup`/`bd-recover`에 신규 레포
+  온보딩 시 `external_databases` 등록 절차 추가, ③ dotfiles 프록시 게이트
+  Bead(dotfiles-ua03) 전환/해제 검토. 착수 조건: 본 기능 머지 + auto-import 회귀
+  게이트 통과 + `make install-force` 완료 후(스킬 문서는 설치된 bd의 현재 동작을
+  기술하므로). 이 스펙의 구현 범위에는 포함하지 않는다.
