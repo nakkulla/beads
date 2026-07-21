@@ -876,6 +876,13 @@ Examples:
 		}
 
 		for _, iss := range allIssues {
+			// External refs (external:<project>:<capability>) have no backing
+			// issue row — no status/title/priority to show. Render the ref with
+			// an (external) marker instead of fabricated fields.
+			if IsExternalRef(iss.ID) {
+				fmt.Printf("  %s %s via %s\n", iss.ID, ui.RenderMuted("(external)"), iss.DependencyType)
+				continue
+			}
 			var idStr string
 			switch iss.Status {
 			case types.StatusOpen:
