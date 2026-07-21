@@ -845,6 +845,21 @@ func GetIssuesByIDsInTx(ctx context.Context, tx DBTX, ids []string, wispSet map[
 	return allIssues, nil
 }
 
+// NewExternalDepEntry synthesizes an IssueWithDependencyMetadata for an
+// external:<project>:<capability> dependency target. External refs have no
+// backing row in the issues/wisps tables, so only the ID (the full ref) and
+// the edge's dependency type are populated; every other Issue field keeps its
+// zero value — no status/title/priority is fabricated. Satisfaction state is
+// deliberately not resolved here: it is ready-path-only and must not trigger a
+// cross-database query from the show/list read path (show must not depend on
+// server availability).
+func NewExternalDepEntry(ref, depType string) *types.IssueWithDependencyMetadata {
+	return &types.IssueWithDependencyMetadata{
+		Issue:          types.Issue{ID: ref},
+		DependencyType: types.DependencyType(depType),
+	}
+}
+
 // GetDependenciesWithMetadataInTx returns issues that the given issueID depends on,
 // along with the dependency type. Works within an existing transaction.
 // Queries both dependency tables to handle cross-table dependencies.
@@ -899,6 +914,14 @@ func GetDependenciesWithMetadataInTx(ctx context.Context, tx DBTX, issueID strin
 	for _, d := range deps {
 		issue, ok := issueMap[d.depID]
 		if !ok {
+			// External refs are real edges (counted in dependency counts) but
+			// have no issues/wisps row, so GetIssuesByIDsInTx cannot hydrate
+			// them. Surface them as synthesized entries instead of dropping
+			// them — dropping desynced the counts from the listed edges.
+			// Genuinely missing local IDs stay dropped.
+			if strings.HasPrefix(d.depID, "external:") {
+				results = append(results, NewExternalDepEntry(d.depID, d.depType))
+			}
 			continue
 		}
 		results = append(results, &types.IssueWithDependencyMetadata{

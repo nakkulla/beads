@@ -16,6 +16,20 @@ func deferredParentProbeRegex(issueTable string) string {
 	return `SELECT 1 FROM ` + issueTable + `\s+WHERE defer_until IS NOT NULL\s+AND defer_until > UTC_TIMESTAMP\(\)\s+LIMIT 1`
 }
 
+func externalRefCollectionRegex(depTable string) string {
+	return `SELECT DISTINCT depends_on_external FROM ` + depTable + ` WHERE depends_on_external IS NOT NULL AND type IN \('blocks','conditional-blocks'\)`
+}
+
+// expectEmptyExternalRefCollection sets up the two blocking-external-ref
+// collection queries (dependencies, wisp_dependencies) that now run at the
+// entry of GetReadyWorkInTx to return no rows, so resolution short-circuits.
+func expectEmptyExternalRefCollection(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery(externalRefCollectionRegex("dependencies")).
+		WillReturnRows(sqlmock.NewRows([]string{"depends_on_external"}))
+	mock.ExpectQuery(externalRefCollectionRegex("wisp_dependencies")).
+		WillReturnRows(sqlmock.NewRows([]string{"depends_on_external"}))
+}
+
 func deferredChildrenQueryRegex(depTable, issueTable string) string {
 	targetCol := "depends_on_issue_id"
 	if issueTable == "wisps" {
@@ -101,12 +115,14 @@ func TestGetReadyWorkInTx_PropagatesDeferredParentChildError(t *testing.T) {
 
 	_, mock, tx := beginMockTx(t)
 	childErr := errors.New("dolt transient dependency read failure")
+	expectEmptyExternalRefCollection(mock)
 	mock.ExpectQuery(deferredParentProbeRegex("issues")).WillReturnError(childErr)
 
 	_, err := GetReadyWorkInTx(
 		context.Background(),
 		tx,
 		types.WorkFilter{},
+		ExternalResolverOptions{},
 	)
 	if err == nil {
 		t.Fatal("expected deferred parent child error")

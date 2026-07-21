@@ -10,11 +10,18 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 )
 
+// SetExternalResolverOptions sets the external dependency resolver options
+// used by the ready-work path. The cmd layer (task U1c) populates these; the
+// zero value is fail-closed.
+func (s *EmbeddedDoltStore) SetExternalResolverOptions(opts issueops.ExternalResolverOptions) {
+	s.externalOpts = opts
+}
+
 func (s *EmbeddedDoltStore) GetReadyWork(ctx context.Context, filter types.WorkFilter) ([]*types.Issue, error) {
 	var result []*types.Issue
 	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.GetReadyWorkInTx(ctx, tx, filter)
+		result, err = issueops.GetReadyWorkInTx(ctx, tx, filter, s.externalOpts)
 		return err
 	})
 	return result, err
@@ -24,7 +31,7 @@ func (s *EmbeddedDoltStore) GetReadyWorkWithCounts(ctx context.Context, filter t
 	var result []*types.IssueWithCounts
 	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.GetReadyWorkWithCountsInTx(ctx, tx, filter)
+		result, err = issueops.GetReadyWorkWithCountsInTx(ctx, tx, filter, s.externalOpts)
 		return err
 	})
 	return result, err

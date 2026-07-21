@@ -116,6 +116,7 @@ func ClaimReadyIssueInTx(
 	tx DBTX,
 	filter types.WorkFilter,
 	actor string,
+	opts ExternalResolverOptions,
 ) (*types.Issue, error) {
 	claimFilter := filter
 	claimFilter.Status = types.StatusOpen
@@ -123,7 +124,7 @@ func ClaimReadyIssueInTx(
 	claimFilter.Assignee = nil
 	claimFilter.Limit = 0
 
-	readyIssues, err := GetReadyWorkInTx(ctx, tx, claimFilter)
+	readyIssues, err := GetReadyWorkInTx(ctx, tx, claimFilter, opts)
 	if err != nil {
 		return nil, err
 	}

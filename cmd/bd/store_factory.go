@@ -45,7 +45,15 @@ func usesProxiedServer() bool {
 
 // newDoltStore creates a storage backend from an explicit config.
 // Used by bd init and PersistentPreRun.
-func newDoltStore(ctx context.Context, cfg *dolt.Config) (storage.DoltStorage, error) {
+func newDoltStore(ctx context.Context, cfg *dolt.Config) (s storage.DoltStorage, err error) {
+	// Populate query-time external dependency resolver options on the concrete
+	// store before it is wrapped (e.g. by HookFiringStore). Runs on the success
+	// path only; the proxied/error returns below leave options unset.
+	defer func() {
+		if err == nil {
+			s = applyExternalResolverOptions(s, cfg.BeadsDir)
+		}
+	}()
 	if cfg.ProxiedServer {
 		// TODO: this should not be a store
 		// it should be a uow provider
@@ -97,7 +105,12 @@ func acquireEmbeddedLock(beadsDir string, serverMode bool) (util.Unlocker, error
 //
 // For embedded mode, legacy hyphenated database names (pre-GH#2142) are
 // auto-sanitized to underscores and the fix is persisted to metadata.json.
-func newDoltStoreFromConfig(ctx context.Context, beadsDir string) (storage.DoltStorage, error) {
+func newDoltStoreFromConfig(ctx context.Context, beadsDir string) (s storage.DoltStorage, retErr error) {
+	defer func() {
+		if retErr == nil {
+			s = applyExternalResolverOptions(s, beadsDir)
+		}
+	}()
 	cfg, err := configfile.Load(beadsDir)
 	if err == nil && cfg != nil && cfg.IsDoltProxiedServerMode() {
 		// TODO: this needs to be uow provider
@@ -170,7 +183,12 @@ func migrateHyphenatedDB(beadsDir string, cfg *configfile.Config, oldName, newNa
 // For embedded mode, invalid characters (hyphens, dots) are sanitized in-memory
 // only — no directory renames or metadata.json writes. This prevents cross-repo
 // hydration from mutating foreign projects (GH#3231).
-func newReadOnlyStoreFromConfig(ctx context.Context, beadsDir string) (storage.DoltStorage, error) {
+func newReadOnlyStoreFromConfig(ctx context.Context, beadsDir string) (s storage.DoltStorage, retErr error) {
+	defer func() {
+		if retErr == nil {
+			s = applyExternalResolverOptions(s, beadsDir)
+		}
+	}()
 	cfg, err := configfile.Load(beadsDir)
 	if err == nil && cfg != nil && cfg.IsDoltProxiedServerMode() {
 		// TODO: this needs to be uow provider

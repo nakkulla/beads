@@ -78,6 +78,12 @@ type ReadyWorkWhereInputs struct {
 	// ParentDescendantIDs are the transitive descendants of *filter.ParentID;
 	// consulted only when filter.ParentID != nil.
 	ParentDescendantIDs []string
+	// UnsatisfiedExternalRefs are external:<project>:<capability> refs that
+	// the resolver computed as not satisfied (unsatisfied or unresolvable). A
+	// row with a blocking-type external dependency on any of these is excluded
+	// from ready work. Blocking is computed here at query time; stored
+	// is_blocked is never set for external targets.
+	UnsatisfiedExternalRefs []string
 }
 
 // BuildReadyWorkWhere renders the full ready-work WHERE clause for one table
@@ -172,6 +178,26 @@ func BuildReadyWorkWhere(filter types.WorkFilter, tables FilterTables, in ReadyW
 	if filter.MoleculeID != "" {
 		whereClauses = append(whereClauses, fmt.Sprintf("(id IN (SELECT issue_id FROM %s WHERE type = 'parent-child' AND %s = ?) OR (id LIKE CONCAT(?, '.%%') AND id NOT IN (SELECT issue_id FROM %s WHERE type = 'parent-child')))", tables.Dependencies, DepTargetExpr, tables.Dependencies))
 		args = append(args, filter.MoleculeID, filter.MoleculeID)
+	}
+
+	// External dependency blocking (query-time). An uncorrelated
+	// "id NOT IN (subquery)" is deliberate: this WHERE text is reused both
+	// unaliased (SELECT id FROM issues <where>, the plain and UNION paths) and
+	// with the main table aliased "i" (the counts mega-query, SearchCountsSQL).
+	// A correlated NOT EXISTS would need the outer qualifier, which differs
+	// between those contexts; the bare "id" resolves to the outer main row in
+	// all of them, matching the existing DeferredChildIDs "id NOT IN" clause.
+	// issue_id is NOT NULL in both dependency tables, so NOT IN is null-safe.
+	for start := 0; start < len(in.UnsatisfiedExternalRefs); start += QueryBatchSize {
+		end := start + QueryBatchSize
+		if end > len(in.UnsatisfiedExternalRefs) {
+			end = len(in.UnsatisfiedExternalRefs)
+		}
+		placeholders, batchArgs := InPlaceholders(in.UnsatisfiedExternalRefs[start:end])
+		whereClauses = append(whereClauses, fmt.Sprintf(
+			"id NOT IN (SELECT issue_id FROM %s WHERE type IN ('blocks','conditional-blocks') AND depends_on_external IN (%s))",
+			tables.Dependencies, placeholders))
+		args = append(args, batchArgs...)
 	}
 
 	var err error

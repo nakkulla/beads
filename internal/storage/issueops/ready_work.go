@@ -39,8 +39,9 @@ func buildReadyWorkOrder(policy types.SortPolicy) sqlbuild.ReadyWorkOrder {
 // buildReadyWorkPredicates computes the ID sets the ready-work WHERE clause
 // needs (children of deferred parents, parent descendants), then delegates
 // the clause text to sqlbuild so both stacks share ready semantics.
-func buildReadyWorkPredicates(ctx context.Context, tx DBTX, filter types.WorkFilter, tables FilterTables) (*readyWorkPredicates, error) {
+func buildReadyWorkPredicates(ctx context.Context, tx DBTX, filter types.WorkFilter, tables FilterTables, unsatisfiedExternalRefs []string) (*readyWorkPredicates, error) {
 	var inputs sqlbuild.ReadyWorkWhereInputs
+	inputs.UnsatisfiedExternalRefs = unsatisfiedExternalRefs
 	if !filter.IncludeDeferred {
 		deferredChildIDs, dcErr := getChildrenOfDeferredParentsInTx(ctx, tx)
 		if dcErr != nil {
@@ -87,8 +88,13 @@ func GetReadyWorkInTx(
 	ctx context.Context,
 	tx DBTX,
 	filter types.WorkFilter,
+	opts ExternalResolverOptions,
 ) ([]*types.Issue, error) {
-	preds, err := buildReadyWorkPredicates(ctx, tx, filter, IssuesFilterTables)
+	unsatisfiedExternalRefs, err := ResolveReadyExternalBlocksInTx(ctx, tx, opts)
+	if err != nil {
+		return nil, err
+	}
+	preds, err := buildReadyWorkPredicates(ctx, tx, filter, IssuesFilterTables, unsatisfiedExternalRefs)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +127,7 @@ func GetReadyWorkInTx(
 		}
 	}
 
-	wisps, wErr := getReadyWispsInTx(ctx, tx, filter, preds.deferredChildIDs)
+	wisps, wErr := getReadyWispsInTx(ctx, tx, filter, preds.deferredChildIDs, unsatisfiedExternalRefs)
 	if wErr != nil {
 		return nil, wErr
 	}
@@ -152,7 +158,7 @@ func mergeReadyWisps(ordered []*types.Issue, wisps []*types.Issue, filter types.
 	return kept
 }
 
-func getReadyWispsInTx(ctx context.Context, tx DBTX, filter types.WorkFilter, deferredChildIDs []string) ([]*types.Issue, error) {
+func getReadyWispsInTx(ctx context.Context, tx DBTX, filter types.WorkFilter, deferredChildIDs, unsatisfiedExternalRefs []string) ([]*types.Issue, error) {
 	empty, err := wispsTableEmptyOrMissingInTx(ctx, tx)
 	if err != nil {
 		return nil, fmt.Errorf("search wisps (ready work): probe: %w", err)
@@ -171,7 +177,7 @@ func getReadyWispsInTx(ctx context.Context, tx DBTX, filter types.WorkFilter, de
 			}
 			return nil, fmt.Errorf("search wisps (ready work): %w", err)
 		}
-		return filterReadyWispsInTx(ctx, tx, filter, wisps, deferredChildIDs)
+		return filterReadyWispsInTx(ctx, tx, filter, wisps, deferredChildIDs, unsatisfiedExternalRefs)
 	}
 
 	pageSize := readyWorkPageSize(filter.Limit)
@@ -193,7 +199,7 @@ func getReadyWispsInTx(ctx context.Context, tx DBTX, filter types.WorkFilter, de
 		if err != nil {
 			return nil, fmt.Errorf("search wisps (ready work): %w", err)
 		}
-		pageReady, err := filterReadyWispsInTx(ctx, tx, filter, pageWisps, deferredChildIDs)
+		pageReady, err := filterReadyWispsInTx(ctx, tx, filter, pageWisps, deferredChildIDs, unsatisfiedExternalRefs)
 		if err != nil {
 			return nil, err
 		}
@@ -326,7 +332,7 @@ func readyWorkWispIssueFilter(filter types.WorkFilter) types.IssueFilter {
 	return wispFilter
 }
 
-func filterReadyWispsInTx(ctx context.Context, tx DBTX, filter types.WorkFilter, wisps []*types.Issue, deferredChildIDs []string) ([]*types.Issue, error) {
+func filterReadyWispsInTx(ctx context.Context, tx DBTX, filter types.WorkFilter, wisps []*types.Issue, deferredChildIDs, unsatisfiedExternalRefs []string) ([]*types.Issue, error) {
 	if len(wisps) == 0 {
 		return wisps, nil
 	}
@@ -400,6 +406,15 @@ func filterReadyWispsInTx(ctx context.Context, tx DBTX, filter types.WorkFilter,
 		_ = rows.Close()
 		if err := rows.Err(); err != nil {
 			return nil, fmt.Errorf("blocked wisp rows: %w", err)
+		}
+	}
+
+	// The plain wisp path does not go through BuildReadyWorkWhere, so external
+	// dependency blocking is applied here: exclude wisps carrying a
+	// blocking-type wisp_dependencies edge on an unsatisfied external ref.
+	if len(unsatisfiedExternalRefs) > 0 {
+		if err := excludeWispsBlockedByExternalInTx(ctx, tx, wispIDs, unsatisfiedExternalRefs, excluded); err != nil {
+			return nil, err
 		}
 	}
 
@@ -591,6 +606,63 @@ func getParentedIDSetInTx(ctx context.Context, tx DBTX, issueIDs []string) (map[
 		}
 	}
 	return parented, nil
+}
+
+// excludeWispsBlockedByExternalInTx adds to excluded any wisp in wispIDs whose
+// id is the source of a blocking-type wisp_dependencies edge on one of the
+// unsatisfied external refs. It batches over both wispIDs and refs and
+// tolerates a missing wisp_dependencies table.
+//
+//nolint:gosec // G201: only IN-clause placeholders are formatted in.
+func excludeWispsBlockedByExternalInTx(ctx context.Context, tx DBTX, wispIDs, unsatisfiedExternalRefs []string, excluded map[string]struct{}) error {
+	for wStart := 0; wStart < len(wispIDs); wStart += queryBatchSize {
+		wEnd := wStart + queryBatchSize
+		if wEnd > len(wispIDs) {
+			wEnd = len(wispIDs)
+		}
+		wispPH, wispArgs := buildSQLInClause(wispIDs[wStart:wEnd])
+		for rStart := 0; rStart < len(unsatisfiedExternalRefs); rStart += queryBatchSize {
+			rEnd := rStart + queryBatchSize
+			if rEnd > len(unsatisfiedExternalRefs) {
+				rEnd = len(unsatisfiedExternalRefs)
+			}
+			err := func() error {
+				refPH, refArgs := buildSQLInClause(unsatisfiedExternalRefs[rStart:rEnd])
+				args := make([]interface{}, 0, len(wispArgs)+len(refArgs))
+				args = append(args, wispArgs...)
+				args = append(args, refArgs...)
+				query := fmt.Sprintf(`
+					SELECT DISTINCT issue_id FROM wisp_dependencies
+					WHERE type IN ('blocks','conditional-blocks')
+					  AND issue_id IN (%s)
+					  AND depends_on_external IN (%s)
+				`, wispPH, refPH)
+				rows, err := tx.QueryContext(ctx, query, args...)
+				if err != nil {
+					return err
+				}
+				defer func() { _ = rows.Close() }()
+				for rows.Next() {
+					var id string
+					if err := rows.Scan(&id); err != nil {
+						return fmt.Errorf("scan external-blocked wisp: %w", err)
+					}
+					excluded[id] = struct{}{}
+				}
+				if err := rows.Err(); err != nil {
+					return fmt.Errorf("external-blocked wisp rows: %w", err)
+				}
+				return nil
+			}()
+			if err != nil {
+				if isTableNotExistError(err) {
+					return nil
+				}
+				return fmt.Errorf("get ready work: filter external-blocked wisps: %w", err)
+			}
+		}
+	}
+	return nil
 }
 
 // buildSQLInClause builds a parameterized IN clause from a slice of IDs.

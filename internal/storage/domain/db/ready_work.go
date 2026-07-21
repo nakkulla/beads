@@ -27,8 +27,9 @@ func buildReadyWorkOrder(policy types.SortPolicy) sqlbuild.ReadyWorkOrder {
 // needs (children of deferred parents, parent descendants), then delegates
 // the clause text to sqlbuild so both stacks share ready semantics. Unlike
 // the classic stack, ORDER BY and LIMIT are applied at the UNION outer query.
-func (r *issueSQLRepositoryImpl) buildReadyWorkPredicates(ctx context.Context, filter types.WorkFilter, tables filterTables) (*readyWorkPredicates, error) {
+func (r *issueSQLRepositoryImpl) buildReadyWorkPredicates(ctx context.Context, filter types.WorkFilter, tables filterTables, unsatisfiedExternalRefs []string) (*readyWorkPredicates, error) {
 	var inputs sqlbuild.ReadyWorkWhereInputs
+	inputs.UnsatisfiedExternalRefs = unsatisfiedExternalRefs
 	if !filter.IncludeDeferred {
 		deferredChildIDs, dcErr := r.getChildrenOfDeferredParents(ctx)
 		if dcErr != nil {

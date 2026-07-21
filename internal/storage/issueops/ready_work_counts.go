@@ -10,13 +10,18 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 )
 
-func GetReadyWorkWithCountsInTx(ctx context.Context, tx *sql.Tx, filter types.WorkFilter) ([]*types.IssueWithCounts, error) {
+func GetReadyWorkWithCountsInTx(ctx context.Context, tx *sql.Tx, filter types.WorkFilter, opts ExternalResolverOptions) ([]*types.IssueWithCounts, error) {
+	unsatisfiedExternalRefs, err := ResolveReadyExternalBlocksInTx(ctx, tx, opts)
+	if err != nil {
+		return nil, err
+	}
+
 	wispDepsExist, err := optionalTableExistsInTx(ctx, tx, "wisp_dependencies")
 	if err != nil {
 		return nil, fmt.Errorf("get ready work with counts: wisp dependency probe: %w", err)
 	}
 
-	issuePreds, err := buildReadyWorkPredicates(ctx, tx, filter, IssuesFilterTables)
+	issuePreds, err := buildReadyWorkPredicates(ctx, tx, filter, IssuesFilterTables, unsatisfiedExternalRefs)
 	if err != nil {
 		return nil, err
 	}
@@ -36,7 +41,7 @@ func GetReadyWorkWithCountsInTx(ctx context.Context, tx *sql.Tx, filter types.Wo
 		return out, nil
 	}
 
-	wispPreds, err := buildReadyWorkPredicates(ctx, tx, filter, WispsFilterTables)
+	wispPreds, err := buildReadyWorkPredicates(ctx, tx, filter, WispsFilterTables, unsatisfiedExternalRefs)
 	if err != nil {
 		return nil, err
 	}

@@ -28,7 +28,13 @@ func usesProxiedServer() bool {
 	return cmdCtx != nil && cmdCtx.ProxiedServerMode
 }
 
-func newDoltStore(ctx context.Context, cfg *dolt.Config) (storage.DoltStorage, error) {
+func newDoltStore(ctx context.Context, cfg *dolt.Config) (s storage.DoltStorage, err error) {
+	// Populate query-time external dependency resolver options on success.
+	defer func() {
+		if err == nil {
+			s = applyExternalResolverOptions(s, cfg.BeadsDir)
+		}
+	}()
 	if cfg.ProxiedServer {
 		// TODO: this should not be a store
 		// it should be a uow provider
@@ -46,7 +52,12 @@ func acquireEmbeddedLock(_ string, _ bool) (util.Unlocker, error) {
 }
 
 // newDoltStoreFromConfig creates a SQL-server-backed storage backend from config.
-func newDoltStoreFromConfig(ctx context.Context, beadsDir string) (storage.DoltStorage, error) {
+func newDoltStoreFromConfig(ctx context.Context, beadsDir string) (s storage.DoltStorage, retErr error) {
+	defer func() {
+		if retErr == nil {
+			s = applyExternalResolverOptions(s, beadsDir)
+		}
+	}()
 	cfg, err := configfile.Load(beadsDir)
 	if err == nil && cfg != nil && cfg.IsDoltProxiedServerMode() {
 		// TODO: this needs to be uow provider
@@ -64,7 +75,12 @@ func newDoltStoreFromConfig(ctx context.Context, beadsDir string) (storage.DoltS
 }
 
 // newReadOnlyStoreFromConfig creates a read-only SQL-server-backed storage backend.
-func newReadOnlyStoreFromConfig(ctx context.Context, beadsDir string) (storage.DoltStorage, error) {
+func newReadOnlyStoreFromConfig(ctx context.Context, beadsDir string) (s storage.DoltStorage, retErr error) {
+	defer func() {
+		if retErr == nil {
+			s = applyExternalResolverOptions(s, beadsDir)
+		}
+	}()
 	cfg, err := configfile.Load(beadsDir)
 	if err == nil && cfg != nil && cfg.IsDoltProxiedServerMode() {
 		// TODO: this needs to be uow provider

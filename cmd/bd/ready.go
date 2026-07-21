@@ -26,6 +26,9 @@ GetReadyWork API which applies blocker-aware semantics to find truly claimable w
 
 Note: 'bd list --ready' uses the same blocker-aware ready-work semantics.
 
+Note: unresolved external:<project>:<capability> dependencies keep an issue out
+of ready work (fail-closed unless resolved against the shared Dolt server).
+
 Use --mol to filter to a specific molecule's steps:
   bd ready --mol bd-patrol   # Show ready steps within molecule
 
