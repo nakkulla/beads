@@ -241,9 +241,12 @@ For bulk wiring, pass newline-delimited JSON with --file. Each line must be an
 object with "from" and "to" fields, and may include "type". The aliases
 "issue_id" and "depends_on_id" are also accepted. Use --file - to read stdin.
 
-External references are stored as-is and resolved at query time using
-the external_projects config. They block the issue until the capability
-is "shipped" in the target project.
+External references are stored as-is and resolved at query time against the
+shared Dolt server using the external_databases config (project -> Dolt
+database name). Resolution is fail-closed: the ref keeps blocking whenever the
+project is unmapped, the target database is unreachable, or storage is not in
+shared-server mode. It clears once the target database has a closed issue
+carrying the matching provides:<capability> label.
 
 Examples:
   bd dep add bd-42 bd-41                              # Positional args
