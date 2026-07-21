@@ -55,6 +55,11 @@ type EmbeddedDoltStore struct {
 	// (e.g. the post-command autocommit net, or the commit itself) - only the
 	// migration step is skipped.
 	intent openIntent
+	// externalOpts configures query-time resolution of external:<project>:
+	// <capability> dependencies in the ready-work path. The zero value is
+	// fail-closed (ServerMode=false; production embedded mode never resolves).
+	// Populated by the cmd layer (task U1c) via SetExternalResolverOptions.
+	externalOpts issueops.ExternalResolverOptions
 }
 
 // openIntent classifies why a store is being opened. openStrict fails the

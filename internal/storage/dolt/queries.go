@@ -31,11 +31,18 @@ func (s *DoltStore) SearchIssuesWithCounts(ctx context.Context, query string, fi
 	return result, err
 }
 
+// SetExternalResolverOptions sets the external dependency resolver options
+// used by the ready-work path. The cmd layer (task U1c) populates these at
+// store construction; the zero value is fail-closed.
+func (s *DoltStore) SetExternalResolverOptions(opts issueops.ExternalResolverOptions) {
+	s.externalOpts = opts
+}
+
 func (s *DoltStore) GetReadyWork(ctx context.Context, filter types.WorkFilter) ([]*types.Issue, error) {
 	var result []*types.Issue
 	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.GetReadyWorkInTx(ctx, tx, filter)
+		result, err = issueops.GetReadyWorkInTx(ctx, tx, filter, s.externalOpts)
 		return err
 	})
 	return result, err
@@ -45,7 +52,7 @@ func (s *DoltStore) GetReadyWorkWithCounts(ctx context.Context, filter types.Wor
 	var result []*types.IssueWithCounts
 	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
 		var err error
-		result, err = issueops.GetReadyWorkWithCountsInTx(ctx, tx, filter)
+		result, err = issueops.GetReadyWorkWithCountsInTx(ctx, tx, filter, s.externalOpts)
 		return err
 	})
 	return result, err

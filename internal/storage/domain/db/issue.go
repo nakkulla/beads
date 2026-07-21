@@ -17,15 +17,25 @@ import (
 )
 
 func NewIssueSQLRepository(runner Runner) domain.IssueSQLRepository {
+	return NewIssueSQLRepositoryWithExternalOptions(runner, issueops.ExternalResolverOptions{})
+}
+
+// NewIssueSQLRepositoryWithExternalOptions builds the repository with explicit
+// external dependency resolver options for the ready-work path. The cmd layer
+// (task U1c) uses this to populate options at store construction; the plain
+// NewIssueSQLRepository defaults to the fail-closed zero value.
+func NewIssueSQLRepositoryWithExternalOptions(runner Runner, externalOpts issueops.ExternalResolverOptions) domain.IssueSQLRepository {
 	return &issueSQLRepositoryImpl{
-		runner: runner,
-		events: NewEventsSQLRepository(runner),
+		runner:       runner,
+		events:       NewEventsSQLRepository(runner),
+		externalOpts: externalOpts,
 	}
 }
 
 type issueSQLRepositoryImpl struct {
-	runner Runner
-	events domain.EventsSQLRepository
+	runner       Runner
+	events       domain.EventsSQLRepository
+	externalOpts issueops.ExternalResolverOptions
 }
 
 var _ domain.IssueSQLRepository = (*issueSQLRepositoryImpl)(nil)
@@ -745,7 +755,7 @@ func (r *issueSQLRepositoryImpl) GetNewlyUnblockedByClose(ctx context.Context, c
 }
 
 func (r *issueSQLRepositoryImpl) ClaimReadyIssue(ctx context.Context, filter types.WorkFilter, actor string) (*types.Issue, error) {
-	out, err := issueops.ClaimReadyIssueInTx(ctx, r.runner, filter, actor)
+	out, err := issueops.ClaimReadyIssueInTx(ctx, r.runner, filter, actor, r.externalOpts)
 	if err != nil {
 		return nil, fmt.Errorf("db: IssueSQLRepository.ClaimReadyIssue: %w", err)
 	}
@@ -753,7 +763,7 @@ func (r *issueSQLRepositoryImpl) ClaimReadyIssue(ctx context.Context, filter typ
 }
 
 func (r *issueSQLRepositoryImpl) ClaimReadyWisp(ctx context.Context, filter types.WorkFilter, actor string) (*types.Issue, error) {
-	out, err := issueops.ClaimReadyIssueInTx(ctx, r.runner, filter, actor)
+	out, err := issueops.ClaimReadyIssueInTx(ctx, r.runner, filter, actor, r.externalOpts)
 	if err != nil {
 		return nil, fmt.Errorf("db: IssueSQLRepository.ClaimReadyWisp: %w", err)
 	}

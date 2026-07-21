@@ -116,6 +116,68 @@ func TestBuildReadyWorkWhereBatchesIDSets(t *testing.T) {
 	}
 }
 
+func TestBuildReadyWorkWhereExternalRefs(t *testing.T) {
+	t.Parallel()
+
+	// No refs -> no external predicate.
+	where, args, err := BuildReadyWorkWhere(types.WorkFilter{}, IssuesFilterTables, ReadyWorkWhereInputs{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(where, "depends_on_external IN") {
+		t.Fatalf("no external predicate expected without refs, got: %s", where)
+	}
+
+	// With refs -> uncorrelated NOT IN over dependencies (issues family).
+	refs := []string{"external:beads:cap-a", "external:gt:cap-b"}
+	baseArgs := len(ReadyWorkExcludeTypes(nil))
+	where, args, err = BuildReadyWorkWhere(types.WorkFilter{}, IssuesFilterTables, ReadyWorkWhereInputs{UnsatisfiedExternalRefs: refs})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, want := range []string{
+		"id NOT IN (SELECT issue_id FROM dependencies",
+		"type IN ('blocks','conditional-blocks')",
+		"depends_on_external IN (?,?)",
+	} {
+		if !strings.Contains(where, want) {
+			t.Errorf("external predicate missing %q in: %s", want, where)
+		}
+	}
+	if len(args) != baseArgs+len(refs) {
+		t.Errorf("args = %d, want %d", len(args), baseArgs+len(refs))
+	}
+
+	// Wisps family targets wisp_dependencies.
+	where, _, err = BuildReadyWorkWhere(types.WorkFilter{}, WispsFilterTables, ReadyWorkWhereInputs{UnsatisfiedExternalRefs: refs})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(where, "id NOT IN (SELECT issue_id FROM wisp_dependencies") {
+		t.Errorf("wisps family must target wisp_dependencies, got: %s", where)
+	}
+}
+
+func TestBuildReadyWorkWhereExternalRefsBatch(t *testing.T) {
+	t.Parallel()
+
+	refs := make([]string, QueryBatchSize+1)
+	for i := range refs {
+		refs[i] = "external:beads:cap-" + strings.Repeat("a", i%3+1)
+	}
+	where, args, err := BuildReadyWorkWhere(types.WorkFilter{}, IssuesFilterTables, ReadyWorkWhereInputs{UnsatisfiedExternalRefs: refs})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := strings.Count(where, "depends_on_external IN ("); got != 2 {
+		t.Errorf("expected 2 batched external clauses for %d refs, got %d", len(refs), got)
+	}
+	wantArgs := len(refs) + len(ReadyWorkExcludeTypes(nil))
+	if len(args) != wantArgs {
+		t.Errorf("args = %d, want %d", len(args), wantArgs)
+	}
+}
+
 func TestSearchCountsSQLShape(t *testing.T) {
 	t.Parallel()
 

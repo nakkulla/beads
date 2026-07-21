@@ -7,11 +7,20 @@ import (
 
 	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"github.com/steveyegge/beads/internal/storage/domain"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 )
 
 func (r *issueSQLRepositoryImpl) getReadyWorkIDPage(ctx context.Context, filter types.WorkFilter) (idSrcPage, bool, error) {
-	issuePreds, err := r.buildReadyWorkPredicates(ctx, filter, issuesFilterTables)
+	// Resolve external dependency blocking once for this ready call and feed
+	// the unsatisfied refs into both the issues and wisps predicates, keeping
+	// this stack in ready-semantics parity with the classic issueops stack.
+	unsatisfiedExternalRefs, err := issueops.ResolveReadyExternalBlocksInTx(ctx, r.runner, r.externalOpts)
+	if err != nil {
+		return idSrcPage{}, false, err
+	}
+
+	issuePreds, err := r.buildReadyWorkPredicates(ctx, filter, issuesFilterTables, unsatisfiedExternalRefs)
 	if err != nil {
 		return idSrcPage{}, false, err
 	}
@@ -37,7 +46,7 @@ func (r *issueSQLRepositoryImpl) getReadyWorkIDPage(ctx context.Context, filter 
 		// holds non-ephemeral NoHistory beads (ephemeral=0), so forcing
 		// IncludeEphemeral here would leak true ephemerals into default ready
 		// work — issueops.getReadyWispsInTx filters them the same way.
-		wispPreds, err := r.buildReadyWorkPredicates(ctx, filter, wispsFilterTables)
+		wispPreds, err := r.buildReadyWorkPredicates(ctx, filter, wispsFilterTables, unsatisfiedExternalRefs)
 		if err != nil {
 			return idSrcPage{}, false, err
 		}

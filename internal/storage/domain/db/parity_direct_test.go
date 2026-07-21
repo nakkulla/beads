@@ -68,7 +68,7 @@ func (s *testSuite) classicListWithCounts(filter types.IssueFilter) []*types.Iss
 func (s *testSuite) classicReady(filter types.WorkFilter) []*types.Issue {
 	tx := s.beginClassicTx()
 	defer func() { _ = tx.Rollback() }()
-	out, err := issueops.GetReadyWorkInTx(s.Ctx(), tx, filter)
+	out, err := issueops.GetReadyWorkInTx(s.Ctx(), tx, filter, issueops.ExternalResolverOptions{})
 	s.Require().NoError(err)
 	return out
 }

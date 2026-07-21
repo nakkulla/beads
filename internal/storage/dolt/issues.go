@@ -248,7 +248,7 @@ func (s *DoltStore) ClaimReadyIssue(ctx context.Context, filter types.WorkFilter
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	claimed, err := issueops.ClaimReadyIssueInTx(ctx, tx, filter, actor)
+	claimed, err := issueops.ClaimReadyIssueInTx(ctx, tx, filter, actor, s.externalOpts)
 	if err != nil {
 		return nil, err
 	}
