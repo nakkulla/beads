@@ -52,6 +52,7 @@ Common tool-level settings you can configure:
 | `git.no-gpg-sign` | - | `BD_GIT_NO_GPG_SIGN` | `false` | Disable GPG signing for beads commits |
 | `directory.labels` | - | - | (none) | Map directories to labels for automatic filtering |
 | `external_projects` | - | - | (none) | Map project names to paths for cross-project deps |
+| `external_databases` | - | - | (none) | Map project names to Dolt database names for query-time external dependency gating |
 | `backup.enabled` | - | `BD_BACKUP_ENABLED` | `false` | Enable periodic Dolt-native backup to `.beads/backup/` |
 | `backup.interval` | - | `BD_BACKUP_INTERVAL` | `15m` | Minimum time between auto-backups |
 | `dolt.auto-push` | - | `BD_DOLT_AUTO_PUSH` | `false` | Auto-push to Dolt remote after writes (explicit opt-in) |
@@ -235,7 +236,60 @@ output:
 external_projects:
   beads: ../beads
   other-project: /path/to/other-project
+
+# Query-time external dependency gating
+# Maps project names to Dolt database names on a shared Dolt sql-server, used
+# by `bd ready` / `bd claim` to resolve external:<project>:<capability>
+# blocked_by references. Unrelated to external_projects above: this maps to a
+# Dolt database name, not a filesystem path.
+external_databases:
+  beads: beads_prod
+  other-project: other_project_db
 ```
+
+### External Dependency Resolution
+
+`bd` has two independent mechanisms for cross-project dependencies; don't
+confuse them:
+
+- **`external_projects`** maps a project name to a **filesystem path**. It has
+  no effect on `bd ready` / `bd claim` gating.
+- **`external_databases`** maps a project name to a **Dolt database name** on
+  a shared Dolt sql-server. This is what `bd ready` and `bd claim` use to
+  resolve `external:<project>:<capability>` `blocked_by` references at query
+  time.
+
+#### How `external_databases` gating works
+
+When an issue has a blocking dependency on `external:<project>:<capability>`,
+`bd ready` (and `bd claim`) resolve it at query time instead of trusting a
+cached status:
+
+1. `<project>` is looked up in `external_databases` to find the Dolt database
+   name that project uses on the shared server.
+2. The dependency clears only if that database contains a **closed** issue
+   carrying the label `provides:<capability>` (written by `bd ship`).
+3. Otherwise the dependency keeps blocking. A capability that simply hasn't
+   shipped yet blocks **silently** — that's normal gate behavior, not an
+   error.
+
+Resolution is **fail-closed**: a dependency is never silently treated as
+satisfied. It keeps blocking whenever:
+
+- `<project>` has no entry in `external_databases`,
+- the mapped database name is invalid or doesn't exist,
+- the cross-database query fails for any reason, or
+- the current workspace isn't connected to a shared (external) Dolt
+  sql-server at all (embedded mode and an auto-started single-project server
+  both count as "not shared").
+
+For these unresolvable cases only (not for ordinary not-yet-shipped gating),
+`bd ready` prints at most one `warning: external dependency unresolvable
+(project ...)` line per project per invocation, on stderr.
+
+`bd show` and `bd dep list` only **display** external edges (marked as
+`(external)`); they never query other databases, so display never triggers
+the warnings above.
 
 ### Why Two Systems?
 
@@ -803,13 +857,13 @@ bd linear status
 
 **Staleness detection:**
 
-After each successful pull, `bd` writes the current timestamp to `.beads/last_pull`. This enables ambient staleness detection:
+After each successful pull, `bd` writes the current timestamp to `.beads/last_pull` (a local-only, per-machine file covered by the `.beads/.gitignore` template). This enables opt-in staleness detection on `bd linear sync`:
 
 - **`--pull-if-stale`**: Only pull if data is older than the threshold (default 20m). When data is fresh, prints "Linear data is fresh" and exits. In `--json` mode, includes `"is_fresh": true/false`.
 - **`--threshold`**: Override the default 20-minute staleness threshold (e.g., `--threshold 5m`).
 - **Debounce**: A 5-minute debounce prevents agent loops — if a pull completed within the last 5 minutes, data is always treated as fresh regardless of the threshold.
-- **`bd prime` auto-pull**: When `LINEAR_API_KEY` is set and data is stale, `bd prime` automatically pulls from Linear before emitting orientation output.
-- **Per-session warning**: On any `bd` command, if data is stale, a one-time warning is emitted to stderr: `⚠ Linear data is 45m stale — run 'bd linear sync --pull' to refresh`. Suppressed in subsequent commands within the same shell session.
+
+To keep Linear data fresh in agent sessions, run `bd linear sync --pull-if-stale` explicitly (e.g., from a session-start hook). `bd prime` and other core commands do not contact Linear.
 
 **Automatic sync tracking:**
 

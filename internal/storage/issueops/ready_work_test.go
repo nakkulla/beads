@@ -16,6 +16,20 @@ func deferredParentProbeRegex(issueTable string) string {
 	return `SELECT 1 FROM ` + issueTable + `\s+WHERE defer_until IS NOT NULL\s+AND defer_until > UTC_TIMESTAMP\(\)\s+LIMIT 1`
 }
 
+func externalRefCollectionRegex(depTable string) string {
+	return `SELECT DISTINCT depends_on_external FROM ` + depTable + ` WHERE depends_on_external IS NOT NULL AND type IN \('blocks','conditional-blocks'\)`
+}
+
+// expectEmptyExternalRefCollection sets up the two blocking-external-ref
+// collection queries (dependencies, wisp_dependencies) that now run at the
+// entry of GetReadyWorkInTx to return no rows, so resolution short-circuits.
+func expectEmptyExternalRefCollection(mock sqlmock.Sqlmock) {
+	mock.ExpectQuery(externalRefCollectionRegex("dependencies")).
+		WillReturnRows(sqlmock.NewRows([]string{"depends_on_external"}))
+	mock.ExpectQuery(externalRefCollectionRegex("wisp_dependencies")).
+		WillReturnRows(sqlmock.NewRows([]string{"depends_on_external"}))
+}
+
 func deferredChildrenQueryRegex(depTable, issueTable string) string {
 	targetCol := "depends_on_issue_id"
 	if issueTable == "wisps" {
@@ -101,12 +115,14 @@ func TestGetReadyWorkInTx_PropagatesDeferredParentChildError(t *testing.T) {
 
 	_, mock, tx := beginMockTx(t)
 	childErr := errors.New("dolt transient dependency read failure")
+	expectEmptyExternalRefCollection(mock)
 	mock.ExpectQuery(deferredParentProbeRegex("issues")).WillReturnError(childErr)
 
 	_, err := GetReadyWorkInTx(
 		context.Background(),
 		tx,
 		types.WorkFilter{},
+		ExternalResolverOptions{},
 	)
 	if err == nil {
 		t.Fatal("expected deferred parent child error")
@@ -122,7 +138,7 @@ func TestGetReadyWorkInTx_PropagatesDeferredParentChildError(t *testing.T) {
 	}
 }
 
-func TestLoadStatusByIDInTxErrorsOnIssueWispCollision(t *testing.T) {
+func TestLoadStatusByIDInTxPrefersWispOnCollision(t *testing.T) {
 	t.Parallel()
 
 	_, mock, tx := beginMockTx(t)
@@ -133,31 +149,34 @@ func TestLoadStatusByIDInTxErrorsOnIssueWispCollision(t *testing.T) {
 		WithArgs("dup-id").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "status"}).AddRow("dup-id", types.StatusClosed))
 
-	_, err := loadStatusByIDInTx(context.Background(), tx, []string{"dup-id"})
-	if err == nil {
-		t.Fatal("expected duplicate issue/wisp status error")
+	got, err := loadStatusByIDInTx(context.Background(), tx, []string{"dup-id"})
+	if err != nil {
+		t.Fatalf("loadStatusByIDInTx error = %v, want no error on cross-table dup", err)
 	}
-	if !strings.Contains(err.Error(), `id "dup-id" exists in both issues and wisps`) {
-		t.Fatalf("error = %v, want duplicate issue/wisp context", err)
+	if got["dup-id"] != types.StatusClosed {
+		t.Errorf("status = %v, want %v (wisp canonical preferred over issues)", got["dup-id"], types.StatusClosed)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet SQL expectations: %v", err)
 	}
 }
 
-func TestMergeReadyWispsErrorsOnIssueWispCollision(t *testing.T) {
+func TestMergeReadyWispsPrefersWispOnCollision(t *testing.T) {
 	t.Parallel()
 
-	_, err := mergeReadyWisps(
-		[]*types.Issue{{ID: "dup-id", Status: types.StatusOpen}},
-		[]*types.Issue{{ID: "dup-id", Status: types.StatusClosed}},
+	issuesCopy := &types.Issue{ID: "dup-id", Status: types.StatusOpen, Title: "issues copy"}
+	wispCopy := &types.Issue{ID: "dup-id", Status: types.StatusClosed, Title: "wisp canonical"}
+
+	got := mergeReadyWisps(
+		[]*types.Issue{issuesCopy},
+		[]*types.Issue{wispCopy},
 		types.WorkFilter{},
 	)
-	if err == nil {
-		t.Fatal("expected duplicate issue/wisp ready-work error")
+	if len(got) != 1 {
+		t.Fatalf("len(got) = %d, want 1 (deduped)", len(got))
 	}
-	if !strings.Contains(err.Error(), `id "dup-id" exists in both issues and wisps`) {
-		t.Fatalf("error = %v, want duplicate issue/wisp context", err)
+	if got[0].Title != "wisp canonical" {
+		t.Errorf("title = %q, want %q (wisp preferred over issues copy)", got[0].Title, "wisp canonical")
 	}
 }
 

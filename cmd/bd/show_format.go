@@ -147,6 +147,14 @@ func formatIssueMetadata(issue *types.Issue) string {
 // formatDependencyLine formats a single dependency with semantic colors
 // Closed items get entire row muted - the work is done, no need for attention
 func formatDependencyLine(prefix string, dep *types.IssueWithDependencyMetadata) string {
+	// External dependency refs (external:<project>:<capability>) have no backing
+	// issue row, so there is no status/title/priority to render. Show the ref
+	// with an (external) marker instead of fabricated fields (mirrors the
+	// formatTreeNode external special-case).
+	if IsExternalRef(dep.ID) {
+		return fmt.Sprintf("  %s %s %s", prefix, dep.ID, ui.RenderMuted("(external)"))
+	}
+
 	// Status icon (always rendered with semantic color)
 	statusIcon := ui.GetStatusIcon(string(dep.Status))
 

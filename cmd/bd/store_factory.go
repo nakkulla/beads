@@ -45,7 +45,15 @@ func usesProxiedServer() bool {
 
 // newDoltStore creates a storage backend from an explicit config.
 // Used by bd init and PersistentPreRun.
-func newDoltStore(ctx context.Context, cfg *dolt.Config) (storage.DoltStorage, error) {
+func newDoltStore(ctx context.Context, cfg *dolt.Config) (s storage.DoltStorage, err error) {
+	// Populate query-time external dependency resolver options on the concrete
+	// store before it is wrapped (e.g. by HookFiringStore). Runs on the success
+	// path only; the proxied/error returns below leave options unset.
+	defer func() {
+		if err == nil {
+			s = applyExternalResolverOptions(s, cfg.BeadsDir)
+		}
+	}()
 	if cfg.ProxiedServer {
 		// TODO: this should not be a store
 		// it should be a uow provider
@@ -53,6 +61,19 @@ func newDoltStore(ctx context.Context, cfg *dolt.Config) (storage.DoltStorage, e
 	}
 	if cfg.ServerMode {
 		return dolt.New(ctx, cfg)
+	}
+	if cfg.ReadOnly {
+		// Read-only commands must not be bricked by the #4259
+		// remote-migrate gate (bd-578h9.5); server mode's ReadOnly opens
+		// already skip migration entirely.
+		return embeddeddolt.OpenForReadOnlyCommand(ctx, cfg.BeadsDir, cfg.Database, "main")
+	}
+	if cfg.LenientOpen {
+		// Working-set-reconcile commands (bd dolt commit, bd vc commit) must
+		// not be bricked by a pending-migration dirty-table refusal: that
+		// refusal's documented recovery is exactly the commit these commands
+		// run, so failing the open here would deadlock (#4566).
+		return embeddeddolt.OpenForWorkingSetReconcile(ctx, cfg.BeadsDir, cfg.Database, "main")
 	}
 	return embeddeddolt.Open(ctx, cfg.BeadsDir, cfg.Database, "main")
 }
@@ -84,7 +105,12 @@ func acquireEmbeddedLock(beadsDir string, serverMode bool) (util.Unlocker, error
 //
 // For embedded mode, legacy hyphenated database names (pre-GH#2142) are
 // auto-sanitized to underscores and the fix is persisted to metadata.json.
-func newDoltStoreFromConfig(ctx context.Context, beadsDir string) (storage.DoltStorage, error) {
+func newDoltStoreFromConfig(ctx context.Context, beadsDir string) (s storage.DoltStorage, retErr error) {
+	defer func() {
+		if retErr == nil {
+			s = applyExternalResolverOptions(s, beadsDir)
+		}
+	}()
 	cfg, err := configfile.Load(beadsDir)
 	if err == nil && cfg != nil && cfg.IsDoltProxiedServerMode() {
 		// TODO: this needs to be uow provider
@@ -157,7 +183,12 @@ func migrateHyphenatedDB(beadsDir string, cfg *configfile.Config, oldName, newNa
 // For embedded mode, invalid characters (hyphens, dots) are sanitized in-memory
 // only — no directory renames or metadata.json writes. This prevents cross-repo
 // hydration from mutating foreign projects (GH#3231).
-func newReadOnlyStoreFromConfig(ctx context.Context, beadsDir string) (storage.DoltStorage, error) {
+func newReadOnlyStoreFromConfig(ctx context.Context, beadsDir string) (s storage.DoltStorage, retErr error) {
+	defer func() {
+		if retErr == nil {
+			s = applyExternalResolverOptions(s, beadsDir)
+		}
+	}()
 	cfg, err := configfile.Load(beadsDir)
 	if err == nil && cfg != nil && cfg.IsDoltProxiedServerMode() {
 		// TODO: this needs to be uow provider
@@ -179,5 +210,9 @@ func newReadOnlyStoreFromConfig(ctx context.Context, beadsDir string) (storage.D
 	if sanitized := sanitizeDBName(database); sanitized != database {
 		database = sanitized
 	}
-	return embeddeddolt.Open(ctx, beadsDir, database, "main")
+	// OpenReadOnly, not Open: a read-only open of a foreign project must not
+	// run the remote-migrate gate (a behind, remote-backed database would fail
+	// hard) and must not write migrations into the target's history
+	// (bd-6dnrw.32, GH#3231).
+	return embeddeddolt.OpenReadOnly(ctx, beadsDir, database, "main")
 }

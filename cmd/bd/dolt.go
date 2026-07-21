@@ -19,6 +19,7 @@ import (
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/dberrors"
 	storagedolt "github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/storage/doltutil"
 	"github.com/steveyegge/beads/internal/ui"
@@ -143,6 +144,45 @@ func isRemoteNotFoundErr(err error) bool {
 	return strings.Contains(msg, "remote") && strings.Contains(msg, "not found")
 }
 
+// remoteLister is the narrow store surface needed to confirm the structured
+// no-remote-configured state.
+type remoteLister interface {
+	ListRemotes(ctx context.Context) ([]storage.RemoteInfo, error)
+}
+
+// persistedRemoteProber is implemented by stores that can check on-disk
+// remote persistence (.dolt/repo_state.json) independently of the SQL
+// server's dolt_remotes table (server-mode DoltStore).
+type persistedRemoteProber interface {
+	HasPersistedRemote() bool
+}
+
+// isConfirmedNoRemote reports whether a push/pull failure is the benign
+// "no remote configured" case that may exit 0. isRemoteNotFoundErr alone is a
+// loose string match that also fires on deleted/renamed remote-side repos,
+// missing remote branches, and typoed remote names — real sync failures that
+// must keep a non-zero exit so agents and CI notice (bd-6dnrw.7). Only an
+// actually-empty dolt_remotes table makes the skip safe; if the remotes can't
+// be listed, treat the failure as real. An empty table alone is still not
+// proof in server mode: a freshly auto-started sql-server can report empty
+// dolt_remotes at cold start even though remotes are persisted on disk
+// (GH#2118) — the same reason the remote-migrate gate reads repo_state.json
+// directly — so the on-disk probe must agree before the skip fires
+// (bd-578h9.10).
+func isConfirmedNoRemote(ctx context.Context, st remoteLister, err error) bool {
+	if !isRemoteNotFoundErr(err) {
+		return false
+	}
+	remotes, listErr := st.ListRemotes(ctx)
+	if listErr != nil || len(remotes) > 0 {
+		return false
+	}
+	if prober, ok := st.(persistedRemoteProber); ok && prober.HasPersistedRemote() {
+		return false
+	}
+	return true
+}
+
 // isDivergedHistoryErr checks whether the error indicates that local and remote
 // Dolt histories have diverged. This happens when independent pushes create
 // separate commit histories with no common merge base (e.g., two agents
@@ -156,6 +196,58 @@ func isDivergedHistoryErr(err error) bool {
 	return strings.Contains(msg, "no common ancestor") ||
 		strings.Contains(msg, "can't find common ancestor") ||
 		strings.Contains(msg, "cannot find common ancestor")
+}
+
+// isAncestorPKMismatchErr reports Dolt's hard refusal to merge a table whose
+// primary key set differs across the merging histories or in their common
+// ancestor. The classification lives in dberrors so the cross-upgrade merge
+// test (internal/storage/dolt) can pin it against a real Dolt refusal; see
+// dberrors.IsAncestorPKMismatch for the full background (#4259).
+func isAncestorPKMismatchErr(err error) bool {
+	return dberrors.IsAncestorPKMismatch(err)
+}
+
+// ancestorPKMismatchTable extracts the table name from a Dolt
+// different-primary-keys merge refusal, or "" if it cannot be determined.
+func ancestorPKMismatchTable(err error) string {
+	return dberrors.AncestorPKMismatchTable(err)
+}
+
+// printAncestorPKMismatchGuidance prints recovery guidance when a Dolt merge
+// is refused because a table's primary key set differs across the merging
+// histories or in their common ancestor. Unlike row conflicts, this cannot be
+// auto-resolved and does not converge on retry; the clones must be
+// re-converged through one canonical clone.
+func printAncestorPKMismatchGuidance(err error) {
+	w := os.Stderr
+	table := ancestorPKMismatchTable(err)
+	fmt.Fprintln(w, "")
+	if table != "" {
+		fmt.Fprintf(w, "Dolt refused to merge: table %q has different primary keys across\n", table)
+	} else {
+		fmt.Fprintln(w, "Dolt refused to merge: a table has different primary keys across")
+	}
+	fmt.Fprintln(w, "the local and remote histories (or in their common ancestor).")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "This is a schema fork: two clones reshaped the table's primary key")
+	fmt.Fprintln(w, "independently, usually by upgrading bd (and so running schema migrations)")
+	fmt.Fprintln(w, "separately on each clone while un-synced changes existed on both sides.")
+	fmt.Fprintln(w, "Retrying will not help — these histories can no longer be merged.")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Recovery (bootstrap from one canonical clone):")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "  1. Pick ONE clone as canonical (usually the most complete/up-to-date),")
+	fmt.Fprintln(w, "     upgrade bd there, and make the remote authoritative:")
+	fmt.Fprintln(w, "       bd dolt push --force")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "  2. On EVERY other clone, save local-only work, re-clone, re-apply:")
+	fmt.Fprintln(w, "       bd export --all -o /tmp/beads-local.jsonl")
+	fmt.Fprintln(w, "       rm -rf .beads/dolt")
+	fmt.Fprintln(w, "       bd bootstrap")
+	fmt.Fprintln(w, "       bd import /tmp/beads-local.jsonl")
+	fmt.Fprintln(w, "")
+	fmt.Fprintln(w, "Full playbook (and how to prevent this during upgrades):")
+	fmt.Fprintln(w, "  https://github.com/gastownhall/beads/blob/main/docs/RECOVERY.md#pk-fork-refused")
 }
 
 func isDanglingChunkReferenceErr(err error) bool {
@@ -271,6 +363,10 @@ uncommitted changes in its working set).
 Use --remote to push to a specific named remote instead of the default.
 The remote must already exist (see 'bd dolt remote add').`,
 	Run: func(cmd *cobra.Command, args []string) {
+		if config.GetBool("no-push") {
+			fmt.Println("skipping push: rig is local-only (no-push: true)")
+			return
+		}
 		ctx := context.Background()
 		st := getStore()
 		if st == nil {
@@ -287,6 +383,8 @@ The remote must already exist (see 'bd dolt remote add').`,
 					fmt.Fprintf(os.Stderr, "\nRemote %q is not configured.\n", remote)
 					fmt.Fprintln(os.Stderr, "Use 'bd dolt remote add <name> <url>' to add it.")
 					fmt.Fprintln(os.Stderr, "Use 'bd dolt remote list' to see configured remotes.")
+				} else if isAncestorPKMismatchErr(err) {
+					printAncestorPKMismatchGuidance(err)
 				} else if isDivergedHistoryErr(err) {
 					printDivergedHistoryGuidance("push --force")
 				} else if isDanglingChunkReferenceErr(err) {
@@ -312,12 +410,14 @@ The remote must already exist (see 'bd dolt remote add').`,
 			pushErr = st.Push(ctx)
 		}
 		if pushErr != nil {
-			if isRemoteNotFoundErr(pushErr) {
+			if isConfirmedNoRemote(ctx, st, pushErr) {
 				printNoRemoteGuidance()
 				return
 			}
 			fmt.Fprintf(os.Stderr, "Error: %v\n", pushErr)
-			if isDivergedHistoryErr(pushErr) {
+			if isAncestorPKMismatchErr(pushErr) {
+				printAncestorPKMismatchGuidance(pushErr)
+			} else if isDivergedHistoryErr(pushErr) {
 				op := "push"
 				if force {
 					op = "push --force"
@@ -359,6 +459,8 @@ The remote must already exist (see 'bd dolt remote add').`,
 					fmt.Fprintf(os.Stderr, "\nRemote %q is not configured.\n", remote)
 					fmt.Fprintln(os.Stderr, "Use 'bd dolt remote add <name> <url>' to add it.")
 					fmt.Fprintln(os.Stderr, "Use 'bd dolt remote list' to see configured remotes.")
+				} else if isAncestorPKMismatchErr(err) {
+					printAncestorPKMismatchGuidance(err)
 				} else if isDivergedHistoryErr(err) {
 					printDivergedHistoryGuidance("pull")
 				}
@@ -369,12 +471,14 @@ The remote must already exist (see 'bd dolt remote add').`,
 		}
 		fmt.Println("Pulling from Dolt remote...")
 		if err := st.Pull(ctx); err != nil {
-			if isRemoteNotFoundErr(err) {
+			if isConfirmedNoRemote(ctx, st, err) {
 				printNoRemoteGuidance()
 				return
 			}
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			if isDivergedHistoryErr(err) {
+			if isAncestorPKMismatchErr(err) {
+				printAncestorPKMismatchGuidance(err)
+			} else if isDivergedHistoryErr(err) {
 				printDivergedHistoryGuidance("pull")
 			}
 			os.Exit(1)
@@ -558,7 +662,9 @@ reachability, server version, and database.`,
 // is exercised by TestRunExternalDoltStatus_Unreachable).
 func renderLocalDoltStatus(state *doltserver.State, serverDir string) {
 	if jsonOutput {
-		outputJSON(state)
+		if err := outputJSON(state); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return
 	}
 	if state == nil || !state.Running {
@@ -680,7 +786,9 @@ func runExternalDoltStatus(beadsDir string, cfg *configfile.Config) {
 	}
 
 	if jsonOutput {
-		outputJSON(result)
+		if err := outputJSON(result); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return
 	}
 
@@ -713,7 +821,7 @@ func showEmbeddedDoltStatus(beadsDir string) {
 	}
 
 	if jsonOutput {
-		outputJSON(map[string]interface{}{
+		if err := outputJSON(map[string]interface{}{
 			"mode": "embedded",
 			// Embedded mode has an active in-process engine, but no
 			// separate server process. Use a server-specific field so
@@ -721,7 +829,9 @@ func showEmbeddedDoltStatus(beadsDir string) {
 			"server_running":  false,
 			"data_dir":        dataDir,
 			"data_dir_exists": dataDirExists,
-		})
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return
 	}
 
@@ -995,7 +1105,7 @@ var doltRemoteAddCmd = &cobra.Command{
 		result, err := ensureDoltRemote(ctx, st, name, url, confirmDoltRemoteOverwrite)
 		if err != nil {
 			if jsonOutput {
-				outputJSONError(err, "remote_add_failed")
+				_ = outputJSONError(err, "remote_add_failed")
 			} else {
 				fmt.Fprintf(os.Stderr, "Error adding remote: %v\n", err)
 			}
@@ -1016,10 +1126,12 @@ var doltRemoteAddCmd = &cobra.Command{
 		}
 
 		if jsonOutput {
-			outputJSON(map[string]interface{}{
+			if err := outputJSON(map[string]interface{}{
 				"name": name,
 				"url":  url,
-			})
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			}
 		} else {
 			fmt.Printf("Added remote %q → %s\n", name, url)
 		}
@@ -1040,7 +1152,7 @@ var doltRemoteListCmd = &cobra.Command{
 		remotes, err := st.ListRemotes(ctx)
 		if err != nil {
 			if jsonOutput {
-				outputJSONError(err, "remote_list_failed")
+				_ = outputJSONError(err, "remote_list_failed")
 			} else {
 				fmt.Fprintf(os.Stderr, "Error listing remotes: %v\n", err)
 			}
@@ -1048,7 +1160,9 @@ var doltRemoteListCmd = &cobra.Command{
 		}
 
 		if jsonOutput {
-			outputJSON(formatDoltRemoteListJSON(remotes))
+			if err := outputJSON(formatDoltRemoteListJSON(remotes)); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			}
 			return
 		}
 
@@ -1099,7 +1213,7 @@ var doltRemoteRemoveCmd = &cobra.Command{
 
 		if err := st.RemoveRemote(ctx, name); err != nil {
 			if jsonOutput {
-				outputJSONError(err, "remote_remove_failed")
+				_ = outputJSONError(err, "remote_remove_failed")
 			} else {
 				fmt.Fprintf(os.Stderr, "Error removing remote: %v\n", err)
 			}
@@ -1118,10 +1232,12 @@ var doltRemoteRemoveCmd = &cobra.Command{
 		}
 
 		if jsonOutput {
-			outputJSON(map[string]interface{}{
+			if err := outputJSON(map[string]interface{}{
 				"name":    name,
 				"removed": true,
-			})
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			}
 		} else {
 			fmt.Printf("Removed remote %q\n", name)
 		}
@@ -1229,7 +1345,9 @@ func showDoltConfig(testConnection bool) {
 				}
 			}
 		}
-		outputJSON(result)
+		if err := outputJSON(result); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return
 	}
 
@@ -1400,11 +1518,13 @@ func setDoltConfig(key, value string, updateConfig bool) {
 			os.Exit(1)
 		}
 		if jsonOutput {
-			outputJSON(map[string]interface{}{
+			if err := outputJSON(map[string]interface{}{
 				"key":      "shared-server",
 				"value":    lower,
 				"location": "config.yaml",
-			})
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			}
 			return
 		}
 		if lower == "true" {
@@ -1440,7 +1560,9 @@ func setDoltConfig(key, value string, updateConfig bool) {
 		if updateConfig {
 			result["config_yaml_updated"] = true
 		}
-		outputJSON(result)
+		if err := outputJSON(result); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		return
 	}
 
@@ -1482,11 +1604,13 @@ func testDoltConnection() {
 
 	if jsonOutput {
 		ok := testServerConnection(host, port)
-		outputJSON(map[string]interface{}{
+		if err := outputJSON(map[string]interface{}{
 			"host":          host,
 			"port":          port,
 			"connection_ok": ok,
-		})
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		}
 		if !ok {
 			os.Exit(1)
 		}

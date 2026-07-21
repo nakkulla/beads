@@ -28,7 +28,7 @@ type ClaimResult struct {
 // The caller is responsible for Dolt versioning (DOLT_ADD/COMMIT) if needed.
 //
 //nolint:gosec // G201: table names come from WispTableRouting (hardcoded constants)
-func ClaimIssueInTx(ctx context.Context, tx *sql.Tx, id string, actor string) (*ClaimResult, error) {
+func ClaimIssueInTx(ctx context.Context, tx DBTX, id string, actor string) (*ClaimResult, error) {
 	isWisp := IsActiveWispInTx(ctx, tx, id)
 	issueTable, _, eventTable, _ := WispTableRouting(isWisp)
 
@@ -113,9 +113,10 @@ func ClaimIssueInTx(ctx context.Context, tx *sql.Tx, id string, actor string) (*
 // ready issue can be claimed.
 func ClaimReadyIssueInTx(
 	ctx context.Context,
-	tx *sql.Tx,
+	tx DBTX,
 	filter types.WorkFilter,
 	actor string,
+	opts ExternalResolverOptions,
 ) (*types.Issue, error) {
 	claimFilter := filter
 	claimFilter.Status = types.StatusOpen
@@ -123,7 +124,7 @@ func ClaimReadyIssueInTx(
 	claimFilter.Assignee = nil
 	claimFilter.Limit = 0
 
-	readyIssues, err := GetReadyWorkInTx(ctx, tx, claimFilter)
+	readyIssues, err := GetReadyWorkInTx(ctx, tx, claimFilter, opts)
 	if err != nil {
 		return nil, err
 	}

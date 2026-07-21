@@ -3,6 +3,7 @@ package schema
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
@@ -18,20 +19,59 @@ func expectGateCurrentVersion(mock sqlmock.Sqlmock, version int) {
 }
 
 func TestCheckRemoteMigrateGate(t *testing.T) {
+	// These tests cover the blunt #4515 gate; pin the (default-on) smart
+	// router off so no cached-remote reads hit the sqlmock expectations.
+	t.Setenv(SmartGateEnv, "0")
 	latest := LatestVersion()
 
-	t.Run("escape hatch env var allows migration without any query", func(t *testing.T) {
-		t.Setenv(AllowRemoteMigrateEnv, "1")
+	// expectFiringGate mocks the probe sequence for a behind, remote-backed
+	// database — the only state in which the gate (and the escape hatch) acts.
+	expectFiringGate := func(mock sqlmock.Sqlmock) {
+		expectGateCurrentVersion(mock, 1) // CurrentVersion
+		expectGateCurrentVersion(mock, 1) // PendingVersions -> pending exists
+		mock.ExpectQuery(`SELECT COUNT\(\*\) FROM dolt_remotes`).
+			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	}
+
+	t.Run("escape hatch allows migration when the gate would fire", func(t *testing.T) {
+		for _, v := range []string{"1", "true", "TRUE"} {
+			t.Setenv(AllowRemoteMigrateEnv, v)
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock.New: %v", err)
+			}
+			expectFiringGate(mock)
+			if err := CheckRemoteMigrateGate(context.Background(), db); err != nil {
+				t.Fatalf("%s=%s: expected nil, got %v", AllowRemoteMigrateEnv, v, err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("%s=%s: unmet expectations: %v", AllowRemoteMigrateEnv, v, err)
+			}
+			db.Close()
+		}
+	})
+
+	t.Run("unrecognized escape hatch value stays locked with a hint", func(t *testing.T) {
+		t.Setenv(AllowRemoteMigrateEnv, "yes")
 		db, mock, err := sqlmock.New()
 		if err != nil {
 			t.Fatalf("sqlmock.New: %v", err)
 		}
 		defer db.Close()
-		if err := CheckRemoteMigrateGate(context.Background(), db); err != nil {
-			t.Fatalf("expected nil with escape hatch set, got %v", err)
+		expectFiringGate(mock)
+		gerr := CheckRemoteMigrateGate(context.Background(), db)
+		var gateErr *RemoteMigrateGateError
+		if !errors.As(gerr, &gateErr) {
+			t.Fatalf("expected *RemoteMigrateGateError, got %v", gerr)
+		}
+		if gateErr.UnrecognizedEnv != "yes" {
+			t.Errorf("UnrecognizedEnv = %q, want %q", gateErr.UnrecognizedEnv, "yes")
+		}
+		if msg := gateErr.UserMessage(); !strings.Contains(msg, "not recognized") {
+			t.Errorf("UserMessage missing unrecognized-value hint:\n%s", msg)
 		}
 		if err := mock.ExpectationsWereMet(); err != nil {
-			t.Fatalf("unexpected queries with escape hatch: %v", err)
+			t.Fatalf("unmet expectations: %v", err)
 		}
 	})
 
@@ -128,6 +168,8 @@ func TestCheckRemoteMigrateGate(t *testing.T) {
 // table even when a remote is configured, so the gate must fall back to a probe of
 // the persisted CLI remotes before allowing migration (gastownhall/beads#4268).
 func TestCheckRemoteMigrateGateWithRemoteCheck(t *testing.T) {
+	// Blunt-gate coverage; keep the smart router out of the mock expectations.
+	t.Setenv(SmartGateEnv, "0")
 	t.Run("no SQL remote but fallback reports a remote is blocked", func(t *testing.T) {
 		t.Setenv(AllowRemoteMigrateEnv, "0")
 		db, mock, _ := sqlmock.New()
@@ -212,4 +254,53 @@ func TestCheckRemoteMigrateGateWithRemoteCheck(t *testing.T) {
 			t.Fatalf("unmet expectations: %v", err)
 		}
 	})
+}
+
+// TestRemoteMigrateGateAgentSafety locks the agent-facing safety contract at the
+// source layer: the directive surfaced as the JSON hint is not runnable, and the
+// runnable escape command appears only inside the conditional "migrate" option.
+func TestRemoteMigrateGateAgentSafety(t *testing.T) {
+	e := &RemoteMigrateGateError{CurrentVersion: 49, LatestVersion: 53, Pending: 4}
+
+	// The directive must not be the escape command (the agent footgun).
+	if e.AgentDirective() == e.EscapeHint() {
+		t.Fatalf("AgentDirective must not equal the runnable escape command %q", e.EscapeHint())
+	}
+	if strings.Contains(e.AgentDirective(), AllowRemoteMigrateEnv+"=1 bd migrate") {
+		t.Errorf("AgentDirective must not embed the runnable migrate command: %q", e.AgentDirective())
+	}
+
+	opts := e.Options()
+	if len(opts) != 2 {
+		t.Fatalf("Options len = %d, want 2", len(opts))
+	}
+	byID := map[string]GateOption{}
+	for _, o := range opts {
+		if o.When == "" || o.Risk == "" {
+			t.Errorf("option %q missing When/Risk", o.ID)
+		}
+		byID[o.ID] = o
+	}
+	migrate, ok := byID["migrate"]
+	if !ok {
+		t.Fatal("missing migrate option")
+	}
+	if _, ok := byID["adopt"]; !ok {
+		t.Fatal("missing adopt option")
+	}
+	// The escape command must live under migrate, and nowhere else.
+	foundUnderMigrate := false
+	for _, c := range migrate.Commands {
+		if c == e.EscapeHint() {
+			foundUnderMigrate = true
+		}
+	}
+	if !foundUnderMigrate {
+		t.Errorf("migrate option commands %v must include %q", migrate.Commands, e.EscapeHint())
+	}
+	for _, c := range byID["adopt"].Commands {
+		if c == e.EscapeHint() {
+			t.Errorf("adopt option must not contain the migrate escape command")
+		}
+	}
 }

@@ -7,11 +7,20 @@ import (
 
 	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"github.com/steveyegge/beads/internal/storage/domain"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 )
 
 func (r *issueSQLRepositoryImpl) getReadyWorkIDPage(ctx context.Context, filter types.WorkFilter) (idSrcPage, bool, error) {
-	issuePreds, err := r.buildReadyWorkPredicates(ctx, filter, issuesFilterTables)
+	// Resolve external dependency blocking once for this ready call and feed
+	// the unsatisfied refs into both the issues and wisps predicates, keeping
+	// this stack in ready-semantics parity with the classic issueops stack.
+	unsatisfiedExternalRefs, err := issueops.ResolveReadyExternalBlocksInTx(ctx, r.runner, r.externalOpts)
+	if err != nil {
+		return idSrcPage{}, false, err
+	}
+
+	issuePreds, err := r.buildReadyWorkPredicates(ctx, filter, issuesFilterTables, unsatisfiedExternalRefs)
 	if err != nil {
 		return idSrcPage{}, false, err
 	}
@@ -33,9 +42,11 @@ func (r *issueSQLRepositoryImpl) getReadyWorkIDPage(ctx context.Context, filter 
 	allArgs = append(allArgs, issuePreds.args...)
 
 	if !wispsEmpty {
-		wispFilter := filter
-		wispFilter.IncludeEphemeral = true
-		wispPreds, err := r.buildReadyWorkPredicates(ctx, wispFilter, wispsFilterTables)
+		// The ephemeral predicate applies to wisps too: the wisps table also
+		// holds non-ephemeral NoHistory beads (ephemeral=0), so forcing
+		// IncludeEphemeral here would leak true ephemerals into default ready
+		// work — issueops.getReadyWispsInTx filters them the same way.
+		wispPreds, err := r.buildReadyWorkPredicates(ctx, filter, wispsFilterTables, unsatisfiedExternalRefs)
 		if err != nil {
 			return idSrcPage{}, false, err
 		}
@@ -49,19 +60,19 @@ func (r *issueSQLRepositoryImpl) getReadyWorkIDPage(ctx context.Context, filter 
 	}
 
 	sortOrder := buildReadyWorkOrder(filter.SortPolicy)
-	outerLimit := ""
-	if filter.Limit > 0 {
-		outerLimit = fmt.Sprintf("LIMIT %d OFFSET %d", filter.Limit+1, filter.Offset)
-	}
+	// limitOffsetSQL keeps the +1 overfetch for hasMore AND honors Offset
+	// when Limit is 0 (the hand-rolled guard here used to drop the offset
+	// entirely in that case, bd-6dnrw.44 P3).
+	outerLimit := limitOffsetSQL(filter.Limit, filter.Offset)
 
 	//nolint:gosec // G201: subqueries built from hardcoded fragments and ? placeholders.
 	unionSQL := fmt.Sprintf(
 		"SELECT id, src FROM (%s) merged %s %s",
 		strings.Join(subqueries, " UNION ALL "),
-		sortOrder.sql,
+		sortOrder.SQL,
 		outerLimit,
 	)
-	allArgs = append(allArgs, sortOrder.args...)
+	allArgs = append(allArgs, sortOrder.Args...)
 
 	rows, err := r.runner.QueryContext(ctx, unionSQL, allArgs...)
 	if err != nil {

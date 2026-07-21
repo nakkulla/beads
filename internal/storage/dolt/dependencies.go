@@ -173,6 +173,14 @@ func (s *DoltStore) GetDependenciesWithMetadata(ctx context.Context, issueID str
 	for _, d := range deps {
 		issue, ok := issueMap[d.depID]
 		if !ok {
+			// External refs have no issues/wisps row but are real, counted
+			// edges — synthesize an entry so show/list stay consistent with
+			// the dependency counts (matches
+			// issueops.GetDependenciesWithMetadataInTx). Missing local IDs
+			// stay dropped.
+			if strings.HasPrefix(d.depID, "external:") {
+				results = append(results, issueops.NewExternalDepEntry(d.depID, d.depType))
+			}
 			continue
 		}
 		results = append(results, &types.IssueWithDependencyMetadata{
