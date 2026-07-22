@@ -16,7 +16,17 @@ if [ -z "$CANONICAL" ]; then
     exit 1
 fi
 
+# The canonical version may carry a fork-identifying pre-release suffix
+# (e.g. "1.1.0-fork.1"). The downstream version surfaces below intentionally
+# track the upstream base version ("1.1.0"), so compare them against the base
+# version with any "-fork.<N>" suffix stripped. For a plain canonical version
+# BASE_VERSION equals CANONICAL, preserving the original behavior.
+BASE_VERSION=$(printf '%s' "$CANONICAL" | sed -E 's/-fork\.[0-9]+$//')
+
 echo "Canonical version (from version.go): $CANONICAL"
+if [ "$BASE_VERSION" != "$CANONICAL" ]; then
+    echo "Base version (surfaces compared against): $BASE_VERSION"
+fi
 echo ""
 
 MISMATCH=0
@@ -26,8 +36,8 @@ check_version() {
     local version=$2
     local description=$3
 
-    if [ "$version" != "$CANONICAL" ]; then
-        echo -e "${RED}❌ $description: $version (expected $CANONICAL)${NC}"
+    if [ "$version" != "$BASE_VERSION" ]; then
+        echo -e "${RED}❌ $description: $version (expected $BASE_VERSION)${NC}"
         MISMATCH=1
     else
         echo -e "${GREEN}✓ $description: $version${NC}"
@@ -74,9 +84,13 @@ echo ""
 if [ $MISMATCH -eq 1 ]; then
     echo -e "${RED}❌ Version mismatch detected!${NC}"
     echo ""
-    echo "Run: scripts/update-versions.sh $CANONICAL"
+    echo "Run: scripts/update-versions.sh $BASE_VERSION"
     echo "Or manually update the mismatched files."
     exit 1
 else
-    echo -e "${GREEN}✓ Version files and released-docs policy pass for: $CANONICAL${NC}"
+    if [ "$BASE_VERSION" != "$CANONICAL" ]; then
+        echo -e "${GREEN}✓ Version files and released-docs policy pass for: $CANONICAL (surfaces base $BASE_VERSION)${NC}"
+    else
+        echo -e "${GREEN}✓ Version files and released-docs policy pass for: $CANONICAL${NC}"
+    fi
 fi

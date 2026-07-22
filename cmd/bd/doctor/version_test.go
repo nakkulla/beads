@@ -150,6 +150,44 @@ func TestParseVersionParts(t *testing.T) {
 	}
 }
 
+// TestForkVersionCharacterization pins the CURRENT behavior of the version
+// comparison utilities for the fork-identifying version string "1.1.0-fork.1".
+//
+// These are characterization anchors of existing behavior, not new specs: the
+// comparator splits on "." and fmt.Sscanf reads only the leading integer of each
+// part, so the "-fork" text on the patch segment is ignored while the trailing
+// ".1" segment is parsed as an extra numeric part. The net effect is that the
+// fork build sorts strictly ABOVE the equivalent upstream "1.1.0" release, which
+// is exactly what the fork release pin and the upgrade-tracking path rely on.
+func TestForkVersionCharacterization(t *testing.T) {
+	const forkVersion = "1.1.0-fork.1"
+
+	if got := CompareVersions(forkVersion, "1.0.5"); got != 1 {
+		t.Errorf("CompareVersions(%q, %q) = %d, want 1", forkVersion, "1.0.5", got)
+	}
+	if got := CompareVersions(forkVersion, "1.1.0"); got != 1 {
+		t.Errorf("CompareVersions(%q, %q) = %d, want 1", forkVersion, "1.1.0", got)
+	}
+	if got := CompareVersions("1.1.0", forkVersion); got != -1 {
+		t.Errorf("CompareVersions(%q, %q) = %d, want -1", "1.1.0", forkVersion, got)
+	}
+	if !IsValidSemver(forkVersion) {
+		t.Errorf("IsValidSemver(%q) = false, want true", forkVersion)
+	}
+
+	parts := ParseVersionParts(forkVersion)
+	wantParts := []int{1, 1, 0, 1}
+	if len(parts) != len(wantParts) {
+		t.Errorf("ParseVersionParts(%q) = %v, want %v", forkVersion, parts, wantParts)
+	} else {
+		for i := range wantParts {
+			if parts[i] != wantParts[i] {
+				t.Errorf("ParseVersionParts(%q)[%d] = %d, want %d", forkVersion, i, parts[i], wantParts[i])
+			}
+		}
+	}
+}
+
 // TestCheckMetadataVersionTracking_FileNotFound verifies graceful handling when
 // .local_version file doesn't exist.
 func TestCheckMetadataVersionTracking_FileNotFound(t *testing.T) {
