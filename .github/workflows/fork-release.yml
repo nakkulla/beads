@@ -1,0 +1,171 @@
+name: Fork Release
+
+# Publishes a fork prerelease (tags like v1.1.0-fork.1) to nakkulla/beads with
+# exactly four assets: linux amd64/arm64 (goreleaser) + darwin arm64/amd64
+# (native macOS job). Self-contained; does not touch upstream release.yml.
+
+on:
+  push:
+    tags:
+      - 'v*-fork.*'
+
+permissions:
+  contents: write
+
+env:
+  BD_DISABLE_METRICS: "1"
+  BD_DISABLE_EVENT_FLUSH: "1"
+
+jobs:
+  goreleaser:
+    # Only ever run in the fork; never in any other repository.
+    if: github.repository == 'nakkulla/beads'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Verify tag matches version.go
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          code_version="$(grep 'Version = ' cmd/bd/version.go | sed 's/.*"\(.*\)".*/\1/')"
+          if [ "$tag_version" != "$code_version" ]; then
+            echo "ERROR: tag v$tag_version does not match cmd/bd/version.go ($code_version)" >&2
+            exit 1
+          fi
+          echo "OK: tag and version.go agree on $code_version"
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Install ARM64 cross-compilation toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89 # v7
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --clean --parallelism 1 --config .goreleaser.fork.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify no ICU runtime dependency on Linux binaries
+        run: |
+          for bin in dist/bd-linux-*/bd; do
+            [ -f "$bin" ] || continue
+            if ldd "$bin" 2>/dev/null | grep -qi icu; then
+              echo "ERROR: $bin has unexpected ICU runtime dependency" >&2
+              ldd "$bin" >&2
+              exit 1
+            fi
+            echo "OK: $bin has no ICU runtime dependency"
+          done
+
+  goreleaser-macos:
+    # Build macOS binaries with CGO_ENABLED=1 for embedded Dolt support, on
+    # native macOS. Runs after the linux job has created the GitHub release.
+    if: github.repository == 'nakkulla/beads'
+    needs: goreleaser
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build darwin/arm64
+        env:
+          CGO_ENABLED: "1"
+          GOARCH: arm64
+          GOOS: darwin
+        run: |
+          go build -tags "gms_pure_go netgo" \
+            -ldflags "-s -w -X main.Version=${{ steps.version.outputs.version }} -X main.Build=$(git rev-parse --short HEAD) -X main.Commit=$(git rev-parse HEAD) -X main.Branch=$(git branch --show-current)" \
+            -o bd-darwin-arm64 ./cmd/bd
+          ./scripts/verify-cgo.sh bd-darwin-arm64
+          # Verify no ICU runtime dependency leaked through
+          if otool -L bd-darwin-arm64 | grep -qi icu; then
+            echo "ERROR: bd-darwin-arm64 has unexpected ICU runtime dependency" >&2
+            otool -L bd-darwin-arm64 >&2
+            exit 1
+          fi
+          codesign -s - -f bd-darwin-arm64
+
+      - name: Build darwin/amd64
+        env:
+          CGO_ENABLED: "1"
+          GOARCH: amd64
+          GOOS: darwin
+          # macos-latest is arm64; cross-compile CGO C code for x86_64
+          CC: clang -arch x86_64
+          CXX: clang++ -arch x86_64
+        run: |
+          go build -tags "gms_pure_go netgo" \
+            -ldflags "-s -w -X main.Version=${{ steps.version.outputs.version }} -X main.Build=$(git rev-parse --short HEAD) -X main.Commit=$(git rev-parse HEAD) -X main.Branch=$(git branch --show-current)" \
+            -o bd-darwin-amd64 ./cmd/bd
+          ./scripts/verify-cgo.sh bd-darwin-amd64
+          if otool -L bd-darwin-amd64 | grep -qi icu; then
+            echo "ERROR: bd-darwin-amd64 has unexpected ICU runtime dependency" >&2
+            otool -L bd-darwin-amd64 >&2
+            exit 1
+          fi
+          codesign -s - -f bd-darwin-amd64
+
+      - name: Smoke test embedded dolt (arm64 native)
+        run: |
+          # arm64 binary runs natively on macos-latest
+          bd="$(pwd)/bd-darwin-arm64"
+          tmpdir=$(mktemp -d)
+          projdir="$tmpdir/smoketest"
+          mkdir -p "$projdir"
+          cd "$projdir"
+          git init -b main
+          git config user.name "CI" && git config user.email "ci@test"
+          git commit --allow-empty -m "init"
+          "$bd" init --prefix smoketest
+          "$bd" create "smoke test" --type task
+          "$bd" list | grep -q "smoke test"
+          # Verify embedded mode (no server process)
+          if pgrep -f "dolt sql-server" >/dev/null 2>&1; then
+            echo "ERROR: unexpected dolt sql-server process running" >&2
+            exit 1
+          fi
+          echo "OK: embedded dolt smoke test passed"
+          cd - >/dev/null
+          rm -rf "$tmpdir"
+
+      - name: Package archives
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          for arch in arm64 amd64; do
+            staging="beads_${version}_darwin_${arch}"
+            mkdir -p "$staging"
+            cp "bd-darwin-${arch}" "$staging/bd"
+            cp LICENSE README.md CHANGELOG.md "$staging/"
+            tar -czf "${staging}.tar.gz" -C "$staging" .
+          done
+
+      - name: Upload to GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          for arch in arm64 amd64; do
+            gh release upload "v${version}" "beads_${version}_darwin_${arch}.tar.gz" --clobber
+          done

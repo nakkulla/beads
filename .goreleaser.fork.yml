@@ -1,0 +1,110 @@
+# GoReleaser configuration for the beads fork (nakkulla/beads).
+#
+# Derived from upstream .goreleaser.yml. Keeps ONLY the two Linux CGO builds
+# (amd64, arm64) and publishes a GitHub prerelease to nakkulla/beads. The
+# darwin arm64/amd64 archives are produced by the macOS job in
+# .github/workflows/fork-release.yml and uploaded to the same release.
+#
+# See https://goreleaser.com for documentation.
+
+version: 2
+
+# Set explicitly so archive/release names are guaranteed to start with "beads_"
+# regardless of how goreleaser would otherwise derive the project name.
+project_name: beads
+
+before:
+  hooks:
+    # Ensure dependencies are up to date. (Upstream's gen-winres.sh hook is
+    # dropped: it only produces Windows PE resources, and the fork ships no
+    # Windows build.)
+    - go mod tidy
+
+builds:
+  - id: bd-linux-amd64
+    main: ./cmd/bd
+    binary: bd
+    env:
+      - CGO_ENABLED=1
+      - CC=gcc
+      - CXX=g++
+    tags:
+      - gms_pure_go
+    goos:
+      - linux
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.Build={{.ShortCommit}}
+      - -X main.Commit={{.Commit}}
+      - -X main.Branch={{.Branch}}
+    hooks:
+      post:
+        - ./scripts/verify-cgo.sh "{{ .Path }}"
+
+  - id: bd-linux-arm64
+    main: ./cmd/bd
+    binary: bd
+    env:
+      - CGO_ENABLED=1
+      - CC=aarch64-linux-gnu-gcc
+    tags:
+      - gms_pure_go
+    goos:
+      - linux
+    goarch:
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.Build={{.ShortCommit}}
+      - -X main.Commit={{.Commit}}
+      - -X main.Branch={{.Branch}}
+    hooks:
+      post:
+        - ./scripts/verify-cgo.sh "{{ .Path }}"
+
+archives:
+  - id: bd-archive
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+
+# Exactly four release assets are wanted (2 linux + 2 darwin). goreleaser emits
+# checksums.txt as an additional asset unless disabled, so disable it here.
+checksum:
+  disable: true
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "Merge pull request"
+      - "Merge branch"
+  groups:
+    - title: "Features"
+      regexp: '^.*feat(\(\w+\))?:.*$'
+      order: 0
+    - title: "Bug Fixes"
+      regexp: '^.*fix(\(\w+\))?:.*$'
+      order: 1
+    - title: "Others"
+      order: 999
+
+release:
+  github:
+    owner: nakkulla
+    name: beads
+  draft: false
+  # The -fork.N tags carry a semver prerelease component, so `auto` marks the
+  # GitHub release as a prerelease.
+  prerelease: auto
+  name_template: "v{{.Version}}"
