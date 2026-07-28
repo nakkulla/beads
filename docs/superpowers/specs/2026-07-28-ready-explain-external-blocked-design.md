@@ -47,31 +47,45 @@ open 상태이면서 유일한 blocker가 미충족 `external:<project>:<capabil
 
 ## 3. 설계
 
-### 3.1 신규 storage 헬퍼
+### 3.1 explain 전용 storage API — 단일 resolution 공유
 
-`internal/storage/issueops/`에 신규 파일(예: `external_blocked.go`):
+cmd 레이어는 `DBTX`를 직접 다루지 않고 proxied 경로는 `IssueUseCase`만
+보유하므로, tx 단위 헬퍼를 cmd에서 호출하는 형태는 불가하다. 또한
+`GetReadyWork`는 union을 내부에서 소비하고 노출하지 않으므로, explain이
+별도로 재해석하면 ready/blocked 판정 시점이 어긋날 수 있다. 따라서:
 
-- `GetExternallyBlockedInTx(ctx, tx, unsatisfiedRefs []string)` —
-  `dependencies`·`wisp_dependencies` 양쪽에서
-  `type IN ('blocks','conditional-blocks') AND depends_on_external IN (refs)`인
-  이슈/wisp를 수집해 `issueID → []ref` 맵과 이슈 본체를 반환한다.
-- status 필터는 **ready 후보 status 집합과 동일**하게 적용한다(닫힘·resolved 등
-  ready 후보가 아닌 status는 제외). 기존 ready 쿼리가 쓰는 술어 상수를
-  재사용한다.
-- ref 배치는 기존 `QueryBatchSize` 규약을 따른다.
-- ref 집합은 호출자가 `ResolveReadyExternalBlocksInTx`(union 반환,
-  `external_resolution.go:235-248`)에서 얻어 전달한다 — 이 헬퍼는 재해석하지
-  않는다.
+- storage 인터페이스에 explain 전용 메서드를 추가한다(예:
+  `GetReadyWorkWithExternalBlocked(ctx, filter)`): **하나의 tx 안에서
+  `ResolveReadyExternalBlocksInTx`(union 반환, `external_resolution.go:235-248`)
+  를 정확히 1회 호출**하고, 같은 ref 집합으로 ① 기존 ready 술어의 ready 목록과
+  ② external-blocked 이슈/wisp `[]BlockedIssue`(BlockedBy = raw ref 문자열,
+  이슈 본체 포함)를 **함께** 반환한다. ready/blocked가 단일 resolution을
+  공유하므로 재해석으로 인한 판정 불일치가 구조적으로 불가능하다.
+  `runReadyExplain`은 ready 조회를 이 메서드로 교체하고, 기존 `GetReadyWork`는
+  다른 호출자를 위해 무변경 유지한다. 공유 로직은
+  `internal/storage/issueops`에 두고 direct dolt·embeddeddolt·
+  proxied(`internal/storage/domain/db`, `IssueUseCase` 위임 경유) 세 경로
+  모두에 구현·배선한다 (`external_resolution.go:233-234` 패리티 주석 준수).
+- 후보 술어는 **`runReadyExplain`이 ready 조회에 쓰는 정확한 후보 술어에서
+  external 제외 조건만 제거한 것**으로 정의한다 — status(`StatusOpen` 전달),
+  pinned·deferred·ephemeral·issue type·`is_blocked` 필터를 그대로 포함.
+  즉 "external ref만 아니었으면 ready였을 이슈" 집합이다. status만 보는
+  근사는 금지(닫힘·deferred·pinned·stored-blocked 누출 방지).
+- 수집 조건: `dependencies`·`wisp_dependencies` 양쪽에서
+  `type IN ('blocks','conditional-blocks') AND depends_on_external IN (refs)`.
+  ref 배치는 기존 `QueryBatchSize` 규약을 따른다.
 
 ### 3.2 --explain 조립 합류
 
 `cmd/bd/ready.go` `runReadyExplain`(493-618)에서 `GetBlockedIssues` 결과에
-합류한 뒤 `BuildReadyExplanation`을 호출한다:
+신규 메서드 결과를 합류한 뒤 `BuildReadyExplanation`을 호출한다:
 
-- blocked 목록에 없는 이슈 → `types.BlockedIssue{BlockedBy: []string{ref...}}`
-  로 append.
-- 이미 있는 이슈(로컬 blocker 동시 보유) → 해당 엔트리 `BlockedBy`에 ref를
-  append (중복 없이).
+- merge 기준은 **기존 `GetBlockedIssues` 결과의 ID 집합**이다: 집합에 없는
+  이슈 → `BlockedIssue{BlockedBy: [ref...]}` append; 집합에 있는 이슈(로컬
+  blocker 동시 보유) → 그 엔트리의 `BlockedBy`에 ref를 중복 없이 append.
+- **merge/append 후 각 대상 엔트리의 `BlockedByCount = len(BlockedBy)`로
+  재설정한다** — `BuildReadyExplanation`은 이 필드를 재계산하지 않고 복사만
+  하므로, 생략 시 external-only는 0, 혼합은 로컬 수만 출력된다.
 - `BuildReadyExplanation`·`BlockedItem`·`BlockerInfo` 타입은 무변경. external
   ref는 blockerMap 미스로 기존 missing-blocker 경로(`explain_test.go:154-176`
   선례)대로 **ID-only `BlockerInfo{ID: "external:<project>:<capability>"}`**
@@ -79,8 +93,6 @@ open 상태이면서 유일한 blocker가 미충족 `external:<project>:<capabil
   일치).
 - summary 카운트는 합류된 입력으로 계산되므로 자동 정합.
 - 텍스트 모드 `--explain`도 같은 데이터로 렌더 — 별도 처리 없음.
-- 저장소 스택 패리티: proxied-server 스택(`domain/db`)의 `--explain` 경로도
-  같은 합류를 적용한다 (`external_resolution.go:233-234` 패리티 주석 준수).
 
 ## 4. 소비자 영향
 
@@ -90,13 +102,21 @@ open 상태이면서 유일한 blocker가 미충족 `external:<project>:<capabil
 
 ## 5. 검증 (acceptance)
 
-1. external-only open 이슈가 `--explain` `blocked`에 ID-only blocker로 등장.
-2. 로컬+external 혼합 이슈의 `blocked_by`에 external ref가 merge되어 등장.
+1. external-only open 이슈가 `--explain` `blocked`에 ID-only blocker로 등장하고
+   `blocked_by_count == len(blocked_by)`.
+2. 로컬+external 혼합 이슈의 `blocked_by`에 external ref가 merge되어 등장하고
+   `blocked_by_count`가 merge 후 총수와 일치.
 3. 비서버 모드/매핑 미등록(fail-closed)에서도 1이 성립 (union 의미론).
 4. wisp에도 1이 성립.
 5. 충족된(provides 라벨 closed) ref는 blocked에 나타나지 않고 ready 복귀.
 6. `bd ready` 비-explain 출력·`bd list --status blocked`·`schema_version` 불변.
-7. 기존 explain 단위/통합 테스트 전부 green + 신규 케이스(1-5) 추가
+   6a. 같은 `--explain` 실행 안에서 ready와 blocked는 상호배제 — 동일 이슈가
+   양쪽에 나타나지 않는다(단일 resolution 공유 검증).
+7. 음성 테스트: closed·deferred·pinned·stored-status-blocked 이슈는 external
+   ref를 가져도 신규 blocked 엔트리로 누출되지 않는다(stored-blocked는 기존
+   경로 엔트리에 merge만 허용).
+8. proxied(domain/db) 스택 통합 테스트에서 1·2가 동일하게 성립.
+9. 기존 explain 단위/통합 테스트 전부 green + 신규 케이스(1-8) 추가
    (`internal/types/explain_test.go`는 무변경 통과가 기대치 — 타입 무변경이므로).
 
 ## 6. Follow-up
