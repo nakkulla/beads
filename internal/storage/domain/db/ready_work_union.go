@@ -124,6 +124,7 @@ func (r *issueSQLRepositoryImpl) getReadyWorkWithExternalBlockedUnion(ctx contex
 	if err != nil {
 		return domain.SearchPage{}, nil, err
 	}
+	readyPage.Items = issueops.DropExternalBlockedFromReady(readyPage.Items, blocked)
 	return readyPage, blocked, nil
 }
 

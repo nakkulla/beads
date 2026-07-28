@@ -212,6 +212,37 @@ func TestExternalExplain_NoLeakageFromNonExternalExclusions(t *testing.T) {
 	}
 }
 
+// Acceptance 6a under cross-table duplication: when an ID exists in BOTH the
+// issues and wisps tables, the wisp record is canonical (be-iabdi). Whichever
+// side carries the external edge, the ID must land in exactly one half.
+func TestExternalExplain_CrossTableIDStaysInOneHalf(t *testing.T) {
+	skipUnlessEmbeddedDolt(t)
+	e := newDualEngine(t)
+	ctx := t.Context()
+
+	// x-wisp-dep: canonical wisp is external-blocked, stale issues row is clean.
+	e.insertIssue(t, ctx, "mainpx", "x-wisp-dep", "open")
+	e.insertWisp(t, ctx, "mainpx", "x-wisp-dep", "open")
+	e.insertExternalDep(t, ctx, "mainpx", "wisp_dependencies", "wd-x", "x-wisp-dep", "external:beads:cap-b")
+
+	// x-issue-dep: stale issues row carries the edge, canonical wisp is clean.
+	e.insertIssue(t, ctx, "mainpx", "x-issue-dep", "open")
+	e.insertWisp(t, ctx, "mainpx", "x-issue-dep", "open")
+	e.insertExternalDep(t, ctx, "mainpx", "dependencies", "d-x", "x-issue-dep", "external:beads:cap-b")
+
+	ready, eb := e.readyExplain(t, ctx, explainFilter(), beadsOpts())
+
+	// The canonical wisp decides: blocked for the first ID, ready for the second.
+	assertIDs(t, ready, []string{"x-issue-dep"})
+	if got := candidateRefs(t, eb, "x-wisp-dep"); len(got) != 1 || got[0] != "external:beads:cap-b" {
+		t.Fatalf("x-wisp-dep blocked_by = %v", got)
+	}
+	assertNotCandidate(t, eb, "x-issue-dep")
+	for _, id := range ready {
+		assertNotCandidate(t, eb, id)
+	}
+}
+
 // Acceptance 2 (storage half): a row with BOTH a live local blocker and an
 // external ref is reported as merge material, so the CLI can complete the
 // blocked entry the stored path already emits for it.

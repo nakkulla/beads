@@ -104,6 +104,29 @@ func CollectExternalBlockedInTx(
 	}
 	sort.Strings(ids)
 
+	// An ID present in both tables is canonically the wisp record (be-iabdi,
+	// the same preference mergeReadyWisps applies). An issues-table hit for
+	// such an ID is a stale row, and honoring it would let one ID sit in both
+	// halves of a single explain run.
+	canonicalWisps, err := WispIDSetInTx(ctx, tx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("external-blocked: wisp routing: %w", err)
+	}
+	kept := ids[:0]
+	for _, id := range ids {
+		_, fromWispScan := wispSet[id]
+		if _, isWisp := canonicalWisps[id]; isWisp && !fromWispScan {
+			delete(refsByID, id)
+			delete(storedBlocked, id)
+			continue
+		}
+		kept = append(kept, id)
+	}
+	ids = kept
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
 	out := &types.ExternalBlocked{}
 	var candidateIDs []string
 	for _, id := range ids {
@@ -142,6 +165,41 @@ func CollectExternalBlockedInTx(
 		})
 	}
 	return out, nil
+}
+
+// DropExternalBlockedFromReady removes from ready every row the
+// external-blocked scan claimed. Both halves come from one resolution, so they
+// can only overlap when an ID exists in BOTH the issues and wisps tables
+// (be-iabdi): the canonical wisp record is external-blocked while the ready
+// path still carries the stale issues row for that ID. Ready and blocked must
+// stay mutually exclusive within one `bd ready --explain` run.
+func DropExternalBlockedFromReady(ready []*types.Issue, blocked *types.ExternalBlocked) []*types.Issue {
+	if blocked == nil || len(ready) == 0 {
+		return ready
+	}
+	if len(blocked.Candidates) == 0 && len(blocked.StoredBlockedRefs) == 0 {
+		return ready
+	}
+	drop := make(map[string]struct{}, len(blocked.Candidates)+len(blocked.StoredBlockedRefs))
+	for _, c := range blocked.Candidates {
+		if c != nil {
+			drop[c.Issue.ID] = struct{}{}
+		}
+	}
+	for id := range blocked.StoredBlockedRefs {
+		drop[id] = struct{}{}
+	}
+	out := make([]*types.Issue, 0, len(ready))
+	for _, iss := range ready {
+		if iss == nil {
+			continue
+		}
+		if _, skip := drop[iss.ID]; skip {
+			continue
+		}
+		out = append(out, iss)
+	}
+	return out
 }
 
 type externalBlockedCandidate struct {

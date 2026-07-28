@@ -138,7 +138,7 @@ func GetReadyWorkWithExternalBlockedInTx(
 	if err != nil {
 		return nil, nil, err
 	}
-	return ready, blocked, nil
+	return DropExternalBlockedFromReady(ready, blocked), blocked, nil
 }
 
 //nolint:gosec // G201: whereSQL/orderBySQL built from hardcoded strings and ? placeholders
