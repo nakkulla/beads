@@ -36,16 +36,15 @@ func buildReadyWorkOrder(policy types.SortPolicy) sqlbuild.ReadyWorkOrder {
 	return sqlbuild.BuildReadyWorkOrder(policy, "created_at", "priority")
 }
 
-// buildReadyWorkPredicates computes the ID sets the ready-work WHERE clause
-// needs (children of deferred parents, parent descendants), then delegates
-// the clause text to sqlbuild so both stacks share ready semantics.
-func buildReadyWorkPredicates(ctx context.Context, tx DBTX, filter types.WorkFilter, tables FilterTables, unsatisfiedExternalRefs []string) (*readyWorkPredicates, error) {
+// buildReadyWorkWhereInputs computes the ID sets the ready-work WHERE clause
+// folds in (children of deferred parents, parent descendants). External refs
+// are not part of it: callers set that field themselves.
+func buildReadyWorkWhereInputs(ctx context.Context, tx DBTX, filter types.WorkFilter) (sqlbuild.ReadyWorkWhereInputs, error) {
 	var inputs sqlbuild.ReadyWorkWhereInputs
-	inputs.UnsatisfiedExternalRefs = unsatisfiedExternalRefs
 	if !filter.IncludeDeferred {
 		deferredChildIDs, dcErr := getChildrenOfDeferredParentsInTx(ctx, tx)
 		if dcErr != nil {
-			return nil, fmt.Errorf("get ready work: compute deferred parent children: %w", dcErr)
+			return inputs, fmt.Errorf("get ready work: compute deferred parent children: %w", dcErr)
 		}
 		inputs.DeferredChildIDs = deferredChildIDs
 	}
@@ -56,10 +55,22 @@ func buildReadyWorkPredicates(ctx context.Context, tx DBTX, filter types.WorkFil
 	if filter.ParentID != nil {
 		descendantIDs, descErr := GetDescendantIDsInTx(ctx, tx, *filter.ParentID, 0)
 		if descErr != nil {
-			return nil, fmt.Errorf("get parent descendants: %w", descErr)
+			return inputs, fmt.Errorf("get parent descendants: %w", descErr)
 		}
 		inputs.ParentDescendantIDs = descendantIDs
 	}
+	return inputs, nil
+}
+
+// buildReadyWorkPredicates computes the ID sets the ready-work WHERE clause
+// needs (children of deferred parents, parent descendants), then delegates
+// the clause text to sqlbuild so both stacks share ready semantics.
+func buildReadyWorkPredicates(ctx context.Context, tx DBTX, filter types.WorkFilter, tables FilterTables, unsatisfiedExternalRefs []string) (*readyWorkPredicates, error) {
+	inputs, err := buildReadyWorkWhereInputs(ctx, tx, filter)
+	if err != nil {
+		return nil, err
+	}
+	inputs.UnsatisfiedExternalRefs = unsatisfiedExternalRefs
 
 	whereSQL, args, err := sqlbuild.BuildReadyWorkWhere(filter, tables, inputs)
 	if err != nil {
@@ -83,7 +94,6 @@ func buildReadyWorkPredicates(ctx context.Context, tx DBTX, filter types.WorkFil
 	}, nil
 }
 
-//nolint:gosec // G201: whereSQL/orderBySQL built from hardcoded strings and ? placeholders
 func GetReadyWorkInTx(
 	ctx context.Context,
 	tx DBTX,
@@ -94,6 +104,50 @@ func GetReadyWorkInTx(
 	if err != nil {
 		return nil, err
 	}
+	return readyWorkForRefsInTx(ctx, tx, filter, unsatisfiedExternalRefs)
+}
+
+// GetReadyWorkWithExternalBlockedInTx resolves external dependency blocking
+// exactly once and derives BOTH results from that single resolution: the ready
+// list (external-blocked rows excluded) and the external-blocked rows
+// themselves. Sharing one resolution is what makes ready and blocked mutually
+// exclusive within a single `bd ready --explain` run; a second, independent
+// resolution could disagree because the answer lives in another database.
+func GetReadyWorkWithExternalBlockedInTx(
+	ctx context.Context,
+	tx DBTX,
+	filter types.WorkFilter,
+	opts ExternalResolverOptions,
+) ([]*types.Issue, *types.ExternalBlocked, error) {
+	unsatisfiedExternalRefs, err := ResolveReadyExternalBlocksInTx(ctx, tx, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	ready, err := readyWorkForRefsInTx(ctx, tx, filter, unsatisfiedExternalRefs)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(unsatisfiedExternalRefs) == 0 {
+		return ready, nil, nil
+	}
+	inputs, err := buildReadyWorkWhereInputs(ctx, tx, filter)
+	if err != nil {
+		return nil, nil, err
+	}
+	blocked, err := CollectExternalBlockedInTx(ctx, tx, filter, unsatisfiedExternalRefs, inputs)
+	if err != nil {
+		return nil, nil, err
+	}
+	return ready, blocked, nil
+}
+
+//nolint:gosec // G201: whereSQL/orderBySQL built from hardcoded strings and ? placeholders
+func readyWorkForRefsInTx(
+	ctx context.Context,
+	tx DBTX,
+	filter types.WorkFilter,
+	unsatisfiedExternalRefs []string,
+) ([]*types.Issue, error) {
 	preds, err := buildReadyWorkPredicates(ctx, tx, filter, IssuesFilterTables, unsatisfiedExternalRefs)
 	if err != nil {
 		return nil, err

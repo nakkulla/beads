@@ -191,7 +191,7 @@ func runReadyProxiedExplain(ctx context.Context, uw uow.UnitOfWork, _ readyInput
 		Status:     types.StatusOpen,
 		SortPolicy: types.SortPolicyPriority,
 	}
-	readyPage, err := uw.IssueUseCase().GetReadyWork(ctx, filter)
+	readyPage, externalBlocked, err := uw.IssueUseCase().GetReadyWorkWithExternalBlocked(ctx, filter)
 	if err != nil {
 		FatalErrorRespectJSON("%v", err)
 	}
@@ -201,6 +201,7 @@ func runReadyProxiedExplain(ctx context.Context, uw uow.UnitOfWork, _ readyInput
 	if err != nil {
 		FatalErrorRespectJSON("%v", err)
 	}
+	blockedIssues = mergeExternalBlocked(blockedIssues, externalBlocked)
 
 	readyIDs := make([]string, len(readyIssues))
 	for i, issue := range readyIssues {

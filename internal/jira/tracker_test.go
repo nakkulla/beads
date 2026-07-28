@@ -693,6 +693,9 @@ func (s *configStore) GetReadyWork(_ context.Context, _ types.WorkFilter) ([]*ty
 func (s *configStore) GetReadyWorkWithCounts(_ context.Context, _ types.WorkFilter) ([]*types.IssueWithCounts, error) {
 	return nil, nil
 }
+func (s *configStore) GetReadyWorkWithExternalBlocked(_ context.Context, _ types.WorkFilter) ([]*types.Issue, *types.ExternalBlocked, error) {
+	return nil, nil, nil
+}
 func (s *configStore) GetBlockedIssues(_ context.Context, _ types.WorkFilter) ([]*types.BlockedIssue, error) {
 	return nil, nil
 }

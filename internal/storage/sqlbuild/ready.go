@@ -84,6 +84,12 @@ type ReadyWorkWhereInputs struct {
 	// from ready work. Blocking is computed here at query time; stored
 	// is_blocked is never set for external targets.
 	UnsatisfiedExternalRefs []string
+	// IncludeStoredBlocked drops the "is_blocked = 0" predicate. Ready work
+	// never sets it; the `bd ready --explain` external-blocked scan does, so a
+	// row that already carries a local blocker can still contribute its
+	// external refs to the blocked entry it already has. The caller must then
+	// separate stored-blocked rows itself — they are merge material only.
+	IncludeStoredBlocked bool
 }
 
 // BuildReadyWorkWhere renders the full ready-work WHERE clause for one table
@@ -99,7 +105,9 @@ func BuildReadyWorkWhere(filter types.WorkFilter, tables FilterTables, in ReadyW
 	whereClauses := []string{
 		statusClause,
 		"(pinned = 0 OR pinned IS NULL)",
-		"is_blocked = 0",
+	}
+	if !in.IncludeStoredBlocked {
+		whereClauses = append(whereClauses, "is_blocked = 0")
 	}
 	if !filter.IncludeEphemeral {
 		whereClauses = append(whereClauses, "(ephemeral = 0 OR ephemeral IS NULL)")

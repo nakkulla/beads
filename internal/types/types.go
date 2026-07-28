@@ -1015,6 +1015,23 @@ type BlockedIssue struct {
 	BlockedBy      []string `json:"blocked_by"`
 }
 
+// ExternalBlocked carries the external-dependency half of a ready explanation.
+// Stored is_blocked is never set for external:<project>:<capability> targets
+// (satisfaction lives in another database and would go stale), so these rows
+// reach the explain assembly separately from GetBlockedIssues. It is transport
+// between storage and the CLI; nothing here is serialized.
+type ExternalBlocked struct {
+	// Candidates would be ready work but for their unsatisfied external refs:
+	// they carry no stored blocker, so they belong in the blocked array on
+	// their own. BlockedBy holds the raw refs.
+	Candidates []*BlockedIssue
+	// StoredBlockedRefs maps an already-stored-blocked issue ID to its
+	// unsatisfied external refs. These rows are merge material only — the
+	// stored blocked path decides whether they appear at all, and this only
+	// completes the blocker list of an entry that path already emitted.
+	StoredBlockedRefs map[string][]string
+}
+
 // ReadyExplanation provides reasoning for why issues are ready or blocked.
 type ReadyExplanation struct {
 	Ready   []ReadyItem    `json:"ready"`

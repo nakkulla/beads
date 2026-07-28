@@ -428,3 +428,80 @@ func (s *testSuite) TestParitySortTieBreak() {
 		s.Equal(wantLexical, domCounts, "sort=%q (counts): ties must break on id ASC", sortBy)
 	}
 }
+
+// classicReadyExplain runs the combined `bd ready --explain` query through the
+// direct stack.
+func (s *testSuite) classicReadyExplain(filter types.WorkFilter) ([]*types.Issue, *types.ExternalBlocked) {
+	tx := s.beginClassicTx()
+	defer func() { _ = tx.Rollback() }()
+	ready, blocked, err := issueops.GetReadyWorkWithExternalBlockedInTx(s.Ctx(), tx, filter, issueops.ExternalResolverOptions{})
+	s.Require().NoError(err)
+	return ready, blocked
+}
+
+func (s *testSuite) domainReadyExplain(filter types.WorkFilter) (domain.SearchPage, *types.ExternalBlocked) {
+	page, blocked, err := s.issueRepo().GetReadyWorkWithExternalBlocked(s.Ctx(), filter)
+	s.Require().NoError(err)
+	return page, blocked
+}
+
+func externalCandidateRefs(eb *types.ExternalBlocked) map[string][]string {
+	out := map[string][]string{}
+	if eb == nil {
+		return out
+	}
+	for _, c := range eb.Candidates {
+		out[c.Issue.ID] = c.BlockedBy
+	}
+	return out
+}
+
+// Case 10: `bd ready --explain` external-blocked assembly is identical across
+// stacks. The repository's resolver options are the zero value here, which is
+// the fail-closed verdict — every external ref is unresolvable, and
+// unresolvable blocks exactly like unsatisfied (union semantics).
+func (s *testSuite) TestParityReadyExplainExternalBlocked() {
+	base := s.parityBase()
+	for n, id := range []string{"bd-par-ext-free", "bd-par-ext-only", "bd-par-ext-blocker", "bd-par-ext-mixed"} {
+		minute := n
+		s.seedParityIssue(id, func(i *types.Issue) {
+			i.CreatedAt = base.Add(time.Duration(minute) * time.Minute)
+		}, false)
+	}
+
+	for _, row := range [][2]string{
+		{"bd-par-ext-dep-only", "bd-par-ext-only"},
+		{"bd-par-ext-dep-mixed", "bd-par-ext-mixed"},
+	} {
+		_, err := s.Runner().ExecContext(s.Ctx(),
+			"INSERT INTO dependencies (id, issue_id, depends_on_issue_id, depends_on_wisp_id, depends_on_external, type, created_by) VALUES (?, ?, NULL, NULL, ?, 'blocks', 'tester')",
+			row[0], row[1], "external:parity:cap-a")
+		s.Require().NoError(err)
+	}
+	// The mixed row also carries a live local blocker, so it is stored-blocked.
+	s.classicAddDep("bd-par-ext-mixed", "bd-par-ext-blocker", types.DepBlocks)
+
+	filter := types.WorkFilter{Status: types.StatusOpen, SortPolicy: types.SortPolicyPriority}
+	classicReady, classicBlocked := s.classicReadyExplain(filter)
+	domainPage, domainBlocked := s.domainReadyExplain(filter)
+
+	s.Equal(idsOf(classicReady), idsOf(domainPage.Items), "explain ready: same sequence")
+	s.ElementsMatch([]string{"bd-par-ext-free", "bd-par-ext-blocker"}, idsOf(domainPage.Items),
+		"external-blocked rows stay out of ready in both stacks")
+
+	s.Equal(externalCandidateRefs(classicBlocked), externalCandidateRefs(domainBlocked),
+		"explain external-blocked candidates: same rows and refs")
+	s.Equal(map[string][]string{"bd-par-ext-only": {"external:parity:cap-a"}},
+		externalCandidateRefs(domainBlocked),
+		"the external-only row is a blocked candidate with the raw ref as its blocker")
+
+	s.Require().NotNil(domainBlocked)
+	s.Equal(classicBlocked.StoredBlockedRefs, domainBlocked.StoredBlockedRefs,
+		"explain stored-blocked refs: same merge material")
+	s.Equal(map[string][]string{"bd-par-ext-mixed": {"external:parity:cap-a"}}, domainBlocked.StoredBlockedRefs,
+		"a row with both a local blocker and an external ref is merge material, not a new entry")
+
+	for _, c := range domainBlocked.Candidates {
+		s.Equal(len(c.BlockedBy), c.BlockedByCount, "blocked_by_count must match blocked_by")
+	}
+}

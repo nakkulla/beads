@@ -499,7 +499,7 @@ func runReadyExplain(_ *cobra.Command) error {
 		Status:     types.StatusOpen,
 		SortPolicy: types.SortPolicyPriority,
 	}
-	readyIssues, err := activeStore.GetReadyWork(ctx, filter)
+	readyIssues, externalBlocked, err := activeStore.GetReadyWorkWithExternalBlocked(ctx, filter)
 	if err != nil {
 		return HandleErrorRespectJSON("%v", err)
 	}
@@ -508,6 +508,7 @@ func runReadyExplain(_ *cobra.Command) error {
 	if err != nil {
 		return HandleErrorRespectJSON("%v", err)
 	}
+	blockedIssues = mergeExternalBlocked(blockedIssues, externalBlocked)
 
 	// Get dependency records for ready issues to find resolved blockers
 	readyIDs := make([]string, len(readyIssues))

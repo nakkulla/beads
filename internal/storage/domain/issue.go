@@ -44,6 +44,7 @@ type IssueSQLRepository interface {
 	SearchAcrossIssuesAndWispsWithCounts(ctx context.Context, query string, filter types.IssueFilter) (SearchCountsPage, error)
 	GetReadyWork(ctx context.Context, filter types.WorkFilter) (SearchPage, error)
 	GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) (SearchCountsPage, error)
+	GetReadyWorkWithExternalBlocked(ctx context.Context, filter types.WorkFilter) (SearchPage, *types.ExternalBlocked, error)
 	GetDescendants(ctx context.Context, rootID string, filter types.IssueFilter) ([]*types.Issue, error)
 	Delete(ctx context.Context, id string, opts IssueTableOpts) error
 	DeleteByIDs(ctx context.Context, ids []string, opts IssueTableOpts) (int, error)
@@ -200,6 +201,10 @@ type IssueUseCase interface {
 	SearchIssuesWithCounts(ctx context.Context, query string, filter types.IssueFilter) (SearchCountsPage, error)
 	GetReadyWork(ctx context.Context, filter types.WorkFilter) (SearchPage, error)
 	GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) (SearchCountsPage, error)
+	// GetReadyWorkWithExternalBlocked is the `bd ready --explain` entry point:
+	// ready work plus the rows kept out of it solely by unsatisfied external
+	// refs, both from ONE external resolution.
+	GetReadyWorkWithExternalBlocked(ctx context.Context, filter types.WorkFilter) (SearchPage, *types.ExternalBlocked, error)
 	GetDescendants(ctx context.Context, rootID string, filter types.IssueFilter) ([]*types.Issue, error)
 	ClaimReadyIssue(ctx context.Context, filter types.WorkFilter, actor string) (ClaimReadyResult, error)
 	GetBlockedIssues(ctx context.Context, filter types.WorkFilter) ([]*types.BlockedIssue, error)
@@ -539,6 +544,14 @@ func (u *issueUseCaseImpl) GetReadyWorkWithCounts(ctx context.Context, filter ty
 		return SearchCountsPage{}, fmt.Errorf("GetReadyWorkWithCounts: %w", err)
 	}
 	return out, nil
+}
+
+func (u *issueUseCaseImpl) GetReadyWorkWithExternalBlocked(ctx context.Context, filter types.WorkFilter) (SearchPage, *types.ExternalBlocked, error) {
+	page, blocked, err := u.issueRepo.GetReadyWorkWithExternalBlocked(ctx, filter)
+	if err != nil {
+		return SearchPage{}, nil, fmt.Errorf("GetReadyWorkWithExternalBlocked: %w", err)
+	}
+	return page, blocked, nil
 }
 
 func (u *issueUseCaseImpl) GetDescendants(ctx context.Context, rootID string, filter types.IssueFilter) ([]*types.Issue, error) {

@@ -334,6 +334,26 @@ func (s *InstrumentedStorage) GetReadyWorkWithCounts(ctx context.Context, filter
 	return v, err
 }
 
+func (s *InstrumentedStorage) GetReadyWorkWithExternalBlocked(ctx context.Context, filter types.WorkFilter) ([]*types.Issue, *types.ExternalBlocked, error) {
+	ctx, span, t := s.op(ctx, "GetReadyWorkWithExternalBlocked")
+	ready, blocked, err := s.inner.GetReadyWorkWithExternalBlocked(ctx, filter)
+	if err == nil {
+		span.SetAttributes(
+			attribute.Int("bd.result.count", len(ready)),
+			attribute.Int("bd.result.external_blocked_count", externalBlockedCount(blocked)),
+		)
+	}
+	s.done(ctx, span, t, err)
+	return ready, blocked, err
+}
+
+func externalBlockedCount(eb *types.ExternalBlocked) int {
+	if eb == nil {
+		return 0
+	}
+	return len(eb.Candidates) + len(eb.StoredBlockedRefs)
+}
+
 func (s *InstrumentedStorage) GetBlockedIssues(ctx context.Context, filter types.WorkFilter) ([]*types.BlockedIssue, error) {
 	ctx, span, t := s.op(ctx, "GetBlockedIssues")
 	v, err := s.inner.GetBlockedIssues(ctx, filter)
