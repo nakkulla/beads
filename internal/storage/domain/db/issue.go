@@ -637,6 +637,10 @@ func (r *issueSQLRepositoryImpl) GetReadyWorkWithCounts(ctx context.Context, fil
 	return r.getReadyWorkWithCountsUnion(ctx, filter)
 }
 
+func (r *issueSQLRepositoryImpl) GetReadyWorkWithExternalBlocked(ctx context.Context, filter types.WorkFilter) (domain.SearchPage, *types.ExternalBlocked, error) {
+	return r.getReadyWorkWithExternalBlockedUnion(ctx, filter)
+}
+
 func (r *issueSQLRepositoryImpl) Delete(ctx context.Context, id string, opts domain.IssueTableOpts) error {
 	table := "issues"
 	if opts.UseWispsTable {

@@ -23,27 +23,38 @@ func buildReadyWorkOrder(policy types.SortPolicy) sqlbuild.ReadyWorkOrder {
 	return sqlbuild.BuildReadyWorkOrder(policy, "sort_created", "sort_priority")
 }
 
-// buildReadyWorkPredicates computes the ID sets the ready-work WHERE clause
-// needs (children of deferred parents, parent descendants), then delegates
-// the clause text to sqlbuild so both stacks share ready semantics. Unlike
-// the classic stack, ORDER BY and LIMIT are applied at the UNION outer query.
-func (r *issueSQLRepositoryImpl) buildReadyWorkPredicates(ctx context.Context, filter types.WorkFilter, tables filterTables, unsatisfiedExternalRefs []string) (*readyWorkPredicates, error) {
+// buildReadyWorkWhereInputs computes the ID sets the ready-work WHERE clause
+// folds in (children of deferred parents, parent descendants). External refs
+// are not part of it: callers set that field themselves.
+func (r *issueSQLRepositoryImpl) buildReadyWorkWhereInputs(ctx context.Context, filter types.WorkFilter) (sqlbuild.ReadyWorkWhereInputs, error) {
 	var inputs sqlbuild.ReadyWorkWhereInputs
-	inputs.UnsatisfiedExternalRefs = unsatisfiedExternalRefs
 	if !filter.IncludeDeferred {
 		deferredChildIDs, dcErr := r.getChildrenOfDeferredParents(ctx)
 		if dcErr != nil {
-			return nil, fmt.Errorf("get ready work: compute deferred parent children: %w", dcErr)
+			return inputs, fmt.Errorf("get ready work: compute deferred parent children: %w", dcErr)
 		}
 		inputs.DeferredChildIDs = deferredChildIDs
 	}
 	if filter.ParentID != nil {
 		descendantIDs, descErr := r.getDescendantIDs(ctx, *filter.ParentID, 0)
 		if descErr != nil {
-			return nil, fmt.Errorf("get parent descendants: %w", descErr)
+			return inputs, fmt.Errorf("get parent descendants: %w", descErr)
 		}
 		inputs.ParentDescendantIDs = descendantIDs
 	}
+	return inputs, nil
+}
+
+// buildReadyWorkPredicates computes the ID sets the ready-work WHERE clause
+// needs (children of deferred parents, parent descendants), then delegates
+// the clause text to sqlbuild so both stacks share ready semantics. Unlike
+// the classic stack, ORDER BY and LIMIT are applied at the UNION outer query.
+func (r *issueSQLRepositoryImpl) buildReadyWorkPredicates(ctx context.Context, filter types.WorkFilter, tables filterTables, unsatisfiedExternalRefs []string) (*readyWorkPredicates, error) {
+	inputs, err := r.buildReadyWorkWhereInputs(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	inputs.UnsatisfiedExternalRefs = unsatisfiedExternalRefs
 
 	whereSQL, args, err := sqlbuild.BuildReadyWorkWhere(filter, tables, inputs)
 	if err != nil {

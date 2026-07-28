@@ -19,7 +19,10 @@ func (r *issueSQLRepositoryImpl) getReadyWorkIDPage(ctx context.Context, filter 
 	if err != nil {
 		return idSrcPage{}, false, err
 	}
+	return r.readyWorkIDPageForRefs(ctx, filter, unsatisfiedExternalRefs)
+}
 
+func (r *issueSQLRepositoryImpl) readyWorkIDPageForRefs(ctx context.Context, filter types.WorkFilter, unsatisfiedExternalRefs []string) (idSrcPage, bool, error) {
 	issuePreds, err := r.buildReadyWorkPredicates(ctx, filter, issuesFilterTables, unsatisfiedExternalRefs)
 	if err != nil {
 		return idSrcPage{}, false, err
@@ -91,7 +94,41 @@ func (r *issueSQLRepositoryImpl) getReadyWorkUnion(ctx context.Context, filter t
 	if err != nil {
 		return domain.SearchPage{}, err
 	}
+	return r.hydrateReadyWorkPage(ctx, page, hasMore)
+}
 
+// getReadyWorkWithExternalBlockedUnion resolves external blocking ONCE and
+// derives the ready page and the external-blocked rows from that single
+// resolution, so `bd ready --explain` cannot place the same issue in both.
+func (r *issueSQLRepositoryImpl) getReadyWorkWithExternalBlockedUnion(ctx context.Context, filter types.WorkFilter) (domain.SearchPage, *types.ExternalBlocked, error) {
+	unsatisfiedExternalRefs, err := issueops.ResolveReadyExternalBlocksInTx(ctx, r.runner, r.externalOpts)
+	if err != nil {
+		return domain.SearchPage{}, nil, err
+	}
+	page, hasMore, err := r.readyWorkIDPageForRefs(ctx, filter, unsatisfiedExternalRefs)
+	if err != nil {
+		return domain.SearchPage{}, nil, err
+	}
+	readyPage, err := r.hydrateReadyWorkPage(ctx, page, hasMore)
+	if err != nil {
+		return domain.SearchPage{}, nil, err
+	}
+	if len(unsatisfiedExternalRefs) == 0 {
+		return readyPage, nil, nil
+	}
+	inputs, err := r.buildReadyWorkWhereInputs(ctx, filter)
+	if err != nil {
+		return domain.SearchPage{}, nil, err
+	}
+	blocked, err := issueops.CollectExternalBlockedInTx(ctx, r.runner, filter, unsatisfiedExternalRefs, inputs)
+	if err != nil {
+		return domain.SearchPage{}, nil, err
+	}
+	readyPage.Items = issueops.DropExternalBlockedFromReady(readyPage.Items, blocked)
+	return readyPage, blocked, nil
+}
+
+func (r *issueSQLRepositoryImpl) hydrateReadyWorkPage(ctx context.Context, page idSrcPage, hasMore bool) (domain.SearchPage, error) {
 	issuesByID, err := r.fetchIssuesByIDs(ctx, page.issueIDs, issuesFilterTables, types.IssueFilter{})
 	if err != nil {
 		return domain.SearchPage{}, fmt.Errorf("ready work union: hydrate issues: %w", err)

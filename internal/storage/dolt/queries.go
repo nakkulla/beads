@@ -48,6 +48,17 @@ func (s *DoltStore) GetReadyWork(ctx context.Context, filter types.WorkFilter) (
 	return result, err
 }
 
+func (s *DoltStore) GetReadyWorkWithExternalBlocked(ctx context.Context, filter types.WorkFilter) ([]*types.Issue, *types.ExternalBlocked, error) {
+	var ready []*types.Issue
+	var blocked *types.ExternalBlocked
+	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		ready, blocked, err = issueops.GetReadyWorkWithExternalBlockedInTx(ctx, tx, filter, s.externalOpts)
+		return err
+	})
+	return ready, blocked, err
+}
+
 func (s *DoltStore) GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) ([]*types.IssueWithCounts, error) {
 	var result []*types.IssueWithCounts
 	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
