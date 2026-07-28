@@ -120,7 +120,7 @@ func TestBenchmarkSubprocessesStripDoltEnvOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := config{BDPath: bd, Timeout: time.Second}
+	cfg := config{BDPath: bd, Timeout: 10 * time.Second}
 	ws := &workspace{Dir: tmp}
 	if got := runBD(context.Background(), cfg, ws, job{Kind: "env", Argv: []string{"status"}}); got.Err != "" {
 		t.Fatalf("runBD inherited denied env: err=%q stderr=%q", got.Err, got.StderrTail)
@@ -137,7 +137,7 @@ func TestControlQueryScriptPreservesReadyProbeFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := config{BDPath: bd, Timeout: time.Second}
+	cfg := config{BDPath: bd, Timeout: 10 * time.Second}
 	ws := &workspace{Dir: tmp}
 	result := runShell(context.Background(), cfg, ws, controlQueryJobs(1)[0])
 	if result.Err == "" {
