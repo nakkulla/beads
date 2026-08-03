@@ -350,6 +350,47 @@ func TestProxiedServerReady(t *testing.T) {
 		}
 	})
 
+	// The blocked half of --explain must expose parent like the ready half
+	// does; the asymmetry is what beads-9mv fixed.
+	t.Run("explain_blocked_parent", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "rdbp")
+		epic := bdProxiedCreate(t, bd, p.dir, "Parent epic")
+		blocker := bdProxiedCreate(t, bd, p.dir, "Live blocker")
+		child := bdProxiedCreate(t, bd, p.dir, "Blocked child",
+			"--parent", epic.ID, "--deps", "depends-on:"+blocker.ID)
+
+		stdout, _, err := bdProxiedRunBuffers(t, bd, p.dir, "ready", "--explain", "--json")
+		if err != nil {
+			t.Fatalf("bd ready --explain --json failed: %v\n%s", err, stdout)
+		}
+		s := strings.TrimSpace(stdout)
+		start := strings.Index(s, "{")
+		if start < 0 {
+			t.Fatalf("no JSON in --explain output: %s", stdout)
+		}
+		var exp types.ReadyExplanation
+		if err := json.Unmarshal([]byte(s[start:]), &exp); err != nil {
+			t.Fatalf("parse ReadyExplanation: %v\n%s", err, s[start:])
+		}
+
+		var found *types.BlockedItem
+		for i := range exp.Blocked {
+			if exp.Blocked[i].ID == child.ID {
+				found = &exp.Blocked[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Fatalf("blocked entry for %s missing: %+v", child.ID, exp.Blocked)
+		}
+		if found.Parent == nil {
+			t.Fatalf("blocked entry %s has no parent", child.ID)
+		}
+		if *found.Parent != epic.ID {
+			t.Errorf("blocked parent = %q, want %q", *found.Parent, epic.ID)
+		}
+	})
+
 	t.Run("explain_text_header", func(t *testing.T) {
 		p := bdProxiedInit(t, bd, "rdet")
 		bdProxiedCreate(t, bd, p.dir, "Smoke")

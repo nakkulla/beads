@@ -1013,6 +1013,9 @@ type BlockedIssue struct {
 	Issue
 	BlockedByCount int      `json:"blocked_by_count"`
 	BlockedBy      []string `json:"blocked_by"`
+	// Parent is computed from the parent-child dep, not an issues column;
+	// each wrapper type declares its own field (beads-9mv).
+	Parent *string `json:"parent,omitempty"`
 }
 
 // ExternalBlocked carries the external-dependency half of a ready explanation.
@@ -1055,6 +1058,7 @@ type BlockedItem struct {
 	Issue
 	BlockedBy      []BlockerInfo `json:"blocked_by"`
 	BlockedByCount int           `json:"blocked_by_count"`
+	Parent         *string       `json:"parent,omitempty"`
 }
 
 // BlockerInfo provides details about a single blocker.
@@ -1139,6 +1143,7 @@ func BuildReadyExplanation(
 			Issue:          bi.Issue,
 			BlockedBy:      blockers,
 			BlockedByCount: bi.BlockedByCount,
+			Parent:         bi.Parent,
 		})
 	}
 

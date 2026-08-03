@@ -53,17 +53,28 @@ func loadBlockingDepsForIssueIDsInTx(ctx context.Context, tx DBTX, depTables []s
 	return deps, nil
 }
 
+// loadParentIDsForChildrenInTx maps each child ID to its parent-child target.
+// depTables are visited in order and a later table overwrites an earlier one
+// for the same child, so callers keep whatever precedence that order encodes.
 func loadParentIDsForChildrenInTx(ctx context.Context, tx DBTX, depTables []string, childIDs []string) (map[string]string, error) {
 	childParents := make(map[string]string)
+	if len(childIDs) == 0 {
+		return childParents, nil
+	}
 	for _, depTable := range depTables {
-		//nolint:gosec // G201: depTable is a hardcoded constant.
-		query := fmt.Sprintf(`
-			SELECT issue_id, %s AS depends_on_id FROM %s
-			WHERE issue_id = ?
-			  AND type = 'parent-child'
-		`, DepTargetExpr, depTable)
-		for _, id := range childIDs {
-			rows, err := tx.QueryContext(ctx, query, id)
+		for start := 0; start < len(childIDs); start += queryBatchSize {
+			end := start + queryBatchSize
+			if end > len(childIDs) {
+				end = len(childIDs)
+			}
+			placeholders, args := buildSQLInClause(childIDs[start:end])
+			//nolint:gosec // G201: depTable is a hardcoded constant; only IN placeholders are formatted in.
+			query := fmt.Sprintf(`
+				SELECT issue_id, %s AS depends_on_id FROM %s
+				WHERE issue_id IN (%s)
+				  AND type = 'parent-child'
+			`, DepTargetExpr, depTable, placeholders)
+			rows, err := tx.QueryContext(ctx, query, args...)
 			if err != nil {
 				if optionalBlockedTable(depTable) && isTableNotExistError(err) {
 					break
@@ -299,20 +310,22 @@ func GetBlockedIssuesInTx(ctx context.Context, tx DBTX, filter types.WorkFilter)
 		}
 	}
 
-	var inheritedIDs []string
-	for _, id := range blockedIDList {
-		if _, ok := blockerMap[id]; !ok {
-			inheritedIDs = append(inheritedIDs, id)
-		}
+	// One lookup over every blocked ID feeds two separate decisions below.
+	// It stays best-effort: a failure drops parent data but must not fail
+	// entries that already have a stored blocker.
+	parentMap, parentErr := loadParentIDsForChildrenInTx(ctx, tx,
+		[]string{"dependencies", "wisp_dependencies"}, blockedIDList)
+	if parentErr != nil {
+		parentMap = nil
 	}
-	if len(inheritedIDs) > 0 {
-		parentMap, err := loadParentIDsForChildrenInTx(ctx, tx, []string{"dependencies", "wisp_dependencies"}, inheritedIDs)
-		if err == nil {
-			for childID, parentID := range parentMap {
-				if _, alreadyHas := blockerMap[childID]; !alreadyHas {
-					blockerMap[childID] = []string{parentID}
-				}
-			}
+
+	// Use 1: a child with no stored blocker inherits its parent as blocker.
+	for _, id := range blockedIDList {
+		if _, alreadyHas := blockerMap[id]; alreadyHas {
+			continue
+		}
+		if parentID, ok := parentMap[id]; ok {
+			blockerMap[id] = []string{parentID}
 		}
 	}
 
@@ -355,11 +368,17 @@ func GetBlockedIssuesInTx(ctx context.Context, tx DBTX, filter types.WorkFilter)
 		if !ok || issue == nil {
 			continue
 		}
-		results = append(results, &types.BlockedIssue{
+		blocked := &types.BlockedIssue{
 			Issue:          *issue,
 			BlockedByCount: len(blockerIDs),
 			BlockedBy:      blockerIDs,
-		})
+		}
+		// Use 2: the parent field, independent of whether it also blocks.
+		if parentID, ok := parentMap[id]; ok {
+			parent := parentID
+			blocked.Parent = &parent
+		}
+		results = append(results, blocked)
 	}
 
 	sort.Slice(results, func(i, j int) bool {

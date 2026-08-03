@@ -151,6 +151,15 @@ func CollectExternalBlockedInTx(
 	for _, iss := range issues {
 		issueMap[iss.ID] = iss
 	}
+	// Best-effort, same as the stored blocked path: a failed lookup drops the
+	// parent field, never the candidate. The parent-child edge is local even
+	// though the unsatisfied blocker lives in another database.
+	parentMap, parentErr := loadParentIDsForChildrenInTx(ctx, tx,
+		[]string{"dependencies", "wisp_dependencies"}, candidateIDs)
+	if parentErr != nil {
+		parentMap = nil
+	}
+
 	out.Candidates = make([]*types.BlockedIssue, 0, len(candidateIDs))
 	for _, id := range candidateIDs {
 		issue, ok := issueMap[id]
@@ -158,11 +167,16 @@ func CollectExternalBlockedInTx(
 			continue
 		}
 		refs := sortedUnique(refsByID[id])
-		out.Candidates = append(out.Candidates, &types.BlockedIssue{
+		candidate := &types.BlockedIssue{
 			Issue:          *issue,
 			BlockedBy:      refs,
 			BlockedByCount: len(refs),
-		})
+		}
+		if parentID, found := parentMap[id]; found {
+			parent := parentID
+			candidate.Parent = &parent
+		}
+		out.Candidates = append(out.Candidates, candidate)
 	}
 	return out, nil
 }
