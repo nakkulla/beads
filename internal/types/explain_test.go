@@ -1,6 +1,7 @@
 package types
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -148,6 +149,73 @@ func TestBuildReadyExplanation_BlockedIssues(t *testing.T) {
 
 	if result.Summary.TotalBlocked != 1 {
 		t.Errorf("expected TotalBlocked=1, got %d", result.Summary.TotalBlocked)
+	}
+}
+
+func TestBuildReadyExplanation_BlockedWithParent(t *testing.T) {
+	parent := "bd-epic"
+	blockedIssues := []*BlockedIssue{
+		{
+			Issue:          Issue{ID: "bd-child", Title: "Stuck child", Priority: 2, Status: StatusOpen},
+			BlockedByCount: 1,
+			BlockedBy:      []string{"bd-blocker"},
+			Parent:         &parent,
+		},
+	}
+
+	result := BuildReadyExplanation(nil, blockedIssues, nil, nil, nil, nil)
+
+	if len(result.Blocked) != 1 {
+		t.Fatalf("expected 1 blocked item, got %d", len(result.Blocked))
+	}
+	if result.Blocked[0].Parent == nil {
+		t.Fatal("expected Parent to be set on blocked item")
+	}
+	if *result.Blocked[0].Parent != "bd-epic" {
+		t.Errorf("expected Parent='bd-epic', got %q", *result.Blocked[0].Parent)
+	}
+
+	encoded, err := json.Marshal(result.Blocked[0])
+	if err != nil {
+		t.Fatalf("marshal blocked item: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshal blocked item: %v", err)
+	}
+	if decoded["parent"] != "bd-epic" {
+		t.Errorf("expected JSON parent='bd-epic', got %v", decoded["parent"])
+	}
+}
+
+func TestBuildReadyExplanation_BlockedWithoutParentOmitsKey(t *testing.T) {
+	blockedIssues := []*BlockedIssue{
+		{
+			Issue:          Issue{ID: "bd-top", Title: "Top level", Priority: 2, Status: StatusOpen},
+			BlockedByCount: 1,
+			BlockedBy:      []string{"bd-blocker"},
+		},
+	}
+
+	result := BuildReadyExplanation(nil, blockedIssues, nil, nil, nil, nil)
+
+	if len(result.Blocked) != 1 {
+		t.Fatalf("expected 1 blocked item, got %d", len(result.Blocked))
+	}
+	if result.Blocked[0].Parent != nil {
+		t.Fatalf("expected Parent to stay nil, got %q", *result.Blocked[0].Parent)
+	}
+
+	encoded, err := json.Marshal(result.Blocked[0])
+	if err != nil {
+		t.Fatalf("marshal blocked item: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshal blocked item: %v", err)
+	}
+	if _, ok := decoded["parent"]; ok {
+		t.Errorf("expected parent key to be omitted, got %v", decoded["parent"])
 	}
 }
 
