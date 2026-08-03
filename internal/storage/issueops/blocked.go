@@ -53,17 +53,28 @@ func loadBlockingDepsForIssueIDsInTx(ctx context.Context, tx DBTX, depTables []s
 	return deps, nil
 }
 
+// loadParentIDsForChildrenInTx maps each child ID to its parent-child target.
+// depTables are visited in order and a later table overwrites an earlier one
+// for the same child, so callers keep whatever precedence that order encodes.
 func loadParentIDsForChildrenInTx(ctx context.Context, tx DBTX, depTables []string, childIDs []string) (map[string]string, error) {
 	childParents := make(map[string]string)
+	if len(childIDs) == 0 {
+		return childParents, nil
+	}
 	for _, depTable := range depTables {
-		//nolint:gosec // G201: depTable is a hardcoded constant.
-		query := fmt.Sprintf(`
-			SELECT issue_id, %s AS depends_on_id FROM %s
-			WHERE issue_id = ?
-			  AND type = 'parent-child'
-		`, DepTargetExpr, depTable)
-		for _, id := range childIDs {
-			rows, err := tx.QueryContext(ctx, query, id)
+		for start := 0; start < len(childIDs); start += queryBatchSize {
+			end := start + queryBatchSize
+			if end > len(childIDs) {
+				end = len(childIDs)
+			}
+			placeholders, args := buildSQLInClause(childIDs[start:end])
+			//nolint:gosec // G201: depTable is a hardcoded constant; only IN placeholders are formatted in.
+			query := fmt.Sprintf(`
+				SELECT issue_id, %s AS depends_on_id FROM %s
+				WHERE issue_id IN (%s)
+				  AND type = 'parent-child'
+			`, DepTargetExpr, depTable, placeholders)
+			rows, err := tx.QueryContext(ctx, query, args...)
 			if err != nil {
 				if optionalBlockedTable(depTable) && isTableNotExistError(err) {
 					break
