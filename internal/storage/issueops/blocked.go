@@ -310,20 +310,22 @@ func GetBlockedIssuesInTx(ctx context.Context, tx DBTX, filter types.WorkFilter)
 		}
 	}
 
-	var inheritedIDs []string
-	for _, id := range blockedIDList {
-		if _, ok := blockerMap[id]; !ok {
-			inheritedIDs = append(inheritedIDs, id)
-		}
+	// One lookup over every blocked ID feeds two separate decisions below.
+	// It stays best-effort: a failure drops parent data but must not fail
+	// entries that already have a stored blocker.
+	parentMap, parentErr := loadParentIDsForChildrenInTx(ctx, tx,
+		[]string{"dependencies", "wisp_dependencies"}, blockedIDList)
+	if parentErr != nil {
+		parentMap = nil
 	}
-	if len(inheritedIDs) > 0 {
-		parentMap, err := loadParentIDsForChildrenInTx(ctx, tx, []string{"dependencies", "wisp_dependencies"}, inheritedIDs)
-		if err == nil {
-			for childID, parentID := range parentMap {
-				if _, alreadyHas := blockerMap[childID]; !alreadyHas {
-					blockerMap[childID] = []string{parentID}
-				}
-			}
+
+	// Use 1: a child with no stored blocker inherits its parent as blocker.
+	for _, id := range blockedIDList {
+		if _, alreadyHas := blockerMap[id]; alreadyHas {
+			continue
+		}
+		if parentID, ok := parentMap[id]; ok {
+			blockerMap[id] = []string{parentID}
 		}
 	}
 
@@ -366,11 +368,17 @@ func GetBlockedIssuesInTx(ctx context.Context, tx DBTX, filter types.WorkFilter)
 		if !ok || issue == nil {
 			continue
 		}
-		results = append(results, &types.BlockedIssue{
+		blocked := &types.BlockedIssue{
 			Issue:          *issue,
 			BlockedByCount: len(blockerIDs),
 			BlockedBy:      blockerIDs,
-		})
+		}
+		// Use 2: the parent field, independent of whether it also blocks.
+		if parentID, ok := parentMap[id]; ok {
+			parent := parentID
+			blocked.Parent = &parent
+		}
+		results = append(results, blocked)
 	}
 
 	sort.Slice(results, func(i, j int) bool {

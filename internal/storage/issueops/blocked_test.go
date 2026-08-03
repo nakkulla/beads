@@ -2,12 +2,14 @@ package issueops
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"errors"
 	"fmt"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/steveyegge/beads/internal/types"
 )
 
 const parentDepQueryRegex = `FROM %s WHERE issue_id IN \(`
@@ -120,6 +122,184 @@ func TestLoadParentIDsForChildrenInTx_DepTableOrderPrecedence(t *testing.T) {
 	}
 	if got["bd-child-1"] != "bd-epic-wisp" {
 		t.Errorf("later depTable must win, got %q", got["bd-child-1"])
+	}
+}
+
+func tableMissingErr(table string) error {
+	return fmt.Errorf("Error 1146: Table 'beads.%s' doesn't exist", table)
+}
+
+// expectBlockedPreamble stages GetBlockedIssuesInTx up to (but excluding) the
+// parent-child lookup: the is_blocked scan, the blocking-dep scan and, when
+// blockerID is non-empty, the blocker status probe.
+func expectBlockedPreamble(mock sqlmock.Sqlmock, blockedID, blockerID string) {
+	mock.ExpectQuery(`SELECT id FROM issues WHERE is_blocked = 1`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(blockedID))
+	mock.ExpectQuery(`SELECT id FROM wisps WHERE is_blocked = 1`).
+		WillReturnError(tableMissingErr("wisps"))
+
+	depRows := sqlmock.NewRows([]string{"issue_id", "depends_on_id", "type", "metadata"})
+	if blockerID != "" {
+		depRows.AddRow(blockedID, blockerID, "blocks", nil)
+	}
+	mock.ExpectQuery(`type, metadata FROM dependencies WHERE issue_id = \?`).
+		WithArgs(blockedID).
+		WillReturnRows(depRows)
+	mock.ExpectQuery(`type, metadata FROM wisp_dependencies WHERE issue_id = \?`).
+		WithArgs(blockedID).
+		WillReturnError(tableMissingErr("wisp_dependencies"))
+
+	if blockerID != "" {
+		mock.ExpectQuery(`SELECT id, status FROM issues WHERE id IN \(\?\)`).
+			WithArgs(blockerID).
+			WillReturnRows(sqlmock.NewRows([]string{"id", "status"}).AddRow(blockerID, "open"))
+		mock.ExpectQuery(`SELECT id, status FROM wisps WHERE id IN \(\?\)`).
+			WithArgs(blockerID).
+			WillReturnError(tableMissingErr("wisps"))
+	}
+}
+
+// expectBlockedHydration stages the display-issue fetch that closes
+// GetBlockedIssuesInTx for a single surviving blocked ID.
+func expectBlockedHydration(mock sqlmock.Sqlmock, blockedID string) {
+	mock.ExpectQuery(`SELECT 1 FROM wisps LIMIT 1`).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(`FROM issues WHERE id IN \(\?\)`).
+		WithArgs(blockedID).
+		WillReturnRows(issueRows().AddRow(issueRowValues(blockedID, "Blocked child")...))
+	mock.ExpectQuery(`SELECT issue_id, label FROM labels WHERE issue_id IN \(\?\)`).
+		WithArgs(blockedID).
+		WillReturnRows(sqlmock.NewRows([]string{"issue_id", "label"}))
+}
+
+func TestGetBlockedIssuesInTx_StoredBlockedCarriesParent(t *testing.T) {
+	t.Parallel()
+	mock, tx := newBlockedMock(t)
+
+	expectBlockedPreamble(mock, "bd-child", "bd-blocker")
+	mock.ExpectQuery(fmt.Sprintf(parentDepQueryRegex, "dependencies")).
+		WithArgs("bd-child").
+		WillReturnRows(sqlmock.NewRows([]string{"issue_id", "depends_on_id"}).
+			AddRow("bd-child", "bd-epic"))
+	mock.ExpectQuery(fmt.Sprintf(parentDepQueryRegex, "wisp_dependencies")).
+		WithArgs("bd-child").
+		WillReturnError(tableMissingErr("wisp_dependencies"))
+	expectBlockedHydration(mock, "bd-child")
+
+	got, err := GetBlockedIssuesInTx(context.Background(), tx, types.WorkFilter{})
+	if err != nil {
+		t.Fatalf("GetBlockedIssuesInTx: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d blocked issues, want 1", len(got))
+	}
+	if got[0].Parent == nil {
+		t.Fatal("expected Parent to be set on stored blocked issue")
+	}
+	if *got[0].Parent != "bd-epic" {
+		t.Errorf("Parent = %q, want bd-epic", *got[0].Parent)
+	}
+	// The parent is a parent, not a blocker: the direct blocker stays alone.
+	if len(got[0].BlockedBy) != 1 || got[0].BlockedBy[0] != "bd-blocker" {
+		t.Errorf("BlockedBy = %v, want [bd-blocker]", got[0].BlockedBy)
+	}
+}
+
+func TestGetBlockedIssuesInTx_TopLevelBlockedKeepsNilParent(t *testing.T) {
+	t.Parallel()
+	mock, tx := newBlockedMock(t)
+
+	expectBlockedPreamble(mock, "bd-top", "bd-blocker")
+	mock.ExpectQuery(fmt.Sprintf(parentDepQueryRegex, "dependencies")).
+		WithArgs("bd-top").
+		WillReturnRows(sqlmock.NewRows([]string{"issue_id", "depends_on_id"}))
+	mock.ExpectQuery(fmt.Sprintf(parentDepQueryRegex, "wisp_dependencies")).
+		WithArgs("bd-top").
+		WillReturnError(tableMissingErr("wisp_dependencies"))
+	expectBlockedHydration(mock, "bd-top")
+
+	got, err := GetBlockedIssuesInTx(context.Background(), tx, types.WorkFilter{})
+	if err != nil {
+		t.Fatalf("GetBlockedIssuesInTx: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d blocked issues, want 1", len(got))
+	}
+	if got[0].Parent != nil {
+		t.Errorf("Parent = %q, want nil", *got[0].Parent)
+	}
+}
+
+// Sharing one parent map between blocker inheritance and the parent field must
+// not change what a child with no stored blocker inherits.
+func TestGetBlockedIssuesInTx_ParentStillInheritedAsBlocker(t *testing.T) {
+	t.Parallel()
+	mock, tx := newBlockedMock(t)
+
+	expectBlockedPreamble(mock, "bd-child", "")
+	mock.ExpectQuery(fmt.Sprintf(parentDepQueryRegex, "dependencies")).
+		WithArgs("bd-child").
+		WillReturnRows(sqlmock.NewRows([]string{"issue_id", "depends_on_id"}).
+			AddRow("bd-child", "bd-epic"))
+	mock.ExpectQuery(fmt.Sprintf(parentDepQueryRegex, "wisp_dependencies")).
+		WithArgs("bd-child").
+		WillReturnError(tableMissingErr("wisp_dependencies"))
+	expectBlockedHydration(mock, "bd-child")
+
+	got, err := GetBlockedIssuesInTx(context.Background(), tx, types.WorkFilter{})
+	if err != nil {
+		t.Fatalf("GetBlockedIssuesInTx: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d blocked issues, want 1", len(got))
+	}
+	if len(got[0].BlockedBy) != 1 || got[0].BlockedBy[0] != "bd-epic" {
+		t.Errorf("BlockedBy = %v, want inherited [bd-epic]", got[0].BlockedBy)
+	}
+	if got[0].BlockedByCount != 1 {
+		t.Errorf("BlockedByCount = %d, want 1", got[0].BlockedByCount)
+	}
+	if got[0].Parent == nil || *got[0].Parent != "bd-epic" {
+		t.Errorf("Parent = %v, want bd-epic", got[0].Parent)
+	}
+}
+
+// The parent lookup is best-effort: promoting it to a shared map must not let
+// its failure take down entries that already have a stored blocker.
+func TestGetBlockedIssuesInTx_ParentLookupErrorStillReturnsDirectBlocked(t *testing.T) {
+	t.Parallel()
+	mock, tx := newBlockedMock(t)
+
+	expectBlockedPreamble(mock, "bd-child", "bd-blocker")
+	mock.ExpectQuery(fmt.Sprintf(parentDepQueryRegex, "dependencies")).
+		WithArgs("bd-child").
+		WillReturnError(errors.New("parent lookup exploded"))
+	expectBlockedHydration(mock, "bd-child")
+
+	got, err := GetBlockedIssuesInTx(context.Background(), tx, types.WorkFilter{})
+	if err != nil {
+		t.Fatalf("parent lookup failure must not fail the call, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d blocked issues, want 1", len(got))
+	}
+	if got[0].Parent != nil {
+		t.Errorf("Parent = %q, want nil after lookup failure", *got[0].Parent)
+	}
+	if len(got[0].BlockedBy) != 1 || got[0].BlockedBy[0] != "bd-blocker" {
+		t.Errorf("BlockedBy = %v, want [bd-blocker]", got[0].BlockedBy)
 	}
 }
 
