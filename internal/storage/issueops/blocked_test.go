@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -300,6 +301,117 @@ func TestGetBlockedIssuesInTx_ParentLookupErrorStillReturnsDirectBlocked(t *test
 	}
 	if len(got[0].BlockedBy) != 1 || got[0].BlockedBy[0] != "bd-blocker" {
 		t.Errorf("BlockedBy = %v, want [bd-blocker]", got[0].BlockedBy)
+	}
+}
+
+// expectExternalBlockedPreamble stages CollectExternalBlockedInTx up to (but
+// excluding) the parent-child lookup for a single non-stored-blocked candidate.
+func expectExternalBlockedPreamble(mock sqlmock.Sqlmock, candidateID, ref string) {
+	mock.ExpectQuery(`SELECT id, is_blocked FROM issues`).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "is_blocked"}).AddRow(candidateID, false))
+	mock.ExpectQuery(`SELECT DISTINCT issue_id, depends_on_external FROM dependencies`).
+		WillReturnRows(sqlmock.NewRows([]string{"issue_id", "depends_on_external"}).
+			AddRow(candidateID, ref))
+	mock.ExpectQuery(`SELECT id, is_blocked FROM wisps`).
+		WillReturnError(tableMissingErr("wisps"))
+	mock.ExpectQuery(`SELECT 1 FROM wisps LIMIT 1`).
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(`FROM issues WHERE id IN \(\?\)`).
+		WithArgs(candidateID).
+		WillReturnRows(issueRows().AddRow(issueRowValues(candidateID, "External candidate")...))
+	mock.ExpectQuery(`SELECT issue_id, label FROM labels WHERE issue_id IN \(\?\)`).
+		WithArgs(candidateID).
+		WillReturnRows(sqlmock.NewRows([]string{"issue_id", "label"}))
+}
+
+func collectExternalBlocked(t *testing.T, tx DBTX, ref string) *types.ExternalBlocked {
+	t.Helper()
+	out, err := CollectExternalBlockedInTx(context.Background(), tx, types.WorkFilter{},
+		[]string{ref}, sqlbuild.ReadyWorkWhereInputs{})
+	if err != nil {
+		t.Fatalf("CollectExternalBlockedInTx: %v", err)
+	}
+	return out
+}
+
+func TestCollectExternalBlockedInTx_CandidateCarriesParent(t *testing.T) {
+	t.Parallel()
+	mock, tx := newBlockedMock(t)
+
+	const ref = "external:beads:cap-a"
+	expectExternalBlockedPreamble(mock, "bd-child", ref)
+	mock.ExpectQuery(fmt.Sprintf(parentDepQueryRegex, "dependencies")).
+		WithArgs("bd-child").
+		WillReturnRows(sqlmock.NewRows([]string{"issue_id", "depends_on_id"}).
+			AddRow("bd-child", "bd-epic"))
+	mock.ExpectQuery(fmt.Sprintf(parentDepQueryRegex, "wisp_dependencies")).
+		WithArgs("bd-child").
+		WillReturnError(tableMissingErr("wisp_dependencies"))
+
+	out := collectExternalBlocked(t, tx, ref)
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+	if len(out.Candidates) != 1 {
+		t.Fatalf("got %d candidates, want 1", len(out.Candidates))
+	}
+	if out.Candidates[0].Parent == nil {
+		t.Fatal("expected Parent to be set on external candidate")
+	}
+	if *out.Candidates[0].Parent != "bd-epic" {
+		t.Errorf("Parent = %q, want bd-epic", *out.Candidates[0].Parent)
+	}
+	if len(out.Candidates[0].BlockedBy) != 1 || out.Candidates[0].BlockedBy[0] != ref {
+		t.Errorf("BlockedBy = %v, want [%s]", out.Candidates[0].BlockedBy, ref)
+	}
+}
+
+func TestCollectExternalBlockedInTx_TopLevelCandidateKeepsNilParent(t *testing.T) {
+	t.Parallel()
+	mock, tx := newBlockedMock(t)
+
+	const ref = "external:beads:cap-a"
+	expectExternalBlockedPreamble(mock, "bd-top", ref)
+	mock.ExpectQuery(fmt.Sprintf(parentDepQueryRegex, "dependencies")).
+		WithArgs("bd-top").
+		WillReturnRows(sqlmock.NewRows([]string{"issue_id", "depends_on_id"}))
+	mock.ExpectQuery(fmt.Sprintf(parentDepQueryRegex, "wisp_dependencies")).
+		WithArgs("bd-top").
+		WillReturnError(tableMissingErr("wisp_dependencies"))
+
+	out := collectExternalBlocked(t, tx, ref)
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+	if len(out.Candidates) != 1 {
+		t.Fatalf("got %d candidates, want 1", len(out.Candidates))
+	}
+	if out.Candidates[0].Parent != nil {
+		t.Errorf("Parent = %q, want nil", *out.Candidates[0].Parent)
+	}
+}
+
+// Same best-effort contract as the stored blocked path: a failed parent lookup
+// drops the parent field, never the candidate.
+func TestCollectExternalBlockedInTx_ParentLookupErrorKeepsCandidate(t *testing.T) {
+	t.Parallel()
+	mock, tx := newBlockedMock(t)
+
+	const ref = "external:beads:cap-a"
+	expectExternalBlockedPreamble(mock, "bd-child", ref)
+	mock.ExpectQuery(fmt.Sprintf(parentDepQueryRegex, "dependencies")).
+		WithArgs("bd-child").
+		WillReturnError(errors.New("parent lookup exploded"))
+
+	out := collectExternalBlocked(t, tx, ref)
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+	if len(out.Candidates) != 1 {
+		t.Fatalf("got %d candidates, want 1", len(out.Candidates))
+	}
+	if out.Candidates[0].Parent != nil {
+		t.Errorf("Parent = %q, want nil after lookup failure", *out.Candidates[0].Parent)
 	}
 }
 
