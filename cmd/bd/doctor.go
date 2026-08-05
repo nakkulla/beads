@@ -446,6 +446,17 @@ func runDiagnostics(path string) doctorResult {
 	sharedStore := doctor.NewSharedStore(path)
 	defer sharedStore.Close()
 
+	// Check 1d: Local store health. NewSharedStore reports a failed open only
+	// as a nil store, which every store-backed check below reads as "no
+	// database". This check surfaces the preserved open error and classifies
+	// it (on-disk corruption vs transient) so a damaged store is not silently
+	// downgraded to a missing one. Diagnostic only — no fixer is attached.
+	localStoreHealthCheck := convertDoctorCheck(doctor.CheckLocalStoreHealth(path, sharedStore))
+	result.Checks = append(result.Checks, localStoreHealthCheck)
+	if localStoreHealthCheck.Status == statusError {
+		result.OverallOK = false
+	}
+
 	// Check 2: Database version
 	dbCheck := convertWithCategory(doctor.CheckDatabaseVersionWithStore(sharedStore, Version), doctor.CategoryCore)
 	result.Checks = append(result.Checks, dbCheck)
