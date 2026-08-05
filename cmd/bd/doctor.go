@@ -552,6 +552,14 @@ func runDiagnostics(path string) doctorResult {
 		result.OverallOK = false
 	}
 
+	// Check 7e0c: sync.remote that is not a Dolt remote, and server-mode rigs
+	// carrying a routine sync.remote at all. Only the latter is auto-fixable.
+	syncRemoteShapeCheck := convertDoctorCheck(doctor.CheckSyncRemoteShape(path))
+	result.Checks = append(result.Checks, syncRemoteShapeCheck)
+	if syncRemoteShapeCheck.Status == statusWarning || syncRemoteShapeCheck.Status == statusError {
+		result.OverallOK = false
+	}
+
 	// Check 7e1: Corrupt-manifest state (GH#3290). Detection only; the
 	// destructive backup+reinit repair runs solely via doctor --fix (bd-6dnrw.6).
 	corruptManifestCheck := convertDoctorCheck(doctor.CheckCorruptManifest(path))

@@ -384,6 +384,11 @@ func applyFixList(path string, fixes []doctorCheck) {
 			}
 		case doctor.DoltPortDriftCheckName:
 			err = fix.DoltPortDrift(path)
+		case doctor.SyncRemoteShapeCheckName:
+			// Unsets the routine sync.remote on a server-mode rig only. An
+			// unparseable remote is diagnostic-only and never rewritten, so
+			// the check leaves Fix empty for it and it never lands here.
+			err = fix.SyncRemoteShape(path)
 		case "Circuit Breaker":
 			dolt.CleanStaleCircuitBreakerFiles()
 			fmt.Printf("  %s Cleared stale circuit breaker files\n", ui.RenderPass("✓"))

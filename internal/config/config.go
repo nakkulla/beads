@@ -645,6 +645,38 @@ func GetStringFromDir(beadsDir, key string) string {
 	}
 }
 
+// GetStringFromDirAnyShape reads a dotted key from <beadsDir>/config.yaml in
+// either shape bd can write: the nested mapping (sync:\n  remote: ...) that
+// GetStringFromDir understands, or the flat root key (sync.remote: ...) that
+// SetYamlConfigInDir falls back to when config.yaml carries no uncommented
+// mapping to merge into. A rig created by `bd init` renders an all-comment
+// template, so the flat shape is the one those writes actually produce.
+//
+// Callers that must observe a value regardless of which writer produced it
+// (diagnostics, unset paths) should use this; plain GetStringFromDir stays the
+// default for runtime reads.
+func GetStringFromDirAnyShape(beadsDir, key string) string {
+	if val := GetStringFromDir(beadsDir, key); val != "" {
+		return val
+	}
+	data, err := os.ReadFile(filepath.Join(beadsDir, "config.yaml")) //nolint:gosec // path is derived from the caller's resolved beads dir
+	if err != nil {
+		return ""
+	}
+	var root map[string]interface{}
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return ""
+	}
+	val, ok := root[key]
+	if !ok || val == nil {
+		return ""
+	}
+	if s, ok := val.(string); ok {
+		return s
+	}
+	return fmt.Sprintf("%v", val)
+}
+
 // GetBool retrieves a boolean configuration value
 func GetBool(key string) bool {
 	if v == nil {

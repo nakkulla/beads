@@ -237,6 +237,137 @@ func SetYamlConfigInDir(beadsDir, key, value string) error {
 	return setYamlConfigAtPath(configPath, key, value)
 }
 
+// UnsetYamlConfigInDir removes a configuration value from the config.yaml
+// located in the provided beadsDir, bypassing CWD/worktree discovery. It is the
+// directory-scoped mirror of SetYamlConfigInDir (UnsetYamlConfig is CWD-scoped).
+//
+// Like UnsetYamlConfig the key line is commented out rather than deleted, so it
+// survives as documentation. Both shapes bd can produce are handled: the nested
+// mapping (sync:\n  remote: ...) and the flat root key (sync.remote: ...) that
+// SetYamlConfigInDir writes when config.yaml has no uncommented mapping to
+// merge into — the freshly rendered init template is entirely comments, so that
+// is the shape a rig created by `bd init` actually carries.
+//
+// A missing config.yaml and an absent key are both no-ops: nothing is written
+// and no error is returned.
+func UnsetYamlConfigInDir(beadsDir, key string) error {
+	configPath := filepath.Join(beadsDir, "config.yaml")
+	normalizedKey := normalizeYamlKey(key)
+
+	content, err := os.ReadFile(configPath) //nolint:gosec // configPath is derived from the caller's resolved beads dir
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to read config.yaml: %w", err)
+	}
+
+	newContent := commentOutYamlKeyAnyShape(string(content), normalizedKey)
+	if newContent == string(content) {
+		return nil
+	}
+
+	if err := os.WriteFile(configPath, []byte(newContent), 0o600); err != nil { //nolint:gosec // configPath is derived from the caller's resolved beads dir
+		return fmt.Errorf("failed to write config.yaml: %w", err)
+	}
+
+	return nil
+}
+
+// commentOutYamlKeyAnyShape comments out every declaration of a dotted key in
+// both the flat root form ("a.b: v") and the nested mapping form ("a:\n  b: v").
+// Unmatched content is returned byte-identical, which is what lets the caller
+// treat "no declaration found" as a no-op instead of a rewrite.
+func commentOutYamlKeyAnyShape(content, key string) string {
+	lines := strings.Split(content, "\n")
+	commentOutFlatKeyLines(lines, key)
+	commentOutNestedKeyLines(lines, strings.Split(key, "."))
+	return strings.Join(lines, "\n")
+}
+
+// commentOutFlatKeyLines comments out lines declaring the whole dotted key as a
+// single scalar key, e.g. `sync.remote: "..."`.
+func commentOutFlatKeyLines(lines []string, key string) {
+	pattern := regexp.MustCompile(`^(\s*)` + regexp.QuoteMeta(key) + `\s*:`)
+	for i, line := range lines {
+		if matches := pattern.FindStringSubmatch(line); matches != nil {
+			lines[i] = matches[1] + "# " + strings.TrimLeft(line, " \t")
+		}
+	}
+}
+
+// commentOutNestedKeyLines comments out the leaf line of a nested mapping path,
+// e.g. parts ["sync","remote"] against `sync:\n  remote: "..."`. Only the leaf
+// is commented out; parent mappings and sibling keys stay untouched.
+//
+// The current path is tracked with an indentation stack and must match parts
+// exactly, depth included, so a deeper key with the same leaf name (a.x.b for
+// key a.b) is not mistaken for the target.
+//
+// This is a line walk rather than a yaml.Node round-trip on purpose: marshalling
+// the document back out would reflow indentation, quoting, and comment
+// placement across every unrelated key in the file.
+func commentOutNestedKeyLines(lines []string, parts []string) {
+	if len(parts) < 2 {
+		return
+	}
+
+	type pathEntry struct {
+		name   string
+		indent int
+	}
+	var stack []pathEntry
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		indentPrefix := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+		indent := len(indentPrefix)
+
+		for len(stack) > 0 && stack[len(stack)-1].indent >= indent {
+			stack = stack[:len(stack)-1]
+		}
+
+		name, ok := yamlKeyNameFromLine(trimmed)
+		if !ok {
+			// Sequence items and continuation lines carry no mapping key; the
+			// indent pop above already left the path correct.
+			continue
+		}
+		stack = append(stack, pathEntry{name: name, indent: indent})
+
+		if len(stack) != len(parts) {
+			continue
+		}
+		matched := true
+		for j := range parts {
+			if stack[j].name != parts[j] {
+				matched = false
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+
+		lines[i] = indentPrefix + "# " + trimmed
+		stack = stack[:len(stack)-1]
+	}
+}
+
+var yamlKeyLinePattern = regexp.MustCompile(`^([A-Za-z0-9_.\-]+)\s*:(\s|$)`)
+
+// yamlKeyNameFromLine extracts the mapping key declared by a trimmed yaml line.
+func yamlKeyNameFromLine(trimmed string) (string, bool) {
+	matches := yamlKeyLinePattern.FindStringSubmatch(trimmed)
+	if matches == nil {
+		return "", false
+	}
+	return matches[1], true
+}
+
 var userGlobalKeyPrefixes = []string{"metrics."}
 
 func IsUserGlobalKey(key string) bool {

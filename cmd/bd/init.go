@@ -30,7 +30,6 @@ import (
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/utils"
 	"golang.org/x/term"
-	"gopkg.in/yaml.v3"
 )
 
 var initCmd = &cobra.Command{
@@ -2471,28 +2470,12 @@ func shouldSeedServerModeBackupDisabled(initServerMode bool, existingBackupEnabl
 // existingConfigYamlValue reports the value already recorded for a dotted key in
 // <beadsDir>/config.yaml, or "" when the key is absent.
 //
-// Two shapes must be accepted. config.SetYamlConfigInDir writes the nested form
-// (backup: / enabled:) only when config.yaml already has an uncommented
-// mapping; the freshly rendered init template is entirely comments, so writes
-// land as a flat "backup.enabled" root key instead. config.GetStringFromDir
-// only understands the nested form, so the flat root key is checked too.
+// Both shapes must be accepted: config.SetYamlConfigInDir writes the nested
+// form (backup: / enabled:) only when config.yaml already has an uncommented
+// mapping, and the freshly rendered init template is entirely comments, so
+// writes land as a flat "backup.enabled" root key instead.
 func existingConfigYamlValue(beadsDir, key string) string {
-	if val := config.GetStringFromDir(beadsDir, key); val != "" {
-		return val
-	}
-	data, err := os.ReadFile(filepath.Join(beadsDir, "config.yaml"))
-	if err != nil {
-		return ""
-	}
-	var root map[string]any
-	if err := yaml.Unmarshal(data, &root); err != nil {
-		return ""
-	}
-	val, ok := root[key]
-	if !ok || val == nil {
-		return ""
-	}
-	return fmt.Sprintf("%v", val)
+	return config.GetStringFromDirAnyShape(beadsDir, key)
 }
 
 // applyServerModeBackupDefault writes backup.enabled=false into
