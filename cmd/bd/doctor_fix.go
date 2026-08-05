@@ -367,6 +367,23 @@ func applyFixList(path string, fixes []doctorCheck) {
 			err = fix.PatrolPollution(path)
 		case "Lock Files":
 			err = fix.StaleLockFiles(path)
+		case doctor.StaleServerPIDStateCheckName:
+			// Cleanup lives in doltserver so it can take the same start flock
+			// Start() takes (non-blocking) and re-verify the PID under it.
+			// dolt-server.lock itself is never removed.
+			var pidRes doltserver.PIDStateCleanupResult
+			pidRes, err = doltserver.CleanupStalePIDState(doctor.ResolveBeadsDirForRepo(path))
+			if err == nil {
+				if pidRes.Cleaned {
+					for _, removed := range pidRes.Removed {
+						fmt.Printf("  Removed %s\n", removed)
+					}
+				} else {
+					fmt.Printf("  %s Skipped: %s\n", ui.RenderWarn("⚠"), pidRes.Reason)
+				}
+			}
+		case doctor.DoltPortDriftCheckName:
+			err = fix.DoltPortDrift(path)
 		case "Circuit Breaker":
 			dolt.CleanStaleCircuitBreakerFiles()
 			fmt.Printf("  %s Cleared stale circuit breaker files\n", ui.RenderPass("✓"))

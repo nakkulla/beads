@@ -536,6 +536,22 @@ func runDiagnostics(path string) doctorResult {
 		result.OverallOK = false
 	}
 
+	// Check 7e0a: Stale dolt server PID/port files left by a dead process.
+	// Read-only: a live server is reported healthy and never touched.
+	stalePIDCheck := convertDoctorCheck(doctor.CheckStaleServerPIDState(path))
+	result.Checks = append(result.Checks, stalePIDCheck)
+	if stalePIDCheck.Status == statusWarning || stalePIDCheck.Status == statusError {
+		result.OverallOK = false
+	}
+
+	// Check 7e0b: git-tracked metadata.json dolt_server_port that disagrees
+	// with the port bd actually connects on (GH#2372 authority chain).
+	portDriftCheck := convertDoctorCheck(doctor.CheckDoltPortDrift(path))
+	result.Checks = append(result.Checks, portDriftCheck)
+	if portDriftCheck.Status == statusWarning || portDriftCheck.Status == statusError {
+		result.OverallOK = false
+	}
+
 	// Check 7e1: Corrupt-manifest state (GH#3290). Detection only; the
 	// destructive backup+reinit repair runs solely via doctor --fix (bd-6dnrw.6).
 	corruptManifestCheck := convertDoctorCheck(doctor.CheckCorruptManifest(path))
