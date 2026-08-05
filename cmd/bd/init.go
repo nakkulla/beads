@@ -26,6 +26,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/storage/schema"
 	"github.com/steveyegge/beads/internal/templates/agents"
+	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/utils"
 	"golang.org/x/term"
@@ -1090,6 +1091,15 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				_ = store.Close()
 				return fmt.Errorf("failed to set issue prefix: %v", err)
 			}
+		}
+
+		// Server-mode rigs get the "resolved" workflow status registered here
+		// instead of by an out-of-band setup script. Non-fatal: a rig missing
+		// the custom status is degraded, not broken.
+		if seeded, err := seedServerModeResolvedStatus(ctx, store, initServerMode); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to seed %q custom status: %v\n", customStatusResolved, err)
+		} else if seeded && !quiet {
+			fmt.Printf("  %s Custom status %q registered\n", ui.RenderPass("✓"), customStatusResolved)
 		}
 
 		// === TRACKING METADATA (Pattern B: Warn and Continue) ===
@@ -2494,6 +2504,94 @@ func applyServerModeBackupDefault(beadsDir string, initServerMode bool) (bool, e
 	}
 	if err := config.SetYamlConfigInDir(beadsDir, "backup.enabled", "false"); err != nil {
 		return false, err
+	}
+	return true, nil
+}
+
+// customStatusConfigKey is the DB config key holding the comma-separated custom
+// status list; writing it also rebuilds the custom_statuses table that
+// `bd list --status <name>` validates against.
+const customStatusConfigKey = "status.custom"
+
+// customStatusResolved is the workflow status a server-mode (fleet) rig is
+// expected to answer `bd list --status resolved` for. It used to be registered
+// only by an out-of-band setup script, which no-ops once a rig is already
+// initialized — so a raw `bd init --server` left the policy unapplied.
+const customStatusResolved = "resolved"
+
+// customStatusConfigStore is the narrow store surface the resolved-status
+// seeding needs. Declared as an interface so the wiring is testable without a
+// live Dolt server.
+type customStatusConfigStore interface {
+	GetConfig(ctx context.Context, key string) (string, error)
+	SetConfig(ctx context.Context, key, value string) error
+}
+
+// mergeCustomStatusValue merges a status name into an existing status.custom
+// value and reports whether the result differs from what is stored. SetConfig
+// replaces the whole value, so the caller must read first and merge here rather
+// than write the token alone.
+//
+// A name already present under any category (e.g. "resolved:done") counts as
+// present and the stored value is returned untouched: this is a default
+// injection, not a policy rewrite. Both the existing value and the merge result
+// are validated with types.ParseCustomStatusConfig, so an unparseable stored
+// value is reported instead of being clobbered, and init never persists a value
+// that would fail the custom_statuses sync.
+func mergeCustomStatusValue(existing, add string) (string, bool, error) {
+	add = strings.TrimSpace(add)
+	if add == "" {
+		return "", false, fmt.Errorf("custom status name is empty")
+	}
+	parsed, err := types.ParseCustomStatusConfig(existing)
+	if err != nil {
+		return "", false, fmt.Errorf("existing %s is invalid: %w", customStatusConfigKey, err)
+	}
+	for _, s := range parsed {
+		if strings.EqualFold(s.Name, add) {
+			return existing, false, nil
+		}
+	}
+	merged := add
+	if trimmed := strings.TrimSpace(existing); trimmed != "" {
+		merged = trimmed + "," + add
+	}
+	if _, err := types.ParseCustomStatusConfig(merged); err != nil {
+		return "", false, fmt.Errorf("merged %s is invalid: %w", customStatusConfigKey, err)
+	}
+	return merged, true, nil
+}
+
+// seedServerModeResolvedStatus merges customStatusResolved into the database
+// status.custom config for a server-mode rig, and reports whether a write
+// happened.
+//
+// The write goes through store.SetConfig rather than a direct table write so it
+// rides the same transaction that rebuilds the custom_statuses table
+// (internal/storage/dolt/config.go -> issueops.SyncCustomStatusesTable); that
+// table is what `bd list --status resolved` validates against.
+//
+// Spec decision (docs/superpowers/specs/2026-08-05-bd-skill-absorption-design.md
+// A2): re-running init on a rig where the user deliberately removed "resolved"
+// re-adds it. Seeding is init-time policy and init holds no record that would
+// distinguish an intentional removal from a rig that never had the status.
+func seedServerModeResolvedStatus(ctx context.Context, s customStatusConfigStore, initServerMode bool) (bool, error) {
+	if !initServerMode || s == nil {
+		return false, nil
+	}
+	existing, err := s.GetConfig(ctx, customStatusConfigKey)
+	if err != nil {
+		return false, fmt.Errorf("reading %s: %w", customStatusConfigKey, err)
+	}
+	merged, changed, err := mergeCustomStatusValue(existing, customStatusResolved)
+	if err != nil {
+		return false, err
+	}
+	if !changed {
+		return false, nil
+	}
+	if err := s.SetConfig(ctx, customStatusConfigKey, merged); err != nil {
+		return false, fmt.Errorf("writing %s: %w", customStatusConfigKey, err)
 	}
 	return true, nil
 }
