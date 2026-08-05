@@ -39,7 +39,7 @@
 ### 4.1 문법과 저장
 
 - external 의존의 유일한 문법은 **맨 이슈 ID**(예: `dotfiles-1tif`, `beads-o53.1`)다. 저장 칼럼은 기존 `depends_on_external` 그대로(스키마 변경 없음), 값이 ID로 통일된다.
-- cross-prefix 분류(`ClassifyDepTarget`)는 유지: 자기 prefix ID는 기존대로 일반 FK 경로, cross-prefix ID만 external 경로.
+- **cross/own 분류 규칙 교체**: 현행 분류는 `types.ExtractPrefix`(첫 하이픈까지, `internal/types/id_generator.go:92-100`) 비교(`internal/storage/dolt/dependencies.go:13-16` `isCrossPrefixDep`)라서 하이픈 포함 prefix(예: `team-alpha` vs `team-beta`)를 같은 prefix로 오분류한다. 신 규칙: 서버 모드에서는 대상 ID를 **{자기 `config.issue_prefix`} ∪ 발견된 prefix 집합**과 `startswith(prefix + "-")` 최장 일치로 대조해, 최장 일치가 자기 prefix면 일반 FK 경로·아니면 external 경로로 분류한다. 비서버 모드는 `startswith(자기 prefix + "-")` 폴백(비서버 cross-prefix 쓰기는 4.3에서 거부되므로 오분류 창이 없다). `ExtractPrefix` 기반 분류 호출처는 전부 이 규칙으로 교체한다.
 - `external:` 접두 입력은 `bd dep add`에서 **에러**로 거부하고 "대상 이슈 ID를 직접 지정하라"는 안내를 출력한다. `validateExternalRef`/`IsExternalRef`(`cmd/bd/dep.go:1492-1517`)는 이 거부 검사로 교체된다.
 
 ### 4.2 해석기 (query-time, 자동 발견)
@@ -75,6 +75,7 @@
 - `cmd/bd/dep.go:1492-1517` — `validateExternalRef`/`IsExternalRef` → `external:` 거부 + ID 검증으로 교체; `:249` help 문구 갱신
 - `internal/storage/issueops/external_resolution.go` — `parseExternalRef`·`refByCapLabel`·`queryProvidedLabels`를 ID 발견·판정 구현으로 교체
 - `internal/config/config.go:269,274,806-815`, `internal/config/yaml_config.go:97` — `external_databases` 기본값·getter·YAML prefix 등록 제거
+- `cmd/bd/config.go` `recognizedConfigPrefixes`의 `"external_databases."` 항목, `cmd/bd/config_show.go:124-171` 컨테이너 목록의 `"external_databases"` — CLI 설정 표면에서 제거(`bd config set external_databases.<name> ...`가 unrecognized로 거부되게)
 - 표시·그래프 경로의 `external:` 접두 분기(`cmd/bd/dep.go:333,633,879,942`, `swarm.go:291`, `graph.go:332,405`, `show_format.go:150`, `ready.go:29`) — 맨 ID 표시로 정리(external 마커는 "cross-prefix" 판정으로 대체)
 - 스토리지 계층 `HasPrefix("external:")` 분기(`dependencies.go:56,121,151,849,922`, `domain/db/dependency.go:42`, `dolt/transaction.go:671`, `dolt/dependencies.go:33,181`, `dolt/wisps.go:734`) — cross-prefix 분류만 남기고 `external:` 문자열 분기 제거
 - `cmd/bd/info.go:1111` 배너, `docs/CLI_REFERENCE.md`·`docs/CONFIG.md:234-271`·`docs/DEPENDENCIES.md:152`·`website/docs/**`(현행 버전만), `plugins/beads/skills/beads/resources/MOLECULES.md:243-357` — 신 문법으로 갱신
@@ -84,7 +85,6 @@
 ### 4.5 CLI 표면 정합
 
 - `bd dep list <id> --json`이 external 엣지를 포함하도록 수정(counts와 목록 정합 — beads-19q U2가 표시 경로를 복원했으나 `--json` 단일 ID 경로가 여전히 누락).
-- `bd ready --explain`의 blocked 항목이 external 차단 사유(대상 ID·미충족/unresolvable 구분)를 실어 UI가 bare "blocked" 칩 대신 근거를 표시할 수 있게 한다(additive JSON).
 
 ## 5. 크로스 레포 유닛과 랜딩 순서 (ledger)
 
@@ -101,29 +101,32 @@
 
 ## 6. Test scope
 
-RED→GREEN 시임 (External/beads, `make test` 스위트 내):
+RED→GREEN 시임 (External/beads):
 
 1. **해석기 판정식**: `internal/storage/issueops/external_resolution_test.go` 재작성 — 맨 ID ref가 (a) 대상 DB closed → satisfied, (b) open/resolved → unsatisfied, (c) 미지 prefix → unresolvable 진단, (d) 중복 prefix → unresolvable 진단, (e) 비서버 모드 → unresolvable. RED: 신 판정 테스트가 현행 malformed 처리로 실패.
-2. **자동 발견**: 신규 테스트 — 2개 DB(config.issue_prefix 보유) + 1개 비-beads DB(무시) 구성에서 prefix→DB 맵 구성, 중복 prefix 감지. embeddeddolt 통합(`external_ready_integration_test.go` 계열 재작성): cross-DB에서 대상 close 후 다음 `bd ready`에 소비자 노출.
-3. **쓰기 검증**: `bd dep add` — (a) 실존 cross-prefix ID 수용, (b) 미존재 ID 거부, (c) `external:` 문법 거부(안내 문구), (d) 비서버 모드 cross-prefix 거부. RED: 현행은 전부 무검증 수용.
-4. **dep list 정합**: 단일 ID `--json`에 external 엣지 포함(counts 일치). RED: 현행 `[]`.
-5. **철거 회귀**: `ship_embedded_test.go`·`label_embedded_test.go:323`(provides 거부)·`external_ref_test.go` 삭제/교체; `ready_explain_merge_test.go`·`graph`·`sqlbuild`·`dolt` 계층의 `external:` 픽스처를 맨 ID로 치환; `tests/regression/discovery_test.go:974-987` 유지 확인(external 차단이 activeIDs에 안 들어가는 불변식은 문법 무관).
+2. **분류 규칙(4.1)**: 신규 테스트 — 하이픈 포함 prefix 겹침 구성(예: 자기 prefix `team` vs 발견 prefix `team-alpha`)에서 `team-alpha-xyz`가 external로, `team-xyz`가 own으로 분류. RED: 현행 `ExtractPrefix` 첫-하이픈 비교로 실패.
+3. **자동 발견**: 신규 테스트 — 2개 DB(config.issue_prefix 보유) + 1개 비-beads DB(무시) 구성에서 prefix→DB 맵 구성, 중복 prefix 감지. embeddeddolt 통합(`external_ready_integration_test.go` 계열 재작성): cross-DB에서 대상 close 후 다음 `bd ready`에 소비자 노출. **주의: embeddeddolt 스위트는 `BEADS_TEST_EMBEDDED_DOLT=1` env 게이트 뒤에 있어(`create_issue_test.go:171-175`) canonical `make test`만으로는 돌지 않는다** — 아래 검증 명령에 명시된 env 부여 실행이 필수이며, env 없는 실행을 RED/GREEN 증거로 쓰지 않는다.
+4. **쓰기 검증**: `bd dep add` — (a) 실존 cross-prefix ID 수용, (b) 미존재 ID 거부, (c) `external:` 문법 거부(안내 문구), (d) 비서버 모드 cross-prefix 거부. RED: 현행은 전부 무검증 수용.
+5. **config 표면**: `bd config set external_databases.foo bar`가 unrecognized key로 거부. RED: 현행 `recognizedConfigPrefixes`가 수용.
+6. **dep list 정합**: 단일 ID `--json`에 external 엣지 포함(counts 일치). RED: 현행 `[]`.
+7. **철거의 역방향 RED**(테스트 삭제만으로 GREEN이 되는 것을 방지): (a) `bd ship <x>`가 unknown command로 실패, (b) `bd label add <id> provides:foo`가 일반 라벨로 **수용**(현행 예약 거부의 반전 — `label_embedded_test.go:323` 반전 재작성). 기존 `ship_embedded_test.go`·`external_ref_test.go`는 삭제, `ready_explain_merge_test.go`·`graph`·`sqlbuild`·`dolt` 계층의 `external:` 픽스처는 맨 ID로 치환.
+8. **태그 제외 fixture 정리**: `tests/regression/discovery_test.go:987`은 `//go:build regression && discovery` 태그로 `make test`에서 제외되지만 제거 대상 문법(`external:otherproject:some-capability`)을 사용하므로, 같은 변경에서 맨 ID fixture로 치환한다(제외 스위트가 향후 실행 가능하도록). 이 fixture는 RED/GREEN 증거로 쓰지 않는다.
 
-검증 명령: `env TEST_TIMEOUT=10m make test` (repo-ops.toml [verify] canonical).
+검증 명령(둘 다 필수): `env TEST_TIMEOUT=10m make test` (repo-ops.toml [verify] canonical) **및** `BEADS_TEST_EMBEDDED_DOLT=1 go test ./internal/storage/embeddeddolt/...`.
 
 ## 7. Ordered apply procedure
 
-머지 이후 라이브 반영 절차 (각 단계에 라이브 검증 포함):
+머지 이후 라이브 반영 절차. **소유권**: 1·2단계는 각 소비자 유닛(UI-knf8, dotfiles-jvhr)의 표준 finish 절차가 소유한다. 3단계의 바이너리 교체는 이 레포 `[deploy]` 선언(`make install-force`)의 커버리지이고, **4~6단계(라이브 probe·데이터 정리·최종 검증)는 deploy 커버리지 밖이므로 `beads-o53`의 close 조건으로 묶는다** — 실행 영수증(probe 판정 결과, snapshot 위치, 삭제 행 수, grep 전수 결과)을 Bead notes에 readback으로 기록하기 전에는 `beads-o53`을 close하지 않는다. 워커 무인 레인이 이 유닛을 집더라도 4~6단계는 세션(대화형) 몫으로 남는다.
 
 1. **① UI-knf8 머지·배포**: beads-ui 워커/세션 레인 표준 절차. 배포는 `[deploy]` 자기재시작(detached) — 머지 클릭 레인이면 자동, 세션 레인이면 재시작은 운영자/세션 몫. 검증: 재시작 후 머지 클릭 1건에서 cleanup 파이프라인이 ship 단계 없이 `branch_cleanup → parent_close → 종료`로 완주.
 2. **② dotfiles-jvhr 머지·설치**: 표준 post-merge install 의무(`./install.sh claude codex shell` 해당분) + `check-workflow-contract.py` green + 계약 테스트 green. 검증: 설치본 스킬에서 `bd ship` 문구 부재 grep.
-3. **③ beads-o53 머지·배포**: `make install-force`로 `~/.local/bin/bd` 교체(bdui 재시작 불요 — spawn-per-request). 플릿 타 머신 배포는 기존 채널(dotfiles-otze) 경유, 이 절차의 완료 조건은 Mac Studio 설치본 교체까지. 검증: `bd version` 신 버전 + `bd ship` 명령 부재.
-4. **데이터 정리** (③ 직후, 중앙 dolt): capability 레코드 5건 삭제 — 대상은 1절 실측 목록(전부 closed 이슈 소속, `dependencies` 테이블 `depends_on_external LIKE 'external:%'` 전수와 일치 확인 후 삭제). 각 레포 `.beads/config.yaml`의 `external_databases:` 블록 제거(실측 보유: External/beads, beads-ui; 삭제 전 전 레포 grep 전수). bd config 키 제거는 ③ 코드에 포함.
-5. **라이브 검증**: beads-ui 워크스페이스에서 `bd ready --explain --json` — stderr 경고 0건, blocked 목록에 unresolvable 잔존 0건. 실전 판정 1건: 임의 open 이슈에 cross-prefix closed 이슈 의존을 걸어 ready 유지 확인, open 이슈 의존으로 blocked 전환 확인, 걸었던 의존 제거.
+3. **③ beads-o53 머지·배포**: `make install-force`로 `~/.local/bin/bd` 교체(bdui 재시작 불요 — spawn-per-request). 플릿 타 머신 배포는 기존 채널(dotfiles-otze) 경유, 이 절차의 완료 조건은 Mac Studio 설치본 교체까지. 검증: `bd version` 신 버전 + `bd ship`이 unknown command.
+4. **의미론 라이브 probe** (③ 직후, 데이터 정리 **전**): 전용 일회용 probe 이슈를 생성해 검증한다 — 실작업 이슈를 쓰지 않는다. 절차: (a) 한 rig(예: External/beads의 `beads` DB)에 probe 이슈 생성, ID 기록. (b) probe에 cross-prefix **closed** 이슈 의존 추가 → `bd ready`에 probe 유지 확인. (c) cross-prefix **open** 이슈 의존 추가 → blocked 전환 확인. (d) 의존 전부 제거 + probe 이슈 close, readback으로 잔여 0 확인. 중단 시 재개 절차: 기록된 probe ID로 (d)를 먼저 완료한 뒤 재시도 — probe는 전용 이슈이므로 실작업이 blocked로 남는 일이 없다. probe 실패 시 여기서 멈추고 롤백(아래) — 5단계로 진행하지 않는다.
+5. **데이터 정리** (probe green 후에만, 중앙 dolt): (a) **snapshot 선행**: 삭제 대상 행 전체를 `SELECT *`로 덤프해 파일로 보존하고, `.beads/config.yaml` 원본을 백업 복사한다(복구 = snapshot 재삽입·파일 복원). (b) capability 레코드 5건 삭제 — 대상은 1절 실측 목록(전부 closed 이슈 소속). 삭제 전 `depends_on_external LIKE 'external:%'` 전수 조회가 그 5건과 일치하는지 확인하고, 불일치 시 멈추고 재실측. (c) 각 레포 `.beads/config.yaml`의 `external_databases:` 블록 제거(실측 보유: External/beads, beads-ui; 삭제 전 전 레포 grep 전수). bd config 키 인식 제거는 ③ 코드에 포함.
+6. **최종 readback**: beads-ui 워크스페이스에서 `bd ready --explain --json` — stderr 경고 0건, blocked 목록에 unresolvable 잔존 0건. 영수증 일체를 `beads-o53` notes에 기록.
 
-롤백: ③ 이전 어느 시점이든 무해(ship은 여전히 존재). ③ 이후 문제 시 직전 bd 바이너리 재설치(`git checkout <prev> && make install-force`)로 즉시 복귀 — 데이터 정리 4단계는 ③ 안정 확인 후 실행한다.
+롤백: ③ 이전 어느 시점이든 무해(ship은 여전히 존재). ③ 이후 4단계 실패 시 직전 bd 바이너리 재설치(`git checkout <prev> && make install-force`)로 즉시 복귀 — 이 시점에는 데이터·config가 아직 원형이다. 5단계 이후 문제 시 바이너리 복귀 + snapshot 재삽입·config 복원.
 
 ## 8. 잔여 위험
 
-- 구 bd 바이너리를 가진 플릿 타 머신이 ③ 이후 capability 레코드를 새로 쓸 가능성 — 4단계 정리 후에도 이론상 재유입 가능하나, 쓰기 주체가 이 Mac Studio(중앙 워커) 중심이라 실위험 낮음. 플릿 배포(dotfiles-otze 채널)로 수렴.
-- `bd ready --explain` JSON에 additive 필드 추가(4.5) — beads-ui `list-adapters.js`는 관용 파싱이라 무해(신 필드 활용은 별도 유닛).
+- 구 bd 바이너리를 가진 플릿 타 머신이 ③ 이후 capability 레코드를 새로 쓸 가능성 — 5단계 정리 후에도 이론상 재유입 가능하나, 쓰기 주체가 이 Mac Studio(중앙 워커) 중심이라 실위험 낮음. 플릿 배포(dotfiles-otze 채널)로 수렴.
