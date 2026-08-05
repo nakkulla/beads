@@ -1,0 +1,22 @@
+# 이 레포의 worker verify·deploy 선언 — 스키마와 동기화 절차는 dotfiles
+# repo-onboarding 스킬이 소유한다.
+#
+# 이 파일이 verify·deploy 선언의 단일 SoT다. workflow 계약의 spec 게이트
+# post-merge continuity 판정도 이 [deploy] 선언을 읽는다 — 루트 deploy.json
+# 존재 여부가 아니다. 실행 표면은 ~/.config/bdui/config.toml의
+# [worker.verify."<repo abs path>"] · [worker.deploy."<repo abs path>"]이며,
+# 이 파일은 그 값의 선언 출처다. 대조는 dotfiles install.sh shell의 warn-only
+# 체커(scripts/repo_ops_check.py), 적용은 repo-onboarding 스킬의 확인 게이트를
+# 거친다(자동 반영 없음).
+
+[verify]
+cmd = ["env", "TEST_TIMEOUT=10m", "make", "test"]
+timeout_ms = 900000
+
+env_notes = "go test 자동감지는 ICU cgo 빌드 실패 — canonical은 make test (-tags gms_pure_go). make 내부 go 해석은 서버 PATH에 brew 경로 필요. TEST_TIMEOUT=10m: cmd/bd 실측 171초 vs 러너 기본 3m"
+
+[deploy]
+cmd = ["make", "install-force"]
+timeout_ms = 600000
+
+env_notes = "빌드 + ~/.local/bin/bd 교체 — 멱등. bdui 서버는 요청마다 bd를 spawn하므로 바이너리 교체만으로 즉시 반영(재시작 불요)"
