@@ -29,6 +29,7 @@ import (
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/utils"
 	"golang.org/x/term"
+	"gopkg.in/yaml.v3"
 )
 
 var initCmd = &cobra.Command{
@@ -338,6 +339,20 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 					cmdCtx.ServerMode = initServerMode
 				}
 			}
+		}
+
+		// Server-mode default: skip the local-Dolt-shaped agent instruction
+		// files unless the caller named an agents flag. Placed here because
+		// initServerMode is final only after the config.yaml dolt.mode
+		// fallback above.
+		if shouldDefaultSkipAgentsForServerMode(
+			initServerMode,
+			cmd.Flags().Changed("skip-agents"),
+			cmd.Flags().Changed("agents-file"),
+			cmd.Flags().Changed("agents-template"),
+			cmd.Flags().Changed("agents-profile"),
+		) {
+			skipAgents = true
 		}
 
 		// Reject hyphens in --database for embedded mode. Must run AFTER
@@ -856,7 +871,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				}
 				syncFromRemote = bootstrap
 			}
-		} else if syncRemoteSource == initSyncRemoteNone && !stealth && isGitRepo() && !isBareGitRepo() {
+		} else if shouldDeriveSyncRemoteFromGitOrigin(syncRemoteSource, initServerMode, stealth, isGitRepo, isBareGitRepo) {
 			if originURL, err := gitOriginGetURL(); err == nil && originURL != "" {
 				syncURL = normalizeRemoteURL(originURL)
 				syncURLFromGitOrigin = true
@@ -1225,6 +1240,13 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			// Create config.yaml template (prefix is stored in DB, not config.yaml)
 			if err := createConfigYaml(beadsDir, false, ""); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to create config.yaml: %v\n", err)
+				// Non-fatal - continue anyway
+			}
+
+			// Server-mode rigs default auto-backup off; an existing
+			// backup.enabled value is preserved.
+			if _, err := applyServerModeBackupDefault(beadsDir, initServerMode); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to set default backup.enabled: %v\n", err)
 				// Non-fatal - continue anyway
 			}
 
@@ -2400,6 +2422,80 @@ func resolveInitConfiguredSyncRemote(initRemote string, initRemoteChanged bool, 
 		return syncURL, initSyncRemoteConfigured
 	}
 	return "", initSyncRemoteNone
+}
+
+// shouldDeriveSyncRemoteFromGitOrigin reports whether init may fall back to the
+// git origin URL as the sync remote. Server-mode rigs opt out: their sync path
+// is the external Dolt server, so persisting a git code URL as sync.remote
+// records a remote that is never the sync source. An explicit --remote is a
+// different source (initSyncRemoteExplicit) and is unaffected.
+//
+// inGitRepo/bareGitRepo are passed as callbacks because they shell out to git;
+// the cheap conditions short-circuit before either probe runs.
+func shouldDeriveSyncRemoteFromGitOrigin(source initSyncRemoteSource, initServerMode, stealth bool, inGitRepo, bareGitRepo func() bool) bool {
+	if source != initSyncRemoteNone || initServerMode || stealth {
+		return false
+	}
+	return inGitRepo() && !bareGitRepo()
+}
+
+// shouldDefaultSkipAgentsForServerMode reports whether init should default
+// --skip-agents to true. The generated agent instructions assume the local-Dolt
+// layout (bd dolt push/pull, .beads/dolt/), which is wrong for a server-mode
+// rig. Any explicit agents flag — including --skip-agents=false — is user
+// intent and wins over this default.
+func shouldDefaultSkipAgentsForServerMode(initServerMode, skipAgentsChanged, agentsFileChanged, agentsTemplateChanged, agentsProfileChanged bool) bool {
+	if !initServerMode {
+		return false
+	}
+	return !skipAgentsChanged && !agentsFileChanged && !agentsTemplateChanged && !agentsProfileChanged
+}
+
+// shouldSeedServerModeBackupDisabled reports whether init should write the
+// backup.enabled default for a server-mode rig. This is a default injection,
+// not a policy override: an existing value (true or false) is left alone.
+func shouldSeedServerModeBackupDisabled(initServerMode bool, existingBackupEnabled string) bool {
+	return initServerMode && existingBackupEnabled == ""
+}
+
+// existingConfigYamlValue reports the value already recorded for a dotted key in
+// <beadsDir>/config.yaml, or "" when the key is absent.
+//
+// Two shapes must be accepted. config.SetYamlConfigInDir writes the nested form
+// (backup: / enabled:) only when config.yaml already has an uncommented
+// mapping; the freshly rendered init template is entirely comments, so writes
+// land as a flat "backup.enabled" root key instead. config.GetStringFromDir
+// only understands the nested form, so the flat root key is checked too.
+func existingConfigYamlValue(beadsDir, key string) string {
+	if val := config.GetStringFromDir(beadsDir, key); val != "" {
+		return val
+	}
+	data, err := os.ReadFile(filepath.Join(beadsDir, "config.yaml"))
+	if err != nil {
+		return ""
+	}
+	var root map[string]any
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return ""
+	}
+	val, ok := root[key]
+	if !ok || val == nil {
+		return ""
+	}
+	return fmt.Sprintf("%v", val)
+}
+
+// applyServerModeBackupDefault writes backup.enabled=false into
+// <beadsDir>/config.yaml when shouldSeedServerModeBackupDisabled allows it.
+// Reports whether a value was written.
+func applyServerModeBackupDefault(beadsDir string, initServerMode bool) (bool, error) {
+	if !shouldSeedServerModeBackupDisabled(initServerMode, existingConfigYamlValue(beadsDir, "backup.enabled")) {
+		return false, nil
+	}
+	if err := config.SetYamlConfigInDir(beadsDir, "backup.enabled", "false"); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func initRemoteCloneMode(initServerMode, externalServer bool) remoteCloneMode {
