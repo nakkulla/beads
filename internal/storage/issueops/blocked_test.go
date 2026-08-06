@@ -338,7 +338,7 @@ func TestCollectExternalBlockedInTx_CandidateCarriesParent(t *testing.T) {
 	t.Parallel()
 	mock, tx := newBlockedMock(t)
 
-	const ref = "external:beads:cap-a"
+	const ref = "beads-cap0a1"
 	expectExternalBlockedPreamble(mock, "bd-child", ref)
 	mock.ExpectQuery(fmt.Sprintf(parentDepQueryRegex, "dependencies")).
 		WithArgs("bd-child").
@@ -370,7 +370,7 @@ func TestCollectExternalBlockedInTx_TopLevelCandidateKeepsNilParent(t *testing.T
 	t.Parallel()
 	mock, tx := newBlockedMock(t)
 
-	const ref = "external:beads:cap-a"
+	const ref = "beads-cap0a1"
 	expectExternalBlockedPreamble(mock, "bd-top", ref)
 	mock.ExpectQuery(fmt.Sprintf(parentDepQueryRegex, "dependencies")).
 		WithArgs("bd-top").
@@ -397,7 +397,7 @@ func TestCollectExternalBlockedInTx_ParentLookupErrorKeepsCandidate(t *testing.T
 	t.Parallel()
 	mock, tx := newBlockedMock(t)
 
-	const ref = "external:beads:cap-a"
+	const ref = "beads-cap0a1"
 	expectExternalBlockedPreamble(mock, "bd-child", ref)
 	mock.ExpectQuery(fmt.Sprintf(parentDepQueryRegex, "dependencies")).
 		WithArgs("bd-child").

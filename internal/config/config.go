@@ -269,10 +269,6 @@ func Initialize() error {
 	// Maps project names to paths for resolving external: blocked_by references
 	v.SetDefault("external_projects", map[string]string{})
 
-	// External databases for cross-project dependency resolution against a
-	// shared Dolt server. Maps project names to Dolt database names.
-	v.SetDefault("external_databases", map[string]string{})
-
 	// Load config files: lowest priority first, each MergeInConfig overwrites
 	if len(configPaths) > 0 {
 		v.SetConfigFile(configPaths[0])
@@ -833,18 +829,6 @@ func GetMultiRepoConfig() *MultiRepoConfig {
 //	  other-project: /absolute/path/to/other-project
 func GetExternalProjects() map[string]string {
 	return GetStringMapString("external_projects")
-}
-
-// GetExternalDatabases returns the external_databases configuration.
-// Maps project names to Dolt database names on the shared server, for
-// cross-project dependency resolution.
-// Example config.yaml:
-//
-//	external_databases:
-//	  beads: beads_prod
-//	  other-project: other_project_db
-func GetExternalDatabases() map[string]string {
-	return GetStringMapString("external_databases")
 }
 
 // ResolveExternalProjectPath resolves a project name to its absolute path.

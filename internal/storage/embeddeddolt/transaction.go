@@ -106,8 +106,11 @@ func (t *embeddedTransaction) AddDependency(ctx context.Context, dep *types.Depe
 
 func (t *embeddedTransaction) AddDependencyWithOptions(ctx context.Context, dep *types.Dependency, actor string, addOpts storage.DependencyAddOptions) error {
 	_, _, _, depTable := issueops.WispTableRouting(issueops.IsActiveWispInTx(ctx, t.tx, dep.IssueID))
+	// An embedded store is a single local database: cross-prefix targets are
+	// never resolvable from here, so classification uses the non-server
+	// fallback and the write-time check rejects them.
 	if err := issueops.AddDependencyInTx(ctx, t.tx, dep, actor, issueops.AddDependencyOpts{
-		IsCrossPrefix:  types.ExtractPrefix(dep.IssueID) != types.ExtractPrefix(dep.DependsOnID),
+		IsCrossPrefix:  issueops.IsCrossPrefixTarget(ctx, t.tx, dep.IssueID, dep.DependsOnID, false),
 		SkipCycleCheck: addOpts.SkipCycleCheck,
 	}); err != nil {
 		return err

@@ -78,7 +78,7 @@ type ReadyWorkWhereInputs struct {
 	// ParentDescendantIDs are the transitive descendants of *filter.ParentID;
 	// consulted only when filter.ParentID != nil.
 	ParentDescendantIDs []string
-	// UnsatisfiedExternalRefs are external:<project>:<capability> refs that
+	// UnsatisfiedExternalRefs are cross-prefix issue-ID refs that
 	// the resolver computed as not satisfied (unsatisfied or unresolvable). A
 	// row with a blocking-type external dependency on any of these is excluded
 	// from ready work. Blocking is computed here at query time; stored

@@ -867,7 +867,7 @@ Examples:
 var recognizedConfigPrefixes = []string{
 	"export.", "import.", "dolt.", "jira.", "linear.", "github.", "custom.",
 	"status.", "doctor.suppress.", "routing.", "sync.", "git.",
-	"directory.", "repos.", "external_projects.", "external_databases.",
+	"directory.", "repos.", "external_projects.",
 	"validation.", "hierarchy.", "ai.", "backup.", "federation.", "metrics.",
 }
 

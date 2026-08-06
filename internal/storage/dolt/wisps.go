@@ -683,7 +683,8 @@ func (s *DoltStore) getWispDependents(ctx context.Context, issueID string) ([]*t
 // getWispDependenciesWithMetadata returns wisp dependencies with metadata.
 func (s *DoltStore) getWispDependenciesWithMetadata(ctx context.Context, issueID string) ([]*types.IssueWithDependencyMetadata, error) {
 	rows, err := s.queryContext(ctx, fmt.Sprintf(`
-		SELECT %s AS depends_on_id, type FROM wisp_dependencies WHERE issue_id = ?
+		SELECT %s AS depends_on_id, type, depends_on_external IS NOT NULL
+		FROM wisp_dependencies WHERE issue_id = ?
 	`, issueops.DepTargetExpr), issueID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get wisp dependencies with metadata: %w", err)
@@ -691,15 +692,17 @@ func (s *DoltStore) getWispDependenciesWithMetadata(ctx context.Context, issueID
 
 	type depMeta struct {
 		depID, depType string
+		external       bool
 	}
 	var deps []depMeta
 	for rows.Next() {
 		var depID, depType string
-		if err := rows.Scan(&depID, &depType); err != nil {
+		var external bool
+		if err := rows.Scan(&depID, &depType, &external); err != nil {
 			_ = rows.Close()
 			return nil, wrapScanError("scan wisp dependency metadata", err)
 		}
-		deps = append(deps, depMeta{depID: depID, depType: depType})
+		deps = append(deps, depMeta{depID: depID, depType: depType, external: external})
 	}
 	_ = rows.Close()
 	if err := rows.Err(); err != nil {
@@ -731,7 +734,7 @@ func (s *DoltStore) getWispDependenciesWithMetadata(ctx context.Context, issueID
 			// backing issue row — synthesize an entry rather than drop it, so
 			// the listed edges stay consistent with the counts (matches
 			// issueops.GetDependenciesWithMetadataInTx).
-			if strings.HasPrefix(d.depID, "external:") {
+			if d.external {
 				results = append(results, issueops.NewExternalDepEntry(d.depID, d.depType))
 			}
 			continue

@@ -53,7 +53,7 @@ func depTargetIn(alias, placeholders string) string {
 }
 
 func ClassifyDepTarget(ctx context.Context, tx *sql.Tx, dep *types.Dependency, isCrossPrefix bool) DepTargetKind {
-	if isCrossPrefix || strings.HasPrefix(dep.DependsOnID, "external:") {
+	if isCrossPrefix {
 		return DepTargetExternal
 	}
 	if IsActiveWispInTx(ctx, tx, dep.DependsOnID) {
@@ -84,6 +84,10 @@ type AddDependencyOpts struct {
 	// IsCrossPrefix is true when source and target have different prefixes,
 	// meaning the target lives in another rig's database.
 	IsCrossPrefix bool
+	// ServerMode reports whether the connection is on a shared Dolt server,
+	// which is what makes a cross-prefix target resolvable at all. It gates
+	// the write-time existence check on cross-prefix targets.
+	ServerMode bool
 	// SkipCycleCheck skips the recursive pre-insert cycle check for callers
 	// that intentionally trade validation cost for bulk graph wiring speed.
 	SkipCycleCheck bool
@@ -116,9 +120,9 @@ func AddDependencyInTx(ctx context.Context, tx *sql.Tx, dep *types.Dependency, a
 		}
 	}
 
-	// Auto-detect target routing if not provided (skip for external/cross-prefix).
+	// Auto-detect target routing if not provided (skip for cross-prefix).
 	targetTable := opts.TargetTable
-	if targetTable == "" && !strings.HasPrefix(dep.DependsOnID, "external:") && !opts.IsCrossPrefix {
+	if targetTable == "" && !opts.IsCrossPrefix {
 		targetIsWisp := IsActiveWispInTx(ctx, tx, dep.DependsOnID)
 		targetTable, _, _, _ = WispTableRouting(targetIsWisp)
 	}
@@ -146,9 +150,17 @@ func AddDependencyInTx(ctx context.Context, tx *sql.Tx, dep *types.Dependency, a
 		return fmt.Errorf("failed to check issue existence: %w", err)
 	}
 
-	// Validate target issue exists (skip for external and cross-prefix refs).
+	// Validate the target exists. A local target is checked against its own
+	// table; a cross-prefix target is checked in the database that owns its
+	// prefix, so an unresolvable edge (typo, unmapped prefix, non-server
+	// storage) is rejected at write time instead of blocking forever at read
+	// time.
 	var targetType string
-	if !strings.HasPrefix(dep.DependsOnID, "external:") && !opts.IsCrossPrefix {
+	if opts.IsCrossPrefix {
+		if err := ValidateExternalDepTarget(ctx, tx, dep.DependsOnID, opts.ServerMode); err != nil {
+			return err
+		}
+	} else {
 		//nolint:gosec // G201: targetTable is from WispTableRouting ("issues" or "wisps")
 		if err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT issue_type FROM %s WHERE id = ?`, targetTable), dep.DependsOnID).Scan(&targetType); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -845,18 +857,19 @@ func GetIssuesByIDsInTx(ctx context.Context, tx DBTX, ids []string, wispSet map[
 	return allIssues, nil
 }
 
-// NewExternalDepEntry synthesizes an IssueWithDependencyMetadata for an
-// external:<project>:<capability> dependency target. External refs have no
-// backing row in the issues/wisps tables, so only the ID (the full ref) and
-// the edge's dependency type are populated; every other Issue field keeps its
-// zero value — no status/title/priority is fabricated. Satisfaction state is
-// deliberately not resolved here: it is ready-path-only and must not trigger a
+// NewExternalDepEntry synthesizes an IssueWithDependencyMetadata for a
+// cross-prefix dependency target. External refs have no backing row in the
+// local issues/wisps tables, so only the target issue ID and the edge's
+// dependency type are populated; every other Issue field keeps its zero value
+// — no status/title/priority is fabricated. Satisfaction state is deliberately
+// not resolved here: it is ready-path-only and must not trigger a
 // cross-database query from the show/list read path (show must not depend on
 // server availability).
 func NewExternalDepEntry(ref, depType string) *types.IssueWithDependencyMetadata {
 	return &types.IssueWithDependencyMetadata{
 		Issue:          types.Issue{ID: ref},
 		DependencyType: types.DependencyType(depType),
+		External:       true,
 	}
 }
 
@@ -868,19 +881,21 @@ func NewExternalDepEntry(ref, depType string) *types.IssueWithDependencyMetadata
 func GetDependenciesWithMetadataInTx(ctx context.Context, tx DBTX, issueID string) ([]*types.IssueWithDependencyMetadata, error) {
 	type depMeta struct {
 		depID, depType string
+		external       bool
 	}
 
 	// Query both dependency tables to find all dependencies.
 	var deps []depMeta
 	for _, depTable := range []string{"dependencies", "wisp_dependencies"} {
 		rows, err := tx.QueryContext(ctx, fmt.Sprintf(
-			`SELECT %s AS depends_on_id, type FROM %s WHERE issue_id = ?`, DepTargetExpr, depTable), issueID)
+			`SELECT %s AS depends_on_id, type, depends_on_external IS NOT NULL FROM %s WHERE issue_id = ?`,
+			DepTargetExpr, depTable), issueID)
 		if err != nil {
 			return nil, fmt.Errorf("get dependencies from %s: %w", depTable, err)
 		}
 		for rows.Next() {
 			var d depMeta
-			if scanErr := rows.Scan(&d.depID, &d.depType); scanErr != nil {
+			if scanErr := rows.Scan(&d.depID, &d.depType, &d.external); scanErr != nil {
 				_ = rows.Close()
 				return nil, fmt.Errorf("get dependencies: scan: %w", scanErr)
 			}
@@ -918,8 +933,9 @@ func GetDependenciesWithMetadataInTx(ctx context.Context, tx DBTX, issueID strin
 			// have no issues/wisps row, so GetIssuesByIDsInTx cannot hydrate
 			// them. Surface them as synthesized entries instead of dropping
 			// them — dropping desynced the counts from the listed edges.
-			// Genuinely missing local IDs stay dropped.
-			if strings.HasPrefix(d.depID, "external:") {
+			// Genuinely missing local IDs stay dropped. The edge's stored
+			// column, not the ID's shape, is what makes it external.
+			if d.external {
 				results = append(results, NewExternalDepEntry(d.depID, d.depType))
 			}
 			continue

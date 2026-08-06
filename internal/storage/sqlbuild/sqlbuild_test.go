@@ -129,7 +129,7 @@ func TestBuildReadyWorkWhereExternalRefs(t *testing.T) {
 	}
 
 	// With refs -> uncorrelated NOT IN over dependencies (issues family).
-	refs := []string{"external:beads:cap-a", "external:gt:cap-b"}
+	refs := []string{"beads-cap0a1", "gt-cap0b2"}
 	baseArgs := len(ReadyWorkExcludeTypes(nil))
 	where, args, err = BuildReadyWorkWhere(types.WorkFilter{}, IssuesFilterTables, ReadyWorkWhereInputs{UnsatisfiedExternalRefs: refs})
 	if err != nil {
@@ -163,7 +163,7 @@ func TestBuildReadyWorkWhereExternalRefsBatch(t *testing.T) {
 
 	refs := make([]string, QueryBatchSize+1)
 	for i := range refs {
-		refs[i] = "external:beads:cap-" + strings.Repeat("a", i%3+1)
+		refs[i] = "beads-cap" + strings.Repeat("a", i%3+1)
 	}
 	where, args, err := BuildReadyWorkWhere(types.WorkFilter{}, IssuesFilterTables, ReadyWorkWhereInputs{UnsatisfiedExternalRefs: refs})
 	if err != nil {

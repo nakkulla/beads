@@ -13,7 +13,8 @@ import (
 func (s *EmbeddedDoltStore) AddDependency(ctx context.Context, dep *types.Dependency, actor string) error {
 	return s.withConn(ctx, true, func(tx *sql.Tx) error {
 		return issueops.AddDependencyInTx(ctx, tx, dep, actor, issueops.AddDependencyOpts{
-			IsCrossPrefix: types.ExtractPrefix(dep.IssueID) != types.ExtractPrefix(dep.DependsOnID),
+			IsCrossPrefix: issueops.IsCrossPrefixTarget(ctx, tx, dep.IssueID, dep.DependsOnID, s.externalOpts.ServerMode),
+			ServerMode:    s.externalOpts.ServerMode,
 		})
 	})
 }

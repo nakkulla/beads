@@ -239,7 +239,7 @@ func (s *testSuite) mixedDepTargetClassification() {
 		IssueID: src.Issue.ID, DependsOnID: wisp.Issue.ID, Type: types.DepRelated,
 	}, "tester", domain.DepInsertOpts{}))
 	s.Require().NoError(depRepo.Insert(s.Ctx(), &types.Dependency{
-		IssueID: src.Issue.ID, DependsOnID: "external:GH-42", Type: types.DepRelated,
+		IssueID: src.Issue.ID, DependsOnID: "gh42-9f3a11", Type: types.DepRelated,
 	}, "tester", domain.DepInsertOpts{}))
 
 	deps := s.loadDepRows("dependencies", "dx-%")
@@ -253,8 +253,8 @@ func (s *testSuite) mixedDepTargetClassification() {
 		"regular target must use depends_on_issue_id, got %+v", byTarget[regular.Issue.ID])
 	s.Equal("depends_on_wisp_id", byTarget[wisp.Issue.ID].targetColumn(),
 		"wisp target must use depends_on_wisp_id, got %+v", byTarget[wisp.Issue.ID])
-	s.Equal("depends_on_external", byTarget["external:GH-42"].targetColumn(),
-		"external: target must use depends_on_external, got %+v", byTarget["external:GH-42"])
+	s.Equal("depends_on_external", byTarget["gh42-9f3a11"].targetColumn(),
+		"cross-prefix target must use depends_on_external, got %+v", byTarget["gh42-9f3a11"])
 }
 
 type depRow struct {

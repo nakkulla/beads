@@ -41,7 +41,7 @@ bd hook --agent agent-1  # Show pinned work
 Track dependencies across repositories:
 
 ```bash
-bd dep add bd-42 external:other-repo/bd-100
+bd dep add bd-42 other-100abc
 ```
 
 ## Architecture

@@ -37,7 +37,7 @@ const sep = "\x1f"
 
 // New returns the deterministic CHAR(36) primary key for the dependency edge
 // (issueID -> target). target must be the resolved, non-null dependency target
-// (an issue id, a wisp id, or an "external:..." string) — i.e. the value the
+// (an issue id, a wisp id, or a cross-prefix external issue id) — i.e. the value the
 // uk_dep_* unique keys see, not the typed column name.
 //
 // The same (issueID, target) yields the same id on every clone and in every

@@ -51,12 +51,12 @@ func TestMergeExternalBlocked_NoExternalIsIdentity(t *testing.T) {
 func TestMergeExternalBlocked_CandidateAppendsNewEntry(t *testing.T) {
 	blocked := []*types.BlockedIssue{blockedEntry("local", "blk")}
 	ext := &types.ExternalBlocked{
-		Candidates: []*types.BlockedIssue{blockedEntry("ext-only", "external:p:cap")},
+		Candidates: []*types.BlockedIssue{blockedEntry("ext-only", "px-cap001")},
 	}
 
 	got := mergeExternalBlocked(blocked, ext)
 	entry := findEntry(t, got, "ext-only")
-	if len(entry.BlockedBy) != 1 || entry.BlockedBy[0] != "external:p:cap" {
+	if len(entry.BlockedBy) != 1 || entry.BlockedBy[0] != "px-cap001" {
 		t.Fatalf("blocked_by = %v", entry.BlockedBy)
 	}
 	if entry.BlockedByCount != 1 {
@@ -74,7 +74,7 @@ func TestMergeExternalBlocked_StoredRefsMergeIntoExistingEntry(t *testing.T) {
 	blocked := []*types.BlockedIssue{blockedEntry("mixed", "local-blk")}
 	ext := &types.ExternalBlocked{
 		StoredBlockedRefs: map[string][]string{
-			"mixed": {"external:p:cap", "external:q:cap"},
+			"mixed": {"px-cap001", "qx-cap002"},
 		},
 	}
 
@@ -83,7 +83,7 @@ func TestMergeExternalBlocked_StoredRefsMergeIntoExistingEntry(t *testing.T) {
 		t.Fatalf("merge must not add an entry, got %v", idsOfBlocked(got))
 	}
 	entry := findEntry(t, got, "mixed")
-	want := []string{"local-blk", "external:p:cap", "external:q:cap"}
+	want := []string{"local-blk", "px-cap001", "qx-cap002"}
 	if len(entry.BlockedBy) != len(want) {
 		t.Fatalf("blocked_by = %v, want %v", entry.BlockedBy, want)
 	}
@@ -101,7 +101,7 @@ func TestMergeExternalBlocked_StoredRefsMergeIntoExistingEntry(t *testing.T) {
 // stored path chose not to emit.
 func TestMergeExternalBlocked_StoredRefsNeverCreateEntries(t *testing.T) {
 	ext := &types.ExternalBlocked{
-		StoredBlockedRefs: map[string][]string{"absent": {"external:p:cap"}},
+		StoredBlockedRefs: map[string][]string{"absent": {"px-cap001"}},
 	}
 	if got := mergeExternalBlocked(nil, ext); len(got) != 0 {
 		t.Fatalf("stored-blocked refs must not leak in as entries, got %v", idsOfBlocked(got))
@@ -109,14 +109,14 @@ func TestMergeExternalBlocked_StoredRefsNeverCreateEntries(t *testing.T) {
 }
 
 func TestMergeExternalBlocked_CandidateMergeDedupes(t *testing.T) {
-	blocked := []*types.BlockedIssue{blockedEntry("dup", "external:p:cap", "local-blk")}
+	blocked := []*types.BlockedIssue{blockedEntry("dup", "px-cap001", "local-blk")}
 	ext := &types.ExternalBlocked{
-		Candidates: []*types.BlockedIssue{blockedEntry("dup", "external:p:cap", "external:q:cap")},
+		Candidates: []*types.BlockedIssue{blockedEntry("dup", "px-cap001", "qx-cap002")},
 	}
 
 	got := mergeExternalBlocked(blocked, ext)
 	entry := findEntry(t, got, "dup")
-	want := []string{"external:p:cap", "local-blk", "external:q:cap"}
+	want := []string{"px-cap001", "local-blk", "qx-cap002"}
 	if len(entry.BlockedBy) != len(want) {
 		t.Fatalf("blocked_by = %v, want %v", entry.BlockedBy, want)
 	}
@@ -135,7 +135,7 @@ func TestMergeExternalBlocked_CandidateMergeDedupes(t *testing.T) {
 // counting the new entry.
 func TestMergeExternalBlocked_RendersIDOnlyBlockerInfo(t *testing.T) {
 	ext := &types.ExternalBlocked{
-		Candidates: []*types.BlockedIssue{blockedEntry("ext-only", "external:p:cap")},
+		Candidates: []*types.BlockedIssue{blockedEntry("ext-only", "px-cap001")},
 	}
 	merged := mergeExternalBlocked(nil, ext)
 
@@ -148,7 +148,7 @@ func TestMergeExternalBlocked_RendersIDOnlyBlockerInfo(t *testing.T) {
 		t.Fatalf("blocked_by_count = %d, blocked_by = %+v", item.BlockedByCount, item.BlockedBy)
 	}
 	blocker := item.BlockedBy[0]
-	if blocker.ID != "external:p:cap" {
+	if blocker.ID != "px-cap001" {
 		t.Fatalf("blocker id = %q", blocker.ID)
 	}
 	if blocker.Title != "" || blocker.Status != "" || blocker.Priority != 0 {

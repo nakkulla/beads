@@ -52,7 +52,6 @@ Common tool-level settings you can configure:
 | `git.no-gpg-sign` | - | `BD_GIT_NO_GPG_SIGN` | `false` | Disable GPG signing for beads commits |
 | `directory.labels` | - | - | (none) | Map directories to labels for automatic filtering |
 | `external_projects` | - | - | (none) | Map project names to paths for cross-project deps |
-| `external_databases` | - | - | (none) | Map project names to Dolt database names for query-time external dependency gating |
 | `backup.enabled` | - | `BD_BACKUP_ENABLED` | `false` | Enable periodic Dolt-native backup to `.beads/backup/` |
 | `backup.interval` | - | `BD_BACKUP_INTERVAL` | `15m` | Minimum time between auto-backups |
 | `dolt.auto-push` | - | `BD_DOLT_AUTO_PUSH` | `false` | Auto-push to Dolt remote after writes (explicit opt-in) |
@@ -237,55 +236,51 @@ external_projects:
   beads: ../beads
   other-project: /path/to/other-project
 
-# Query-time external dependency gating
-# Maps project names to Dolt database names on a shared Dolt sql-server, used
-# by `bd ready` / `bd claim` to resolve external:<project>:<capability>
-# blocked_by references. Unrelated to external_projects above: this maps to a
-# Dolt database name, not a filesystem path.
-external_databases:
-  beads: beads_prod
-  other-project: other_project_db
 ```
 
 ### External Dependency Resolution
 
-`bd` has two independent mechanisms for cross-project dependencies; don't
-confuse them:
+A cross-project dependency is a plain issue ID from another rig — for example
+`bd dep add UI-kfl4 dotfiles-1tif`. There is no capability vocabulary and no
+mapping to register: `bd ready` / `bd claim` discover which Dolt database owns
+a prefix by reading each database's own `issue_prefix` on the shared server.
 
-- **`external_projects`** maps a project name to a **filesystem path**. It has
-  no effect on `bd ready` / `bd claim` gating.
-- **`external_databases`** maps a project name to a **Dolt database name** on
-  a shared Dolt sql-server. This is what `bd ready` and `bd claim` use to
-  resolve `external:<project>:<capability>` `blocked_by` references at query
-  time.
+`external_projects` is unrelated to this gating. It maps a project name to a
+**filesystem path** and has no effect on `bd ready` / `bd claim`.
 
-#### How `external_databases` gating works
+#### How cross-prefix gating works
 
-When an issue has a blocking dependency on `external:<project>:<capability>`,
-`bd ready` (and `bd claim`) resolve it at query time instead of trusting a
-cached status:
+When an issue has a blocking dependency on a cross-prefix issue ID, `bd ready`
+(and `bd claim`) resolve it at query time instead of trusting a cached status:
 
-1. `<project>` is looked up in `external_databases` to find the Dolt database
-   name that project uses on the shared server.
-2. The dependency clears only if that database contains a **closed** issue
-   carrying the label `provides:<capability>` (written by `bd ship`).
-3. Otherwise the dependency keeps blocking. A capability that simply hasn't
-   shipped yet blocks **silently** — that's normal gate behavior, not an
-   error.
+1. The databases on the shared server are enumerated once per command, and each
+   one's `config.issue_prefix` is read to build a prefix -> database map.
+2. The target ID is matched against that map by longest prefix, so a
+   hyphen-bearing prefix (`team-alpha`) wins over a shorter one that also
+   matches (`team`).
+3. The dependency clears only if that database holds the target issue with
+   status `closed`. `resolved` does not clear it — a PR-delivered issue is not
+   merged work.
+4. Otherwise the dependency keeps blocking. A target that simply isn't done yet
+   blocks **silently** — that's normal gate behavior, not an error.
 
 Resolution is **fail-closed**: a dependency is never silently treated as
 satisfied. It keeps blocking whenever:
 
-- `<project>` has no entry in `external_databases`,
-- the mapped database name is invalid or doesn't exist,
-- the cross-database query fails for any reason, or
+- no database on the shared server declares the target's prefix,
+- two databases declare the same prefix (ambiguous),
+- discovery or the cross-database query fails for any reason, or
 - the current workspace isn't connected to a shared (external) Dolt
   sql-server at all (embedded mode and an auto-started single-project server
   both count as "not shared").
 
-For these unresolvable cases only (not for ordinary not-yet-shipped gating),
+For these unresolvable cases only (not for ordinary not-yet-closed gating),
 `bd ready` prints at most one `warning: external dependency unresolvable
-(project ...)` line per project per invocation, on stderr.
+(prefix ...)` line per prefix per invocation, on stderr.
+
+`bd dep add` refuses a cross-prefix target it cannot resolve — an unknown or
+ambiguous prefix, a target that does not exist, or any add attempted outside
+shared-server mode. A typo fails when it is written, not silently forever after.
 
 `bd show` and `bd dep list` only **display** external edges (marked as
 `(external)`); they never query other databases, so display never triggers

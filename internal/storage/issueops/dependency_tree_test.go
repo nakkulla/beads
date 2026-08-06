@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -97,6 +98,9 @@ func TestGetDependencyTreeInTxSkipsRelatesToEdges(t *testing.T) {
 type dependencyRow struct {
 	id      string
 	depType string
+	// external marks an edge stored in depends_on_external (a cross-rig
+	// target with no local issues row).
+	external bool
 }
 
 func expectIssue(mock sqlmock.Sqlmock, id, title string) {
@@ -109,16 +113,18 @@ func expectIssue(mock sqlmock.Sqlmock, id, title string) {
 }
 
 func expectDependencies(mock sqlmock.Sqlmock, issueID string, deps []dependencyRow) {
-	rows := sqlmock.NewRows([]string{"depends_on_id", "type"})
+	cols := []string{"depends_on_id", "type", "is_external"}
+	rows := sqlmock.NewRows(cols)
 	for _, dep := range deps {
-		rows.AddRow(dep.id, dep.depType)
+		rows.AddRow(dep.id, dep.depType, dep.external)
 	}
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT " + DepTargetExpr + " AS depends_on_id, type FROM dependencies WHERE issue_id = ?")).
+	const q = "SELECT " + DepTargetExpr + " AS depends_on_id, type, depends_on_external IS NOT NULL FROM %s WHERE issue_id = ?"
+	mock.ExpectQuery(regexp.QuoteMeta(fmt.Sprintf(q, "dependencies"))).
 		WithArgs(issueID).
 		WillReturnRows(rows)
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT " + DepTargetExpr + " AS depends_on_id, type FROM wisp_dependencies WHERE issue_id = ?")).
+	mock.ExpectQuery(regexp.QuoteMeta(fmt.Sprintf(q, "wisp_dependencies"))).
 		WithArgs(issueID).
-		WillReturnRows(sqlmock.NewRows([]string{"depends_on_id", "type"}))
+		WillReturnRows(sqlmock.NewRows(cols))
 }
 
 func expectIssueBatch(mock sqlmock.Sqlmock, ids []string) {

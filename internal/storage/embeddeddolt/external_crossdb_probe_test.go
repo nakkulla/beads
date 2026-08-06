@@ -8,10 +8,10 @@ import (
 	"github.com/steveyegge/beads/internal/storage/embeddeddolt"
 )
 
-// TestExternalCrossDBQualifiedSelectInTx proves the U1b design premise: a
-// database-qualified SELECT against a SECOND database resolves from within the
-// same transaction/connection the ready path uses on the embedded engine. If
-// this fails, the resolver must run outside the tx on a separate connection.
+// TestExternalCrossDBQualifiedSelectInTx proves the resolver's design premise:
+// a database-qualified SELECT against a SECOND database resolves from within
+// the same transaction/connection the ready path uses on the embedded engine.
+// If this fails, the resolver must run outside the tx on a separate connection.
 func TestExternalCrossDBQualifiedSelectInTx(t *testing.T) {
 	skipUnlessEmbeddedDolt(t)
 	ctx := t.Context()
@@ -35,14 +35,8 @@ func TestExternalCrossDBQualifiedSelectInTx(t *testing.T) {
 	if _, err := db.ExecContext(ctx, "CREATE TABLE `extpx`.issues (id VARCHAR(255) PRIMARY KEY, status VARCHAR(32) NOT NULL)"); err != nil {
 		t.Fatalf("create ext issues: %v", err)
 	}
-	if _, err := db.ExecContext(ctx, "CREATE TABLE `extpx`.labels (issue_id VARCHAR(255) NOT NULL, label VARCHAR(255) NOT NULL, PRIMARY KEY (issue_id, label))"); err != nil {
-		t.Fatalf("create ext labels: %v", err)
-	}
 	if _, err := db.ExecContext(ctx, "INSERT INTO `extpx`.issues (id, status) VALUES ('e-1','closed'),('e-2','open')"); err != nil {
 		t.Fatalf("insert ext issues: %v", err)
-	}
-	if _, err := db.ExecContext(ctx, "INSERT INTO `extpx`.labels (issue_id, label) VALUES ('e-1','provides:cap-a'),('e-2','provides:cap-open')"); err != nil {
-		t.Fatalf("insert ext labels: %v", err)
 	}
 	if _, err := db.ExecContext(ctx, "USE `mainpx`"); err != nil {
 		t.Fatalf("USE mainpx: %v", err)
@@ -55,8 +49,8 @@ func TestExternalCrossDBQualifiedSelectInTx(t *testing.T) {
 	defer func() { _ = tx.Rollback() }()
 
 	rows, err := tx.QueryContext(ctx,
-		"SELECT DISTINCT l.label FROM `extpx`.labels l JOIN `extpx`.issues i ON i.id = l.issue_id WHERE i.status = 'closed' AND l.label IN (?, ?)",
-		"provides:cap-a", "provides:cap-open")
+		"SELECT id FROM `extpx`.issues WHERE status = 'closed' AND id IN (?, ?)",
+		"e-1", "e-2")
 	if err != nil {
 		t.Fatalf("cross-db query in tx: %v", err)
 	}
@@ -73,8 +67,8 @@ func TestExternalCrossDBQualifiedSelectInTx(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("rows: %v", err)
 	}
-	// Only cap-a is on a closed issue; cap-open is on an open issue.
-	if len(got) != 1 || got[0] != "provides:cap-a" {
-		t.Fatalf("cross-db in-tx query returned %v, want [provides:cap-a]", got)
+	// Only e-1 is closed; e-2 is still open.
+	if len(got) != 1 || got[0] != "e-1" {
+		t.Fatalf("cross-db in-tx query returned %v, want [e-1]", got)
 	}
 }

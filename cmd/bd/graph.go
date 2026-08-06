@@ -328,28 +328,17 @@ func loadGraphSubgraph(ctx context.Context, s storage.DoltStorage, issueID strin
 			continue
 		}
 		for _, dep := range deps {
-			// Resolve external deps via routing (bd-k0pfm)
-			if strings.HasPrefix(dep.DependsOnID, "external:") {
-				parts := strings.SplitN(dep.DependsOnID, ":", 3)
-				if len(parts) == 3 && parts[2] != "" {
-					targetID := parts[2]
-					if _, exists := subgraph.IssueMap[targetID]; !exists {
-						result, routeErr := resolveAndGetIssueWithRouting(ctx, store, targetID)
-						if routeErr == nil && result != nil && result.Issue != nil {
-							subgraph.Issues = append(subgraph.Issues, result.Issue)
-							subgraph.IssueMap[result.Issue.ID] = result.Issue
-							// Rewrite dep to use the resolved issue ID
-							dep.DependsOnID = result.Issue.ID
-							result.Close()
-						} else {
-							if result != nil {
-								result.Close()
-							}
-							continue
-						}
-					} else {
-						dep.DependsOnID = targetID
-					}
+			// Pull cross-rig dependency targets into the graph via routing
+			// (bd-k0pfm). External targets are plain issue IDs, so the ID
+			// needs no unwrapping — only a routed lookup.
+			if _, exists := subgraph.IssueMap[dep.DependsOnID]; !exists {
+				result, routeErr := resolveAndGetIssueWithRouting(ctx, store, dep.DependsOnID)
+				if routeErr == nil && result != nil && result.Issue != nil {
+					subgraph.Issues = append(subgraph.Issues, result.Issue)
+					subgraph.IssueMap[result.Issue.ID] = result.Issue
+					result.Close()
+				} else if result != nil {
+					result.Close()
 				}
 			}
 			// Only include dependencies where both ends are in the subgraph
@@ -401,27 +390,17 @@ func loadAllGraphSubgraphs(ctx context.Context, s storage.DoltStorage) ([]*Templ
 			continue
 		}
 		for _, dep := range deps {
-			// Resolve external deps via routing (bd-k0pfm)
-			if strings.HasPrefix(dep.DependsOnID, "external:") {
-				parts := strings.SplitN(dep.DependsOnID, ":", 3)
-				if len(parts) == 3 && parts[2] != "" {
-					targetID := parts[2]
-					if _, exists := issueMap[targetID]; !exists {
-						result, routeErr := resolveAndGetIssueWithRouting(ctx, store, targetID)
-						if routeErr == nil && result != nil && result.Issue != nil {
-							allIssues = append(allIssues, result.Issue)
-							issueMap[result.Issue.ID] = result.Issue
-							dep.DependsOnID = result.Issue.ID
-							result.Close()
-						} else {
-							if result != nil {
-								result.Close()
-							}
-							continue
-						}
-					} else {
-						dep.DependsOnID = targetID
-					}
+			// Pull cross-rig dependency targets into the graph via routing
+			// (bd-k0pfm). External targets are plain issue IDs, so the ID
+			// needs no unwrapping — only a routed lookup.
+			if _, exists := issueMap[dep.DependsOnID]; !exists {
+				result, routeErr := resolveAndGetIssueWithRouting(ctx, store, dep.DependsOnID)
+				if routeErr == nil && result != nil && result.Issue != nil {
+					allIssues = append(allIssues, result.Issue)
+					issueMap[result.Issue.ID] = result.Issue
+					result.Close()
+				} else if result != nil {
+					result.Close()
 				}
 			}
 			// Only include deps where both ends are in our issue set

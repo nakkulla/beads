@@ -8,13 +8,14 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 )
 
-// syntheticExternalDep mirrors what the storage layer now returns for an
-// external:<project>:<capability> dependency edge: an entry whose ID is the
-// full ref and whose other Issue fields are zero-valued.
+// syntheticExternalDep mirrors what the storage layer returns for a
+// cross-prefix dependency edge: an entry whose ID is the foreign issue ID,
+// whose External marker is set, and whose other Issue fields are zero-valued.
 func syntheticExternalDep(ref string, depType types.DependencyType) *types.IssueWithDependencyMetadata {
 	return &types.IssueWithDependencyMetadata{
 		Issue:          types.Issue{ID: ref},
 		DependencyType: depType,
+		External:       true,
 	}
 }
 
@@ -22,11 +23,11 @@ func syntheticExternalDep(ref string, depType types.DependencyType) *types.Issue
 // external dependency edge with an (external) marker rather than crashing or
 // printing fabricated status/priority fields.
 func TestFormatDependencyLineExternalRef(t *testing.T) {
-	const ref = "external:beads:mol-run-assignee"
+	const ref = "beads-mol0a11"
 	line := formatDependencyLine("→", syntheticExternalDep(ref, types.DepBlocks))
 
 	if !strings.Contains(line, ref) {
-		t.Errorf("dependency line %q does not contain external ref %q", line, ref)
+		t.Errorf("dependency line %q does not contain external target %q", line, ref)
 	}
 	if !strings.Contains(line, "(external)") {
 		t.Errorf("dependency line %q missing (external) marker", line)
@@ -40,11 +41,11 @@ func TestFormatDependencyLineExternalRef(t *testing.T) {
 // both the direct and proxied-server single-ID list paths) shows the ref, the
 // (external) marker, and the edge type — never fabricated status/priority.
 func TestExternalDepListLine(t *testing.T) {
-	const ref = "external:beads-ui:plan-review-runner-authz"
+	const ref = "UI-kfl4"
 	line := externalDepListLine(syntheticExternalDep(ref, types.DepBlocks))
 
 	if !strings.Contains(line, ref) {
-		t.Errorf("dep list line %q does not contain external ref %q", line, ref)
+		t.Errorf("dep list line %q does not contain external target %q", line, ref)
 	}
 	if !strings.Contains(line, "(external)") {
 		t.Errorf("dep list line %q missing (external) marker", line)
@@ -61,7 +62,7 @@ func TestExternalDepListLine(t *testing.T) {
 // dependencies array carries the external edge additively with its id and type,
 // with no nil-pointer serialization issues.
 func TestShowJSONIncludesExternalDependency(t *testing.T) {
-	const ref = "external:beads:cap-a"
+	const ref = "dotfiles-1tif"
 	details := &types.IssueDetails{
 		Issue: types.Issue{ID: "test-1", Title: "Root", Status: types.StatusOpen, Priority: 1, IssueType: types.TypeTask},
 		Dependencies: []*types.IssueWithDependencyMetadata{

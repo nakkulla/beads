@@ -70,7 +70,7 @@ type Storage interface {
 	GetReadyWork(ctx context.Context, filter types.WorkFilter) ([]*types.Issue, error)
 	GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) ([]*types.IssueWithCounts, error)
 	// GetReadyWorkWithExternalBlocked returns ready work plus the rows kept out
-	// of it solely by unsatisfied external:<project>:<capability> refs, both
+	// of it solely by unsatisfied cross-prefix external refs, both
 	// derived from ONE external resolution so the two sets cannot disagree.
 	// Only `bd ready --explain` needs the second result; every other caller
 	// stays on GetReadyWork.

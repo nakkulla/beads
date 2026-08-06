@@ -51,7 +51,12 @@ func newDualEngine(t *testing.T) *dualEngine {
 			t.Fatalf("MigrateUp %s: %v", name, err)
 		}
 	}
-	return &dualEngine{conn: conn}
+	// Prefix discovery reads each database's own config.issue_prefix, so the
+	// two rigs must declare theirs exactly like a real bd rig does.
+	e := &dualEngine{conn: conn}
+	e.setIssuePrefix(t, ctx, "mainpx", "m")
+	e.setIssuePrefix(t, ctx, "extpx", "ext")
+	return e
 }
 
 func (e *dualEngine) insertIssue(t *testing.T, ctx context.Context, db, id, status string) {
@@ -70,10 +75,11 @@ func (e *dualEngine) insertWisp(t *testing.T, ctx context.Context, db, id, statu
 	}
 }
 
-func (e *dualEngine) insertLabel(t *testing.T, ctx context.Context, db, issueID, label string) {
+func (e *dualEngine) setIssuePrefix(t *testing.T, ctx context.Context, db, prefix string) {
 	t.Helper()
-	if _, err := e.conn.ExecContext(ctx, "INSERT INTO `"+db+"`.labels (issue_id, label) VALUES (?, ?)", issueID, label); err != nil {
-		t.Fatalf("insert label %s.%s: %v", db, issueID, err)
+	q := "INSERT INTO `" + db + "`.config (`key`, value) VALUES ('issue_prefix', ?)"
+	if _, err := e.conn.ExecContext(ctx, q, prefix); err != nil {
+		t.Fatalf("set issue_prefix %s: %v", db, err)
 	}
 }
 
@@ -143,11 +149,10 @@ func assertIDs(t *testing.T, got, want []string) {
 	}
 }
 
-func beadsOpts() issueops.ExternalResolverOptions {
-	return issueops.ExternalResolverOptions{
-		ServerMode: true,
-		Databases:  map[string]string{"beads": "extpx"},
-	}
+// serverOpts enables cross-database resolution. There is no mapping to
+// configure: the resolver discovers extpx from its own issue_prefix.
+func serverOpts() issueops.ExternalResolverOptions {
+	return issueops.ExternalResolverOptions{ServerMode: true}
 }
 
 func TestExternalReady_IssueBlocking(t *testing.T) {
@@ -155,26 +160,25 @@ func TestExternalReady_IssueBlocking(t *testing.T) {
 	e := newDualEngine(t)
 	ctx := t.Context()
 
-	// External provider database: cap-a is provided by a closed issue; cap-open
-	// is provided only by an OPEN issue (must NOT count as satisfied).
+	// External provider database: one closed issue (satisfies), one open
+	// issue (must NOT satisfy), one resolved issue (PR-delivered, not merged).
 	e.insertIssue(t, ctx, "extpx", "ext-closed", "closed")
-	e.insertLabel(t, ctx, "extpx", "ext-closed", "provides:cap-a")
 	e.insertIssue(t, ctx, "extpx", "ext-open", "open")
-	e.insertLabel(t, ctx, "extpx", "ext-open", "provides:cap-open")
+	e.insertIssue(t, ctx, "extpx", "ext-resolved", "resolved")
 
-	// Workspace: one free issue, one satisfied, one unsatisfied, one open-only,
-	// one whose project has no mapping.
+	// Workspace: one free issue, one satisfied, one blocked on an open target,
+	// one blocked on a resolved target, one whose prefix nothing declares.
 	e.insertIssue(t, ctx, "mainpx", "m-free", "open")
 	e.insertIssue(t, ctx, "mainpx", "m-sat", "open")
-	e.insertExternalDep(t, ctx, "mainpx", "dependencies", "d-sat", "m-sat", "external:beads:cap-a")
+	e.insertExternalDep(t, ctx, "mainpx", "dependencies", "d-sat", "m-sat", "ext-closed")
 	e.insertIssue(t, ctx, "mainpx", "m-unsat", "open")
-	e.insertExternalDep(t, ctx, "mainpx", "dependencies", "d-unsat", "m-unsat", "external:beads:cap-b")
-	e.insertIssue(t, ctx, "mainpx", "m-openonly", "open")
-	e.insertExternalDep(t, ctx, "mainpx", "dependencies", "d-openonly", "m-openonly", "external:beads:cap-open")
+	e.insertExternalDep(t, ctx, "mainpx", "dependencies", "d-unsat", "m-unsat", "ext-open")
+	e.insertIssue(t, ctx, "mainpx", "m-resolved", "open")
+	e.insertExternalDep(t, ctx, "mainpx", "dependencies", "d-resolved", "m-resolved", "ext-resolved")
 	e.insertIssue(t, ctx, "mainpx", "m-missing", "open")
-	e.insertExternalDep(t, ctx, "mainpx", "dependencies", "d-missing", "m-missing", "external:other:cap-x")
+	e.insertExternalDep(t, ctx, "mainpx", "dependencies", "d-missing", "m-missing", "nosuch-cap0x1")
 
-	got := e.ready(t, ctx, types.WorkFilter{}, beadsOpts())
+	got := e.ready(t, ctx, types.WorkFilter{}, serverOpts())
 	assertIDs(t, got, []string{"m-free", "m-sat"})
 }
 
@@ -184,15 +188,15 @@ func TestExternalReady_CountsPathBlocking(t *testing.T) {
 	ctx := t.Context()
 
 	e.insertIssue(t, ctx, "extpx", "ext-closed", "closed")
-	e.insertLabel(t, ctx, "extpx", "ext-closed", "provides:cap-a")
+	e.insertIssue(t, ctx, "extpx", "ext-open", "open")
 
 	e.insertIssue(t, ctx, "mainpx", "m-free", "open")
 	e.insertIssue(t, ctx, "mainpx", "m-sat", "open")
-	e.insertExternalDep(t, ctx, "mainpx", "dependencies", "d-sat", "m-sat", "external:beads:cap-a")
+	e.insertExternalDep(t, ctx, "mainpx", "dependencies", "d-sat", "m-sat", "ext-closed")
 	e.insertIssue(t, ctx, "mainpx", "m-unsat", "open")
-	e.insertExternalDep(t, ctx, "mainpx", "dependencies", "d-unsat", "m-unsat", "external:beads:cap-b")
+	e.insertExternalDep(t, ctx, "mainpx", "dependencies", "d-unsat", "m-unsat", "ext-open")
 
-	got := e.readyWithCounts(t, ctx, types.WorkFilter{}, beadsOpts())
+	got := e.readyWithCounts(t, ctx, types.WorkFilter{}, serverOpts())
 	assertIDs(t, got, []string{"m-free", "m-sat"})
 }
 
@@ -201,17 +205,18 @@ func TestExternalReady_LimitCorrectness(t *testing.T) {
 	e := newDualEngine(t)
 	ctx := t.Context()
 
-	// No provider rows: cap-b is unsatisfied. Build more free issues than the
-	// limit plus one unsatisfied issue; the unsatisfied issue is excluded in
-	// the WHERE (pre-LIMIT), so the page must still fill with free issues.
+	// The external target is open, so it is unsatisfied. Build more free issues
+	// than the limit plus one unsatisfied issue; the unsatisfied issue is
+	// excluded in the WHERE (pre-LIMIT), so the page must still fill.
 	const limit = 3
 	for i := 0; i < limit+1; i++ {
 		e.insertIssue(t, ctx, "mainpx", fmt.Sprintf("m-free-%02d", i), "open")
 	}
+	e.insertIssue(t, ctx, "extpx", "ext-open", "open")
 	e.insertIssue(t, ctx, "mainpx", "m-unsat", "open")
-	e.insertExternalDep(t, ctx, "mainpx", "dependencies", "d-unsat", "m-unsat", "external:beads:cap-b")
+	e.insertExternalDep(t, ctx, "mainpx", "dependencies", "d-unsat", "m-unsat", "ext-open")
 
-	got := e.ready(t, ctx, types.WorkFilter{Limit: limit, SortPolicy: types.SortPolicyOldest}, beadsOpts())
+	got := e.ready(t, ctx, types.WorkFilter{Limit: limit, SortPolicy: types.SortPolicyOldest}, serverOpts())
 	if len(got) != limit {
 		t.Fatalf("ready len = %d, want %d (page must fill): %v", len(got), limit, got)
 	}
@@ -229,11 +234,12 @@ func TestExternalReady_WispPlainPathExcluded(t *testing.T) {
 
 	// A free wisp is ready; a wisp with an unsatisfied external dep on the
 	// plain path (Limit<=0) must be excluded via wisp_dependencies.
+	e.insertIssue(t, ctx, "extpx", "ext-open", "open")
 	e.insertWisp(t, ctx, "mainpx", "w-free", "open")
 	e.insertWisp(t, ctx, "mainpx", "w-unsat", "open")
-	e.insertExternalDep(t, ctx, "mainpx", "wisp_dependencies", "wd-unsat", "w-unsat", "external:beads:cap-b")
+	e.insertExternalDep(t, ctx, "mainpx", "wisp_dependencies", "wd-unsat", "w-unsat", "ext-open")
 
-	got := e.ready(t, ctx, types.WorkFilter{}, beadsOpts())
+	got := e.ready(t, ctx, types.WorkFilter{}, serverOpts())
 	// w-free must be present, w-unsat absent.
 	hasFree, hasUnsat := false, false
 	for _, id := range got {
@@ -262,7 +268,7 @@ func TestExternalReady_EmptyShortCircuit(t *testing.T) {
 	e.insertIssue(t, ctx, "mainpx", "m-free", "open")
 
 	sinkCalled := false
-	opts := beadsOpts()
+	opts := serverOpts()
 	opts.DiagSink = func([]issueops.ExternalDiag) { sinkCalled = true }
 	got := e.ready(t, ctx, types.WorkFilter{}, opts)
 	assertIDs(t, got, []string{"m-free"})

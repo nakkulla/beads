@@ -102,10 +102,6 @@ var labelAddCmd = &cobra.Command{
 		}
 		issueIDs = resolvedIDs
 
-		if strings.HasPrefix(label, "provides:") {
-			return HandleErrorRespectJSON("'provides:' labels are reserved for cross-project capabilities. Hint: use 'bd ship %s' instead", strings.TrimPrefix(label, "provides:"))
-		}
-
 		return processBatchLabelOperation(issueIDs, label, "added", jsonOutput,
 			func(ctx context.Context, tx storage.Transaction, issueID, lbl, act string) error {
 				return tx.AddLabel(ctx, issueID, lbl, act)
@@ -292,10 +288,6 @@ var labelPropagateCmd = &cobra.Command{
 		label := strings.TrimSpace(args[1])
 		if label == "" {
 			return HandleErrorRespectJSON("label cannot be empty")
-		}
-
-		if strings.HasPrefix(label, "provides:") {
-			return HandleErrorRespectJSON("'provides:' labels are reserved for cross-project capabilities. Hint: use 'bd ship %s' instead", strings.TrimPrefix(label, "provides:"))
 		}
 
 		children, err := store.SearchIssues(ctx, "", types.IssueFilter{ParentID: &parentID})

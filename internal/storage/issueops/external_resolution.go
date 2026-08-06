@@ -3,68 +3,52 @@ package issueops
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 )
 
-// ExternalDiag is a per-project diagnostic for external dependency refs that
+// ExternalDiag is a per-prefix diagnostic for external dependency refs that
 // could not be resolved (unresolvable verdicts only). Storage never prints to
 // stderr; the CLI layer (U1c) consumes these via
-// ExternalResolverOptions.DiagSink and warns with per-project dedup.
+// ExternalResolverOptions.DiagSink and warns with per-prefix dedup.
 type ExternalDiag struct {
-	Project string
-	Reason  string
-	Refs    []string
+	Prefix string
+	Reason string
+	Refs   []string
 }
 
-// ExternalResolverOptions configures query-time resolution of
-// external:<project>:<capability> dependencies. Mode is always explicit input
-// and is NEVER inferred from the connection. The zero value
-// (ServerMode=false) is the spec-intended fail-closed default: every external
-// ref is unresolvable, so any issue whose only blocker is external stays out
-// of ready work.
+// ExternalResolverOptions configures query-time resolution of cross-prefix
+// issue-ID dependencies. Mode is always explicit input and is NEVER inferred
+// from the connection. The zero value (ServerMode=false) is the spec-intended
+// fail-closed default: every external ref is unresolvable, so any issue whose
+// only blocker is external stays out of ready work.
 type ExternalResolverOptions struct {
-	// ServerMode gates whether the resolver may query external databases at
-	// all. When false, no cross-database query is issued.
+	// ServerMode gates whether the resolver may discover and query other
+	// databases at all. When false, no cross-database query is issued.
 	ServerMode bool
-	// Databases maps an external project name to the Dolt database name that
-	// holds its issues (the external_databases config). Values are database
-	// names on the shared server, not filesystem paths.
-	Databases map[string]string
-	// DiagSink, when non-nil, receives per-project diagnostics for
+	// DiagSink, when non-nil, receives per-prefix diagnostics for
 	// unresolvable refs. It is carried on the options (which live on the
 	// store) so the existing store/InTx method signatures need no diagnostics
 	// return value and WorkFilter is never used as the carrier.
 	DiagSink func([]ExternalDiag)
 }
 
-// externalDBNameRE is a strict allowlist for mapped external database names.
-// The dolt/domain-db identifier validators cannot be reused here because both
-// packages import issueops (import cycle); this local allowlist is
-// injection-safe on its own and mapped names are always backtick-quoted in
-// SQL regardless.
-var externalDBNameRE = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
-
 // blockingExternalDepTypes are the dependency types whose external targets
 // block ready work, matching types.DependencyType.Blocks semantics for the
 // stored edge types that carry an external target.
 const blockingExternalDepTypesSQL = "'blocks','conditional-blocks'"
 
-// parseExternalRef splits external:<project>:<capability>. It returns a
-// best-effort project (parts[1] when present) even when the ref is malformed,
-// so a malformed ref can still be attributed to a project in diagnostics.
-func parseExternalRef(ref string) (project, capability string, ok bool) {
-	parts := strings.SplitN(ref, ":", 3)
-	if len(parts) >= 2 {
-		project = parts[1]
+// refPrefixGuess is a best-effort prefix for diagnostics only, used when the
+// ref could not be attributed to a discovered prefix. It takes everything
+// before the first hyphen, which is right for the common single-token prefix
+// and harmless when it is not — no resolution decision depends on it.
+func refPrefixGuess(ref string) string {
+	if i := strings.Index(ref, "-"); i > 0 {
+		return ref[:i]
 	}
-	if !strings.HasPrefix(ref, "external:") || len(parts) != 3 || parts[1] == "" || parts[2] == "" {
-		return project, "", false
-	}
-	return parts[1], parts[2], true
+	return ref
 }
 
 // collectBlockingExternalRefs returns the DISTINCT depends_on_external values
@@ -115,8 +99,13 @@ func collectBlockingExternalRefs(ctx context.Context, tx DBTX) ([]string, error)
 // resolveExternalRefs classifies each distinct external ref as satisfied,
 // unsatisfied, or unresolvable and returns (a) the refs that must block ready
 // work — unsatisfied and unresolvable are equally blocking (fail-closed) — and
-// (b) per-project diagnostics for the unresolvable refs only. It issues at most
-// one satisfaction query per project.
+// (b) per-prefix diagnostics for the unresolvable refs only.
+//
+// A ref is a bare cross-prefix issue ID; it is satisfied exactly when the
+// database owning its prefix holds that issue with status='closed'. resolved
+// is deliberately not satisfying: a PR-delivered issue is not merged work.
+// The resolver issues one discovery pass plus at most one satisfaction query
+// per target database.
 func resolveExternalRefs(ctx context.Context, tx DBTX, refs []string, opts ExternalResolverOptions) ([]string, []ExternalDiag) {
 	if len(refs) == 0 {
 		return nil, nil
@@ -126,87 +115,89 @@ func resolveExternalRefs(ctx context.Context, tx DBTX, refs []string, opts Exter
 	if !opts.ServerMode {
 		agg := newDiagAggregator()
 		for _, ref := range refs {
-			project, _, _ := parseExternalRef(ref)
-			agg.add(project, "server mode required", ref)
+			agg.add(refPrefixGuess(ref), "server mode required", ref)
 		}
 		return sortedUnique(refs), agg.diags()
 	}
 
-	// Group well-formed refs by project; malformed refs are unresolvable.
-	type projGroup struct {
-		refByCapLabel map[string]string // "provides:<cap>" -> full ref
-		refs          []string
-	}
-	groups := make(map[string]*projGroup)
-	var projOrder []string
-	var unsatisfied []string
 	agg := newDiagAggregator()
+	m, err := discoverPrefixMap(ctx, tx)
+	if err != nil {
+		reason := fmt.Sprintf("prefix discovery failed: %v", err)
+		for _, ref := range refs {
+			agg.add(refPrefixGuess(ref), reason, ref)
+		}
+		return sortedUnique(refs), agg.diags()
+	}
+
+	// Group resolvable refs by the database that owns their prefix.
+	type dbGroup struct {
+		prefix string
+		refs   []string
+	}
+	groups := make(map[string]*dbGroup)
+	var dbOrder []string
+	var blocking []string
 
 	for _, ref := range refs {
-		project, capability, ok := parseExternalRef(ref)
-		if !ok {
-			unsatisfied = append(unsatisfied, ref)
-			agg.add(project, "malformed external reference", ref)
+		prefix, dbName, result := m.match(ref)
+		switch result {
+		case prefixMatchOK:
+			g := groups[dbName]
+			if g == nil {
+				g = &dbGroup{prefix: prefix}
+				groups[dbName] = g
+				dbOrder = append(dbOrder, dbName)
+			}
+			g.refs = append(g.refs, ref)
+		case prefixMatchAmbiguous:
+			blocking = append(blocking, ref)
+			agg.add(prefix, m.ambiguityReason(prefix), ref)
+		case prefixMatchSelf:
+			// A stored external row whose target is in fact local cannot be
+			// resolved as external work; treat it as unresolvable rather than
+			// silently satisfying it from the local table.
+			blocking = append(blocking, ref)
+			agg.add(prefix, "local prefix stored as external reference", ref)
+		default:
+			blocking = append(blocking, ref)
+			agg.add(refPrefixGuess(ref), "unknown prefix", ref)
+		}
+	}
+
+	for _, dbName := range dbOrder {
+		g := groups[dbName]
+		closed, qErr := queryClosedExternalIssues(ctx, tx, dbName, g.refs)
+		if qErr != nil {
+			blocking = append(blocking, g.refs...)
+			reason := fmt.Sprintf("external database query failed: %v", qErr)
+			for _, ref := range g.refs {
+				agg.add(g.prefix, reason, ref)
+			}
 			continue
 		}
-		g := groups[project]
-		if g == nil {
-			g = &projGroup{refByCapLabel: make(map[string]string)}
-			groups[project] = g
-			projOrder = append(projOrder, project)
-		}
-		g.refByCapLabel["provides:"+capability] = ref
-		g.refs = append(g.refs, ref)
-	}
-
-	markUnresolvable := func(g *projGroup, project, reason string) {
-		unsatisfied = append(unsatisfied, g.refs...)
 		for _, ref := range g.refs {
-			agg.add(project, reason, ref)
-		}
-	}
-
-	for _, project := range projOrder {
-		g := groups[project]
-		dbName, mapped := opts.Databases[project]
-		switch {
-		case !mapped || dbName == "":
-			markUnresolvable(g, project, "no external_databases mapping")
-		case !externalDBNameRE.MatchString(dbName):
-			markUnresolvable(g, project, fmt.Sprintf("invalid external database name %q", dbName))
-		default:
-			labels := make([]string, 0, len(g.refByCapLabel))
-			for label := range g.refByCapLabel {
-				labels = append(labels, label)
-			}
-			satisfied, qErr := queryProvidedLabels(ctx, tx, dbName, labels)
-			if qErr != nil {
-				markUnresolvable(g, project, fmt.Sprintf("external database query failed: %v", qErr))
-				continue
-			}
-			for label, ref := range g.refByCapLabel {
-				if _, ok := satisfied[label]; !ok {
-					unsatisfied = append(unsatisfied, ref)
-				}
+			if _, ok := closed[ref]; !ok {
+				// Unsatisfied (target open, or absent) — blocking, but not a
+				// diagnostic: this is ordinary "still waiting" state.
+				blocking = append(blocking, ref)
 			}
 		}
 	}
 
-	return sortedUnique(unsatisfied), agg.diags()
+	return sortedUnique(blocking), agg.diags()
 }
 
-// queryProvidedLabels runs the single per-project satisfaction query: a
-// capability is satisfied iff the target database has a closed issue carrying
-// the matching provides:<capability> label. dbName is validated by
-// externalDBNameRE and backtick-quoted; only the labels flow as ? args.
+// queryClosedExternalIssues runs the single per-database satisfaction query:
+// which of the requested issue IDs are closed in the target database. dbName is
+// validated by externalDBNameRE and backtick-quoted; only the IDs flow as ? args.
 //
-//nolint:gosec // G201: dbName is allowlist-validated and backtick-quoted; capability labels are ? placeholders.
-func queryProvidedLabels(ctx context.Context, tx DBTX, dbName string, labels []string) (map[string]struct{}, error) {
-	placeholders, args := sqlbuild.InPlaceholders(labels)
-	dbQ := "`" + dbName + "`"
+//nolint:gosec // G201: dbName is allowlist-validated and backtick-quoted; issue IDs are ? placeholders.
+func queryClosedExternalIssues(ctx context.Context, tx DBTX, dbName string, ids []string) (map[string]struct{}, error) {
+	placeholders, args := sqlbuild.InPlaceholders(ids)
 	query := fmt.Sprintf(
-		"SELECT DISTINCT l.label FROM %s.labels l JOIN %s.issues i ON i.id = l.issue_id WHERE i.status = 'closed' AND l.label IN (%s)",
-		dbQ, dbQ, placeholders)
+		"SELECT id FROM `%s`.issues WHERE status = 'closed' AND id IN (%s)",
+		dbName, placeholders)
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -214,11 +205,11 @@ func queryProvidedLabels(ctx context.Context, tx DBTX, dbName string, labels []s
 	defer func() { _ = rows.Close() }()
 	out := make(map[string]struct{})
 	for rows.Next() {
-		var label string
-		if err := rows.Scan(&label); err != nil {
+		var id string
+		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
-		out[label] = struct{}{}
+		out[id] = struct{}{}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -265,7 +256,7 @@ func sortedUnique(in []string) []string {
 }
 
 // diagAggregator groups unresolvable refs into ExternalDiag rows keyed by
-// (project, reason) and emits them deterministically.
+// (prefix, reason) and emits them deterministically.
 type diagAggregator struct {
 	order []string
 	byKey map[string]*ExternalDiag
@@ -275,11 +266,11 @@ func newDiagAggregator() *diagAggregator {
 	return &diagAggregator{byKey: make(map[string]*ExternalDiag)}
 }
 
-func (a *diagAggregator) add(project, reason, ref string) {
-	key := project + "\x00" + reason
+func (a *diagAggregator) add(prefix, reason, ref string) {
+	key := prefix + "\x00" + reason
 	d := a.byKey[key]
 	if d == nil {
-		d = &ExternalDiag{Project: project, Reason: reason}
+		d = &ExternalDiag{Prefix: prefix, Reason: reason}
 		a.byKey[key] = d
 		a.order = append(a.order, key)
 	}

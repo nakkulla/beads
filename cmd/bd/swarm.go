@@ -285,16 +285,10 @@ func analyzeEpicForSwarm(ctx context.Context, s SwarmStorage, epic *types.Issue)
 					targetNode.DependedOnBy = append(targetNode.DependedOnBy, issue.ID)
 				}
 			}
-			// External dependencies to issues outside the epic
+			// Dependencies to issues outside the epic
 			if !childIDSet[dep.DependsOnID] && dep.DependsOnID != epic.ID {
-				// Check if it's an external ref
-				if strings.HasPrefix(dep.DependsOnID, "external:") {
-					analysis.Warnings = append(analysis.Warnings,
-						fmt.Sprintf("%s has external dependency: %s", issue.ID, dep.DependsOnID))
-				} else {
-					analysis.Warnings = append(analysis.Warnings,
-						fmt.Sprintf("%s depends on %s (outside epic)", issue.ID, dep.DependsOnID))
-				}
+				analysis.Warnings = append(analysis.Warnings,
+					fmt.Sprintf("%s depends on %s (outside epic)", issue.ID, dep.DependsOnID))
 			}
 		}
 	}

@@ -149,11 +149,13 @@ cycles before committing.
 Dependencies can reference issues in other beads rigs:
 
 ```bash
-bd dep add local-issue external:other-project:remote-issue
+bd dep add local-issue otherproject-1tif
 ```
 
-External dependencies always block. When the remote issue closes,
-`bd ready` reflects the change (checked at query time).
+The target is the other rig's issue ID, and the owning database is discovered
+from that prefix on the shared Dolt server. External dependencies block until
+the remote issue is **closed**; `bd ready` re-checks at query time, and refuses
+the add outright if the target cannot be resolved.
 
 ## Gates
 
