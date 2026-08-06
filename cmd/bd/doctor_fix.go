@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"slices"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/steveyegge/beads/cmd/bd/doctor"
 	"github.com/steveyegge/beads/cmd/bd/doctor/fix"
+	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/ui"
@@ -216,6 +218,12 @@ func orderDoctorFixes(fixes []doctorCheck) {
 		"Lock Files",
 		"Circuit Breaker",
 		"Permissions",
+		// Store recovery replaces the whole database, so it must run before
+		// every fix that reads or writes it — otherwise those fixes operate on
+		// a store that is about to be discarded. It runs after the lock and
+		// circuit-breaker cleanup above, which is what lets the re-clone and
+		// the subsequent re-open succeed.
+		doctor.LocalStoreHealthCheckName,
 		"Database Config",
 		"Config Values",
 		"Database Integrity",
@@ -421,6 +429,13 @@ func applyFixList(path string, fixes []doctorCheck) {
 			err = fix.FixMissingDoltDatabase(path)
 		case "Dolt Format":
 			err = fix.DoltFormat(path)
+		case doctor.LocalStoreHealthCheckName:
+			// B1: destructive quarantine + re-clone of a corrupt local store,
+			// gated here so it only ever runs on explicit doctor --fix
+			// confirmation (or --yes), following the "Corrupt Manifest"
+			// precedent below. The check only carries a Fix — and so only
+			// reaches this case — when every recovery gate already passed.
+			err = recoverLocalStore(path)
 		case "Corrupt Manifest":
 			// GH#3290 / bd-6dnrw.6: destructive backup+reinit, gated here so it
 			// only ever runs on explicit doctor --fix confirmation.
@@ -450,6 +465,69 @@ func applyFixList(path string, fixes []doctorCheck) {
 	if errorCount > 0 {
 		fmt.Println("\nSome fixes failed. Please review the errors above and apply manual fixes as needed.")
 	}
+}
+
+// recoverLocalStore repairs a rig whose local Dolt store is corrupt: it moves
+// the damaged store to a timestamped path outside .beads/ through the storage
+// boundary's recovery capability, then re-clones the database from the
+// configured remote using the same clone path bd init and bd bootstrap use.
+//
+// Reaching this function already means the user confirmed doctor --fix (or
+// passed --yes); the gates re-checked here guard against the state having
+// changed since the diagnosis, not against a missing confirmation.
+//
+// Nothing is deleted. If the re-clone fails, the quarantined store is left
+// where it is and its path is reported, so the operator can put it back. The
+// damaged store is deliberately not auto-restored: it is the copy that already
+// failed to open.
+func recoverLocalStore(path string) error {
+	beadsDir := doctor.ResolveBeadsDirForRepo(path)
+
+	// Re-observe the open failure instead of trusting the verdict from the
+	// diagnosis pass. The shared store was closed when the doctor run ended,
+	// and a store that started working in between must not be moved aside.
+	ss := doctor.NewSharedStore(path)
+	openErr := ss.OpenErr()
+	ss.Close()
+
+	plan := fix.PlanLocalStoreRecovery(beadsDir, openErr)
+	if !plan.Recoverable {
+		return fmt.Errorf("store recovery refused: %s", plan.Refusal)
+	}
+
+	if plan.StorePath != "" {
+		fmt.Printf("  Moving damaged store %s to %s\n", plan.StorePath, plan.QuarantinePath)
+		if err := fix.QuarantineLocalStore(plan); err != nil {
+			return err
+		}
+		fmt.Printf("  %s Quarantined (kept, not deleted)\n", ui.RenderPass("✓"))
+	}
+
+	// Pass the configured remote verbatim: normalizing it would rewrite a
+	// self-hosted remotesapi http(s) endpoint into a git+ URL (GH#3339), the
+	// same reason bd bootstrap trusts sync.remote as-is.
+	cfg, cfgErr := configfile.Load(beadsDir)
+	if cfgErr != nil {
+		cfg = nil
+	}
+
+	fmt.Printf("  Re-cloning database %q from %s\n", plan.Database, plan.Remote)
+	// remoteCloneCLI is the inverse of the quarantine: it clones into
+	// <dolt data dir>/<database>, exactly the directory that was just moved
+	// away. The embedded and external-server clone paths write elsewhere, and
+	// server-mode rigs are refused by the planner before reaching this point.
+	if err := cloneFromRemoteWithMode(context.Background(), beadsDir, plan.Remote, plan.Database, cfg, remoteCloneCLI); err != nil {
+		if plan.QuarantinePath != "" {
+			return fmt.Errorf("re-clone from %s failed: %w\n  The damaged store is preserved at %s — move it back to %s to restore the previous state",
+				plan.Remote, err, plan.QuarantinePath, plan.StorePath)
+		}
+		return fmt.Errorf("re-clone from %s failed: %w", plan.Remote, err)
+	}
+
+	if plan.QuarantinePath != "" {
+		fmt.Printf("  Damaged store preserved at: %s\n", plan.QuarantinePath)
+	}
+	return nil
 }
 
 func fixPendingMigrations(path string) error {

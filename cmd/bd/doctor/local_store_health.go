@@ -23,9 +23,11 @@ const manualStoreRecoveryHint = "bd cannot rebuild this store: no sync remote is
 // otherwise only expresses as a nil store, classified as on-disk corruption or
 // a transient failure, together with whether a re-clone source is configured.
 //
-// Diagnostic only. Fix stays empty so the check never reaches the
-// doctor --fix worklist: quarantining and re-cloning a store moves user data
-// and is not implemented here.
+// The check itself is read-only. It carries a Fix only when every recovery gate
+// passes (positively identified corruption, a local non-server rig with no live
+// dolt server, and a configured remote); on any other rig Fix stays empty, so
+// the check never reaches the doctor --fix worklist and the damaged store is
+// reported rather than moved.
 func CheckLocalStoreHealth(path string, ss *SharedStore) DoctorCheck {
 	beadsDir := beadsDirFromSharedStore(path, ss)
 
@@ -38,10 +40,12 @@ func CheckLocalStoreHealth(path string, ss *SharedStore) DoctorCheck {
 		}
 	}
 
-	return localStoreHealthCheck(fix.InspectLocalStoreHealth(beadsDir, ss.OpenErr()))
+	return localStoreHealthCheck(fix.PlanLocalStoreRecovery(beadsDir, ss.OpenErr()))
 }
 
-func localStoreHealthCheck(report fix.LocalStoreHealthReport) DoctorCheck {
+func localStoreHealthCheck(plan fix.LocalStoreRecoveryPlan) DoctorCheck {
+	report := plan.Report
+
 	if report.Class == fix.StoreOpenClassNone {
 		return DoctorCheck{
 			Name:     LocalStoreHealthCheckName,
@@ -60,23 +64,31 @@ func localStoreHealthCheck(report fix.LocalStoreHealthReport) DoctorCheck {
 
 	if report.Class == fix.StoreOpenClassCorrupt {
 		check.Status = StatusError
-		check.Message = "Dolt store failed to open with a corruption signature; " + remoteClause(report)
+		check.Message = "Dolt store failed to open with a corruption signature; " + remoteClause(plan)
 		details = append(details, fmt.Sprintf("Corruption signature: %q.", report.Signature))
 		if len(report.CorruptDirs) > 0 {
 			details = append(details, "Corrupt Dolt directories:\n  "+strings.Join(report.CorruptDirs, "\n  "))
 		}
 	} else {
 		check.Status = StatusWarning
-		check.Message = "Dolt store did not open (transient failure); " + remoteClause(report)
+		check.Message = "Dolt store did not open (transient failure); " + remoteClause(plan)
 		details = append(details, "No corruption signature in the open error — this reads as a server, connectivity, "+
 			"permission, or configuration problem. Retry after 'bd dolt start'.")
 	}
 
-	if report.RemoteUsable {
+	if plan.Recoverable {
+		// Only a recoverable plan gets a Fix, which is what admits this check
+		// to the doctor --fix worklist. The move itself still happens only
+		// behind doctor --fix's confirmation prompt or --yes.
+		check.Fix = fix.DescribeLocalStoreRecovery(plan)
 		details = append(details, fmt.Sprintf(
-			"%s=%s is configured and can serve as a re-clone source, but no automated repair is wired up here — this check is diagnostic only.",
-			report.RemoteKey, report.Remote))
-	} else {
+			"%s=%s is the configured re-clone source. 'bd doctor --fix' moves the damaged store to %s (outside .beads/) and re-clones it; the quarantined copy is kept, not deleted.",
+			report.RemoteKey, report.Remote, plan.QuarantinePath))
+	} else if plan.Refusal != "" {
+		details = append(details, "No automatic repair: "+plan.Refusal+".")
+	}
+
+	if !report.RemoteUsable {
 		details = append(details, manualStoreRecoveryHint)
 	}
 
@@ -93,12 +105,15 @@ func localStoreHealthCheck(report fix.LocalStoreHealthReport) DoctorCheck {
 	return check
 }
 
-// remoteClause is the part of the message that differs by re-clone
-// availability, so an operator can tell a repairable rig from an unrepairable
-// one without reading the detail.
-func remoteClause(report fix.LocalStoreHealthReport) string {
-	if report.RemoteUsable {
-		return fmt.Sprintf("re-clone source %s is configured", report.RemoteKey)
+// remoteClause is the part of the message that differs by repairability, so an
+// operator can tell a rig doctor --fix will rebuild from one it will only
+// report on, without reading the detail.
+func remoteClause(plan fix.LocalStoreRecoveryPlan) string {
+	if plan.Recoverable {
+		return "'bd doctor --fix' can quarantine and re-clone it"
 	}
-	return "no sync remote is configured, so it cannot be re-cloned"
+	if !plan.Report.RemoteUsable {
+		return "no sync remote is configured, so it cannot be re-cloned"
+	}
+	return "automatic repair is not available"
 }

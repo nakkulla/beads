@@ -194,10 +194,14 @@ func TestCheckLocalStoreHealth_CorruptWithRemote(t *testing.T) {
 	if check.Status != StatusError {
 		t.Errorf("Status = %q, want %q (%s)", check.Status, StatusError, check.Message)
 	}
-	// Phase 6 owns the destructive quarantine+re-clone fixer; an empty Fix
-	// keeps this check off the doctor --fix worklist.
-	if check.Fix != "" {
-		t.Errorf("Fix = %q, want empty (diagnostic only)", check.Fix)
+	// A corrupt local rig with a remote is the one shape that is repairable, so
+	// it carries a Fix and joins the doctor --fix worklist. (Phase 5 asserted
+	// an empty Fix here; Phase 6 wires the quarantine+re-clone fixer.)
+	if check.Fix == "" {
+		t.Error("Fix is empty, want the quarantine+re-clone description for a repairable rig")
+	}
+	if !strings.Contains(check.Fix, "outside .beads/") {
+		t.Errorf("Fix does not state that the quarantine is outside .beads/: %q", check.Fix)
 	}
 	if !strings.Contains(check.Detail, "git+https://github.com/org/repo.git") {
 		t.Errorf("Detail does not name the configured remote: %q", check.Detail)
