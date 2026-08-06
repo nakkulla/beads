@@ -143,7 +143,7 @@ func TestInitTimeCloneConfigExternalDefaultsAreSelfContained(t *testing.T) {
 	t.Setenv("BEADS_DOLT_SERVER_USER", "")
 	t.Setenv("BEADS_DOLT_SERVER_DATABASE", "")
 
-	cfg := initTimeCloneConfig(true, "", 3312, "", "", "beads_proj")
+	cfg := initTimeCloneConfig(true, "", 3312, "", "", "beads_proj", false)
 
 	if cfg.GetDoltMode() != configfile.DoltModeServer {
 		t.Fatalf("dolt mode = %q, want server", cfg.GetDoltMode())

@@ -399,6 +399,11 @@ func applyFixList(path string, fixes []doctorCheck) {
 					skipped = true
 				}
 			}
+		case doctor.ExternalLifecyclePinCheckName:
+			// Records the marker only; the stale dolt_server_port it unblocks is
+			// dropped by the port-drift fixer on a following run, because this
+			// run's worklist was fixed before the marker existed.
+			err = fix.ExternalLifecyclePin(path)
 		case doctor.DoltPortDriftCheckName:
 			err = fix.DoltPortDrift(path)
 		case doctor.SyncRemoteShapeCheckName:

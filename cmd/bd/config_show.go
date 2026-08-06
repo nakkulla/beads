@@ -231,6 +231,7 @@ func collectMetadataEntries() []configEntry {
 	}
 
 	add("dolt_mode", cfg.DoltMode)
+	add("dolt_server_lifecycle", cfg.DoltServerLifecycle)
 	add("dolt_server_host", cfg.DoltServerHost)
 	addInt("dolt_server_port", cfg.DoltServerPort)
 	add("dolt_server_user", cfg.DoltServerUser)
