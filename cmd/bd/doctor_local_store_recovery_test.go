@@ -413,6 +413,19 @@ func runBDListJSON(t *testing.T, dir string) string {
 		done <- sb.String()
 	}()
 
+	// rootCmd is process-global and --json is bound to the package-level
+	// jsonOutput, so leaving it set would flip every later test in this package
+	// into JSON mode.
+	defer func() {
+		if f := rootCmd.PersistentFlags().Lookup("json"); f != nil {
+			if err := f.Value.Set(f.DefValue); err != nil {
+				t.Fatalf("reset --json: %v", err)
+			}
+			f.Changed = false
+		}
+		jsonOutput = false
+	}()
+
 	rootCmd.SetArgs([]string{"list", "--json"})
 	execErr := rootCmd.Execute()
 
