@@ -36,7 +36,10 @@ SKIP_PATTERN=$(build_skip_pattern)
 VERBOSE="${TEST_VERBOSE:-}"
 RUN_PATTERN="${TEST_RUN:-}"
 COVERAGE="${TEST_COVER:-}"
-COVERPROFILE="${TEST_COVERPROFILE:-/tmp/beads.coverage.out}"
+# Per-run unique default: concurrent runs (worker verify + another checkout's
+# suite) must not share one profile — `go tool cover -func` fails on a profile
+# that names files from a different checkout.
+COVERPROFILE="${TEST_COVERPROFILE:-${TMPDIR:-/tmp}/beads.coverage.$$.out}"
 COVERPKG="${TEST_COVERPKG:-}"
 
 # Parse arguments
