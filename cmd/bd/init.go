@@ -108,6 +108,13 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			reinitLocal = true
 		}
 		sharedServer, _ := cmd.Flags().GetBool("shared-server")
+		// Pin the external sql-server lifecycle only when the port was passed
+		// explicitly and this is not a shared-server rig (see
+		// shouldRecordExternalLifecycle).
+		recordExternalLifecycle := shouldRecordExternalLifecycle(
+			cmd.Flags().Changed("server-port"),
+			sharedServer || doltserver.IsSharedServerMode(),
+		)
 		externalServer, _ := cmd.Flags().GetBool("external")
 		debugMode, _ := cmd.Flags().GetBool("debug")
 		initProxiedServer, _ := cmd.Flags().GetBool("proxied-server")
@@ -899,7 +906,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 		}
 		if syncFromRemote {
 			var err error
-			cloneCfg := initTimeCloneConfig(initServerMode, serverHost, serverPort, serverSocket, serverUser, dbName)
+			cloneCfg := initTimeCloneConfig(initServerMode, serverHost, serverPort, serverSocket, serverUser, dbName, recordExternalLifecycle)
 			err = cloneFromRemoteWithMode(ctx, beadsDir, syncURL, dbName, cloneCfg, initRemoteCloneMode(initServerMode, externalServer))
 			if err != nil {
 				if isEmptyRemoteCloneError(err) {
@@ -1040,7 +1047,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 					// bd bootstrap sync path produces (GH#3201) so
 					// `BD_ALLOW_REMOTE_MIGRATE=1 bd migrate` and
 					// `bd dolt push` can open the cloned database.
-					fcfg := initTimeCloneConfig(initServerMode, serverHost, serverPort, serverSocket, serverUser, dbName)
+					fcfg := initTimeCloneConfig(initServerMode, serverHost, serverPort, serverSocket, serverUser, dbName, recordExternalLifecycle)
 					if ferr := finalizeSyncedBootstrap(beadsDir, syncURL, fcfg, dbName); ferr != nil {
 						fmt.Fprintf(os.Stderr, "Warning: failed to finalize bootstrapped workspace: %v\n", ferr)
 					}
@@ -1229,6 +1236,9 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 					}
 					if serverUser != "" {
 						cfg.DoltServerUser = serverUser
+					}
+					if recordExternalLifecycle {
+						cfg.DoltServerLifecycle = configfile.DoltServerLifecycleExternal
 					}
 				}
 
@@ -2589,7 +2599,20 @@ func initRemoteCloneMode(initServerMode, externalServer bool) remoteCloneMode {
 	return remoteCloneCLI
 }
 
-func initTimeCloneConfig(serverMode bool, serverHost string, serverPort int, serverSocket, serverUser, dbName string) *configfile.Config {
+// shouldRecordExternalLifecycle decides whether this init should pin the
+// external sql-server lifecycle marker in metadata.json.
+//
+// portFlagChanged must come from cmd.Flags().Changed("server-port"), not from
+// `serverPort != 0`: only an explicitly passed flag expresses "I run this
+// server myself". sharedServer is the resolved verdict (--shared-server flag OR
+// BEADS_DOLT_SHARED_SERVER env OR config.yaml) and vetoes the marker — shared
+// rigs resolve External from runtime config, and metadata.json is git-tracked,
+// so the marker would propagate to clones with no shared-server setup.
+func shouldRecordExternalLifecycle(portFlagChanged, sharedServer bool) bool {
+	return portFlagChanged && !sharedServer
+}
+
+func initTimeCloneConfig(serverMode bool, serverHost string, serverPort int, serverSocket, serverUser, dbName string, externalLifecycle bool) *configfile.Config {
 	cfg := configfile.DefaultConfig()
 	cfg.Backend = configfile.BackendDolt
 	cfg.DoltDatabase = dbName
@@ -2611,6 +2634,9 @@ func initTimeCloneConfig(serverMode bool, serverHost string, serverPort int, ser
 	}
 	if serverUser != "" {
 		cfg.DoltServerUser = serverUser
+	}
+	if externalLifecycle {
+		cfg.DoltServerLifecycle = configfile.DoltServerLifecycleExternal
 	}
 	return cfg
 }

@@ -106,6 +106,48 @@ func TestDoltPortDrift_RefusesWhenRemovalWouldFlipLifecycle(t *testing.T) {
 	}
 }
 
+// TestDoltPortDrift_LifecycleMarkerUnblocksRemoval is the beads-ode completion
+// criterion: with dolt_server_lifecycle pinned, dropping the stale
+// dolt_server_port no longer flips the rig to Owned, so the guard that refuses
+// removal in TestDoltPortDrift_RefusesWhenRemovalWouldFlipLifecycle stands down.
+// No env var is set here — the marker alone carries the External verdict.
+func TestDoltPortDrift_LifecycleMarkerUnblocksRemoval(t *testing.T) {
+	tmpDir := seedDriftRig(t, configfile.DoltModeServer, 13307, 3399)
+	beadsDir := filepath.Join(tmpDir, ".beads")
+
+	cfg, err := configfile.Load(beadsDir)
+	if err != nil || cfg == nil {
+		t.Fatalf("load seeded config: %v", err)
+	}
+	cfg.DoltServerLifecycle = configfile.DoltServerLifecycleExternal
+	if err := cfg.Save(beadsDir); err != nil {
+		t.Fatal(err)
+	}
+
+	report := InspectDoltPortDrift(beadsDir)
+	if !report.Removable {
+		t.Fatalf("Removable = false with the lifecycle marker pinned: %s", report.BlockedReason)
+	}
+	if report.ModeBefore != doltserver.ServerModeExternal || report.ModeAfter != doltserver.ServerModeExternal {
+		t.Fatalf("simulated lifecycle before=%v after=%v, want External on both sides", report.ModeBefore, report.ModeAfter)
+	}
+
+	if err := DoltPortDrift(tmpDir); err != nil {
+		t.Fatalf("DoltPortDrift: %v", err)
+	}
+
+	meta := rawMetadata(t, tmpDir)
+	if _, present := meta["dolt_server_port"]; present {
+		t.Errorf("dolt_server_port still present after fix: %v", meta["dolt_server_port"])
+	}
+	if got := meta["dolt_server_lifecycle"]; got != configfile.DoltServerLifecycleExternal {
+		t.Errorf("dolt_server_lifecycle = %v, want it preserved as %q", got, configfile.DoltServerLifecycleExternal)
+	}
+	if after := doltserver.ResolveServerMode(beadsDir); after != doltserver.ServerModeExternal {
+		t.Errorf("mode after removal = %v, want External (auto-start must stay off)", after)
+	}
+}
+
 func TestDoltPortDrift_NoDrift(t *testing.T) {
 	tmpDir := seedDriftRig(t, configfile.DoltModeServer, 13307, 13307)
 	t.Setenv("BEADS_DOLT_SERVER_MODE", "1")

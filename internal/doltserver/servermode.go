@@ -18,8 +18,9 @@ const (
 
 	// ServerModeExternal means the user manages the server lifecycle
 	// (e.g., systemd, Docker, Hosted Dolt, VPS). Beads never starts or
-	// stops the server. Determined when metadata.json has an explicit
-	// dolt_server_port or BEADS_DOLT_SHARED_SERVER is set.
+	// stops the server. Determined when metadata.json carries the
+	// dolt_server_lifecycle marker or an explicit dolt_server_port, or when
+	// BEADS_DOLT_SHARED_SERVER is set.
 	ServerModeExternal
 
 	// ServerModeEmbedded is the legacy in-process embedded dolt path.
@@ -45,11 +46,12 @@ func (m ServerMode) String() string {
 // This is the single source of truth for how the server lifecycle is managed.
 //
 // Decision logic (checked in order):
-//  1. BEADS_DOLT_SERVER_MODE=1 env var             -> ServerModeExternal
-//  2. BEADS_DOLT_SHARED_SERVER env var is set       -> ServerModeExternal
-//  3. metadata.json dolt_mode == "embedded"         -> ServerModeEmbedded
-//  4. metadata.json has explicit dolt_server_port   -> ServerModeExternal
-//  5. default                                       -> ServerModeOwned
+//  1. BEADS_DOLT_SERVER_MODE=1 env var                -> ServerModeExternal
+//  2. BEADS_DOLT_SHARED_SERVER env var is set          -> ServerModeExternal
+//  3. metadata.json dolt_mode == "embedded"            -> ServerModeEmbedded
+//  4. metadata.json has dolt_server_lifecycle set      -> ServerModeExternal
+//  5. metadata.json has explicit dolt_server_port      -> ServerModeExternal
+//  6. default                                          -> ServerModeOwned
 //
 // Runtime env vars (1, 2) take precedence over persisted metadata.json
 // to prevent stale dolt_mode=embedded from silently overriding an active
@@ -110,19 +112,29 @@ func serverModeFromEnv() (ServerMode, bool) {
 	return ServerModeOwned, false
 }
 
-// serverModeFromFileConfig covers decision steps 3 through 5.
+// serverModeFromFileConfig covers decision steps 3 through 6.
 func serverModeFromFileConfig(fileCfg *configfile.Config) ServerMode {
-	// 3. Explicit embedded mode in metadata.json
+	// 3. Explicit embedded mode in metadata.json. Kept above the lifecycle
+	// marker: an embedded rig has no server for anyone to own, so the two
+	// together are a contradiction `bd doctor` reports rather than resolves.
 	if fileCfg != nil && strings.ToLower(fileCfg.DoltMode) == configfile.DoltModeEmbedded &&
 		fileCfg.DoltMode != "" { // empty defaults to embedded in GetDoltMode, but we treat empty as "unset"
 		return ServerModeEmbedded
 	}
 
-	// 4. Explicit server port in metadata.json -> external
+	// 4. Explicit lifecycle marker in metadata.json -> external. This outranks
+	// dolt_server_port so an externally managed rig can drop the git-tracked
+	// port key without flipping to owned.
+	if fileCfg != nil && fileCfg.HasExternalServerLifecycle() {
+		return ServerModeExternal
+	}
+
+	// 5. Explicit server port in metadata.json -> external. Legacy fallback for
+	// rigs that predate the marker and have not run the doctor migration yet.
 	if fileCfg != nil && fileCfg.DoltServerPort > 0 {
 		return ServerModeExternal
 	}
 
-	// 5. Default: beads owns the server
+	// 6. Default: beads owns the server
 	return ServerModeOwned
 }
