@@ -238,12 +238,18 @@ func (s *testSuite) mixedDepTargetClassification() {
 	s.Require().NoError(depRepo.Insert(s.Ctx(), &types.Dependency{
 		IssueID: src.Issue.ID, DependsOnID: wisp.Issue.ID, Type: types.DepRelated,
 	}, "tester", domain.DepInsertOpts{}))
-	s.Require().NoError(depRepo.Insert(s.Ctx(), &types.Dependency{
+	// A cross-prefix target no database on this server declares is
+	// unresolvable, so the proxied stack must refuse it at write time exactly
+	// like the classic stack does — an unresolvable edge would otherwise block
+	// its source forever.
+	err = depRepo.Insert(s.Ctx(), &types.Dependency{
 		IssueID: src.Issue.ID, DependsOnID: "gh42-9f3a11", Type: types.DepRelated,
-	}, "tester", domain.DepInsertOpts{}))
+	}, "tester", domain.DepInsertOpts{})
+	s.Require().Error(err, "unresolvable cross-prefix target must be rejected")
+	s.Contains(err.Error(), "unknown prefix")
 
 	deps := s.loadDepRows("dependencies", "dx-%")
-	s.Require().Len(deps, 3)
+	s.Require().Len(deps, 2, "the rejected cross-prefix edge must not be stored")
 
 	byTarget := make(map[string]depRow, len(deps))
 	for _, d := range deps {
@@ -253,8 +259,6 @@ func (s *testSuite) mixedDepTargetClassification() {
 		"regular target must use depends_on_issue_id, got %+v", byTarget[regular.Issue.ID])
 	s.Equal("depends_on_wisp_id", byTarget[wisp.Issue.ID].targetColumn(),
 		"wisp target must use depends_on_wisp_id, got %+v", byTarget[wisp.Issue.ID])
-	s.Equal("depends_on_external", byTarget["gh42-9f3a11"].targetColumn(),
-		"cross-prefix target must use depends_on_external, got %+v", byTarget["gh42-9f3a11"])
 }
 
 type depRow struct {

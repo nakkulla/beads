@@ -84,10 +84,10 @@ type AddDependencyOpts struct {
 	// IsCrossPrefix is true when source and target have different prefixes,
 	// meaning the target lives in another rig's database.
 	IsCrossPrefix bool
-	// ServerMode reports whether the connection is on a shared Dolt server,
-	// which is what makes a cross-prefix target resolvable at all. It gates
-	// the write-time existence check on cross-prefix targets.
-	ServerMode bool
+	// External carries the resolver options (server mode plus the shared
+	// prefix-discovery cache) used by the write-time existence check on
+	// cross-prefix targets.
+	External ExternalResolverOptions
 	// SkipCycleCheck skips the recursive pre-insert cycle check for callers
 	// that intentionally trade validation cost for bulk graph wiring speed.
 	SkipCycleCheck bool
@@ -157,7 +157,7 @@ func AddDependencyInTx(ctx context.Context, tx *sql.Tx, dep *types.Dependency, a
 	// time.
 	var targetType string
 	if opts.IsCrossPrefix {
-		if err := ValidateExternalDepTarget(ctx, tx, dep.DependsOnID, opts.ServerMode); err != nil {
+		if err := ValidateExternalDepTarget(ctx, tx, dep.DependsOnID, opts.External); err != nil {
 			return err
 		}
 	} else {
@@ -927,17 +927,19 @@ func GetDependenciesWithMetadataInTx(ctx context.Context, tx DBTX, issueID strin
 
 	var results []*types.IssueWithDependencyMetadata
 	for _, d := range deps {
+		// External refs are real edges (counted in dependency counts) but have
+		// no local issues/wisps row, so GetIssuesByIDsInTx cannot hydrate them.
+		// Surface them as synthesized entries instead of dropping them —
+		// dropping desynced the counts from the listed edges. The edge's
+		// stored column decides, so a local row that happens to share the ID
+		// never masks the external edge.
+		if d.external {
+			results = append(results, NewExternalDepEntry(d.depID, d.depType))
+			continue
+		}
 		issue, ok := issueMap[d.depID]
 		if !ok {
-			// External refs are real edges (counted in dependency counts) but
-			// have no issues/wisps row, so GetIssuesByIDsInTx cannot hydrate
-			// them. Surface them as synthesized entries instead of dropping
-			// them — dropping desynced the counts from the listed edges.
-			// Genuinely missing local IDs stay dropped. The edge's stored
-			// column, not the ID's shape, is what makes it external.
-			if d.external {
-				results = append(results, NewExternalDepEntry(d.depID, d.depType))
-			}
+			// Genuinely missing local IDs stay dropped.
 			continue
 		}
 		results = append(results, &types.IssueWithDependencyMetadata{

@@ -110,7 +110,7 @@ func (t *embeddedTransaction) AddDependencyWithOptions(ctx context.Context, dep 
 	// never resolvable from here, so classification uses the non-server
 	// fallback and the write-time check rejects them.
 	if err := issueops.AddDependencyInTx(ctx, t.tx, dep, actor, issueops.AddDependencyOpts{
-		IsCrossPrefix:  issueops.IsCrossPrefixTarget(ctx, t.tx, dep.IssueID, dep.DependsOnID, false),
+		IsCrossPrefix:  issueops.IsCrossPrefixTarget(ctx, t.tx, dep.IssueID, dep.DependsOnID, issueops.ExternalResolverOptions{}),
 		SkipCycleCheck: addOpts.SkipCycleCheck,
 	}); err != nil {
 		return err

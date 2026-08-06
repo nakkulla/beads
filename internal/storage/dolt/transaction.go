@@ -664,8 +664,11 @@ func (t *doltTransaction) AddDependencyWithOptions(ctx context.Context, dep *typ
 		sourceTable = "wisps"
 	}
 
-	serverMode := t.store != nil && t.store.externalOpts.ServerMode
-	isCrossPrefix := issueops.IsCrossPrefixTarget(ctx, t.txFor(table), dep.IssueID, dep.DependsOnID, serverMode)
+	var externalOpts issueops.ExternalResolverOptions
+	if t.store != nil {
+		externalOpts = t.store.externalOpts
+	}
+	isCrossPrefix := issueops.IsCrossPrefixTarget(ctx, t.txFor(table), dep.IssueID, dep.DependsOnID, externalOpts)
 	targetTable := "issues"
 	kind := issueops.DepTargetIssue
 	switch {
@@ -683,7 +686,7 @@ func (t *doltTransaction) AddDependencyWithOptions(ctx context.Context, dep *typ
 		TargetTable:    targetTable,
 		WriteTable:     table,
 		IsCrossPrefix:  isCrossPrefix,
-		ServerMode:     serverMode,
+		External:       externalOpts,
 		SkipCycleCheck: addOpts.SkipCycleCheck,
 		TargetKind:     &kind,
 	}

@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -80,6 +81,41 @@ func (m *prefixMap) match(id string) (prefix, db string, result prefixMatch) {
 // ambiguityReason renders the diagnostic detail for an ambiguous prefix.
 func (m *prefixMap) ambiguityReason(prefix string) string {
 	return fmt.Sprintf("ambiguous prefix (%s)", strings.Join(m.ambiguous[prefix], ", "))
+}
+
+// discoveryCache memoizes one prefix map for the lifetime of the options value
+// that owns it. bd runs one command per process, so a cache created at store
+// construction is exactly the "once per command execution" the design calls
+// for: bd ready resolves ready work more than once per invocation, and a single
+// dep add both classifies and validates its target.
+//
+// The zero ExternalResolverOptions has no cache, so callers that build options
+// as a struct literal (tests, one-off repositories) still discover per call.
+type discoveryCache struct {
+	mu   sync.Mutex
+	done bool
+	m    *prefixMap
+	err  error
+}
+
+func (c *discoveryCache) get(ctx context.Context, tx DBTX) (*prefixMap, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.done {
+		return c.m, c.err
+	}
+	c.m, c.err = discoverPrefixMap(ctx, tx)
+	c.done = true
+	return c.m, c.err
+}
+
+// prefixMap returns the discovered map, reusing this options value's cache when
+// it has one.
+func (o ExternalResolverOptions) prefixMap(ctx context.Context, tx DBTX) (*prefixMap, error) {
+	if o.discovery == nil {
+		return discoverPrefixMap(ctx, tx)
+	}
+	return o.discovery.get(ctx, tx)
 }
 
 // discoverPrefixMap enumerates the databases on the shared server and reads
@@ -190,11 +226,11 @@ func readIssuePrefix(ctx context.Context, tx DBTX, dbName string) (string, bool)
 // consulted only when a longer prefix could possibly apply. Outside server mode
 // no discovery is possible, so the first-segment comparison stands alone; the
 // write path rejects those targets anyway (ValidateExternalDepTarget).
-func IsCrossPrefixTarget(ctx context.Context, tx DBTX, sourceID, targetID string, serverMode bool) bool {
+func IsCrossPrefixTarget(ctx context.Context, tx DBTX, sourceID, targetID string, opts ExternalResolverOptions) bool {
 	if types.ExtractPrefix(sourceID) != types.ExtractPrefix(targetID) {
 		return true
 	}
-	if !serverMode {
+	if !opts.ServerMode {
 		return false
 	}
 	// A longer prefix can only win when the remainder itself contains a
@@ -202,7 +238,7 @@ func IsCrossPrefixTarget(ctx context.Context, tx DBTX, sourceID, targetID string
 	if !hasHyphenAfterFirstSegment(sourceID) && !hasHyphenAfterFirstSegment(targetID) {
 		return false
 	}
-	m, err := discoverPrefixMap(ctx, tx)
+	m, err := opts.prefixMap(ctx, tx)
 	if err != nil {
 		return false
 	}
@@ -224,11 +260,11 @@ func hasHyphenAfterFirstSegment(id string) bool {
 // what keeps unresolvable rows (typos, unmapped prefixes) from ever being
 // stored. The target's status is deliberately not checked — depending on an
 // open issue is the normal case.
-func ValidateExternalDepTarget(ctx context.Context, tx DBTX, targetID string, serverMode bool) error {
-	if !serverMode {
+func ValidateExternalDepTarget(ctx context.Context, tx DBTX, targetID string, opts ExternalResolverOptions) error {
+	if !opts.ServerMode {
 		return fmt.Errorf("cross-prefix dependency %s requires shared-server mode: external targets cannot be resolved from a local database", targetID)
 	}
-	m, err := discoverPrefixMap(ctx, tx)
+	m, err := opts.prefixMap(ctx, tx)
 	if err != nil {
 		return fmt.Errorf("cross-prefix dependency %s: %w", targetID, err)
 	}

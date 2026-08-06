@@ -74,10 +74,7 @@ type externalResolverConfigurable interface {
 // so is this for embedded / owned stores (ServerMode=false): every external ref
 // stays blocking and the resolver never issues a cross-database query.
 func buildExternalResolverOptions(beadsDir string) issueops.ExternalResolverOptions {
-	return issueops.ExternalResolverOptions{
-		ServerMode: externalResolverServerMode(beadsDir),
-		DiagSink:   externalDiag.sink,
-	}
+	return issueops.NewExternalResolverOptions(externalResolverServerMode(beadsDir), externalDiag.sink)
 }
 
 // externalResolverServerMode reports whether cross-database external dependency

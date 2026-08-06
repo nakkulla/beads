@@ -14,7 +14,7 @@ import (
 // issue_prefix plus the prefixes discovered on the shared server, so a
 // hyphen-bearing prefix is classified correctly.
 func (s *DoltStore) isCrossPrefixDep(ctx context.Context, sourceID, targetID string) bool {
-	return issueops.IsCrossPrefixTarget(ctx, s.db, sourceID, targetID, s.externalOpts.ServerMode)
+	return issueops.IsCrossPrefixTarget(ctx, s.db, sourceID, targetID, s.externalOpts)
 }
 
 // AddDependency adds a dependency between two issues.
@@ -46,7 +46,7 @@ func (s *DoltStore) AddDependency(ctx context.Context, dep *types.Dependency, ac
 			TargetTable:   targetTable,
 			WriteTable:    "dependencies",
 			IsCrossPrefix: isCrossPrefix,
-			ServerMode:    s.externalOpts.ServerMode,
+			External:      s.externalOpts,
 			TargetKind:    &kind,
 		}
 		return issueops.AddDependencyInTx(ctx, tx, dep, actor, opts)
@@ -176,16 +176,18 @@ func (s *DoltStore) GetDependenciesWithMetadata(ctx context.Context, issueID str
 
 	var results []*types.IssueWithDependencyMetadata
 	for _, d := range deps {
+		// External refs have no local issues/wisps row but are real, counted
+		// edges — synthesize an entry so show/list stay consistent with the
+		// dependency counts (matches
+		// issueops.GetDependenciesWithMetadataInTx). The stored column
+		// decides, so a same-ID local row never masks the external edge.
+		if d.external {
+			results = append(results, issueops.NewExternalDepEntry(d.depID, d.depType))
+			continue
+		}
 		issue, ok := issueMap[d.depID]
 		if !ok {
-			// External refs have no issues/wisps row but are real, counted
-			// edges — synthesize an entry so show/list stay consistent with
-			// the dependency counts (matches
-			// issueops.GetDependenciesWithMetadataInTx). Missing local IDs
-			// stay dropped.
-			if d.external {
-				results = append(results, issueops.NewExternalDepEntry(d.depID, d.depType))
-			}
+			// Genuinely missing local IDs stay dropped.
 			continue
 		}
 		results = append(results, &types.IssueWithDependencyMetadata{

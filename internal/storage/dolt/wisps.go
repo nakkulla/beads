@@ -728,15 +728,16 @@ func (s *DoltStore) getWispDependenciesWithMetadata(ctx context.Context, issueID
 
 	var results []*types.IssueWithDependencyMetadata
 	for _, d := range deps {
+		// A wisp's external blocking refs are real, counted edges with no
+		// backing local row — synthesize an entry rather than drop it, so the
+		// listed edges stay consistent with the counts (matches
+		// issueops.GetDependenciesWithMetadataInTx).
+		if d.external {
+			results = append(results, issueops.NewExternalDepEntry(d.depID, d.depType))
+			continue
+		}
 		issue, ok := issueMap[d.depID]
 		if !ok {
-			// A wisp's external blocking refs are real, counted edges with no
-			// backing issue row — synthesize an entry rather than drop it, so
-			// the listed edges stay consistent with the counts (matches
-			// issueops.GetDependenciesWithMetadataInTx).
-			if d.external {
-				results = append(results, issueops.NewExternalDepEntry(d.depID, d.depType))
-			}
 			continue
 		}
 		results = append(results, &types.IssueWithDependencyMetadata{

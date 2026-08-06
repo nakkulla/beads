@@ -33,6 +33,22 @@ type ExternalResolverOptions struct {
 	// store) so the existing store/InTx method signatures need no diagnostics
 	// return value and WorkFilter is never used as the carrier.
 	DiagSink func([]ExternalDiag)
+	// discovery memoizes the prefix map across every use of these options.
+	// Set only by NewExternalResolverOptions; a zero-value options struct
+	// discovers per call.
+	discovery *discoveryCache
+}
+
+// NewExternalResolverOptions builds resolver options that share one prefix
+// discovery pass. The cmd layer builds options once per store, which is once
+// per command, so ready-work resolution and dependency writes in the same
+// invocation enumerate the server's databases a single time.
+func NewExternalResolverOptions(serverMode bool, diagSink func([]ExternalDiag)) ExternalResolverOptions {
+	return ExternalResolverOptions{
+		ServerMode: serverMode,
+		DiagSink:   diagSink,
+		discovery:  &discoveryCache{},
+	}
 }
 
 // blockingExternalDepTypes are the dependency types whose external targets
@@ -121,7 +137,7 @@ func resolveExternalRefs(ctx context.Context, tx DBTX, refs []string, opts Exter
 	}
 
 	agg := newDiagAggregator()
-	m, err := discoverPrefixMap(ctx, tx)
+	m, err := opts.prefixMap(ctx, tx)
 	if err != nil {
 		reason := fmt.Sprintf("prefix discovery failed: %v", err)
 		for _, ref := range refs {

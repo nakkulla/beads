@@ -116,3 +116,56 @@ func TestNewExternalDepEntry(t *testing.T) {
 		t.Error("External = false, want true")
 	}
 }
+
+// TestGetDependenciesWithMetadataInTxExternalColumnWins locks the precedence
+// rule: an edge stored in depends_on_external is external even when a local row
+// happens to carry the same ID, so the renderer never presents another rig's
+// target as a local issue.
+func TestGetDependenciesWithMetadataInTxExternalColumnWins(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	const collidingID = "loc-collide"
+
+	mock.ExpectBegin()
+	expectDependencies(mock, "root", []dependencyRow{
+		{id: collidingID, depType: string(types.DepBlocks), external: true},
+	})
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT 1 FROM wisps LIMIT 1")).
+		WillReturnError(sql.ErrNoRows)
+	// The local table does hydrate a row with this ID — the external column
+	// must still win.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT " + IssueSelectColumns + " FROM issues WHERE id IN (?)")).
+		WithArgs(collidingID).
+		WillReturnRows(issueRows().AddRow(issueRowValues(collidingID, "Local Impostor")...))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT issue_id, label FROM labels WHERE issue_id IN (?) ORDER BY issue_id, label")).
+		WithArgs(collidingID).
+		WillReturnRows(sqlmock.NewRows([]string{"issue_id", "label"}))
+	mock.ExpectRollback()
+
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	got, err := GetDependenciesWithMetadataInTx(context.Background(), tx, "root")
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("GetDependenciesWithMetadataInTx: %v", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("len(deps) = %d, want 1: %+v", len(got), got)
+	}
+	if !got[0].External {
+		t.Error("edge stored in depends_on_external must stay External")
+	}
+	if got[0].Title != "" {
+		t.Errorf("external entry must not borrow the colliding local row's title, got %q", got[0].Title)
+	}
+}

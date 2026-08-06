@@ -49,6 +49,12 @@ func buildDependencyTreeInTx(ctx context.Context, tx DBTX, issueID string, depth
 		if !isDependencyTreeEdge(rel.DependencyType) {
 			continue
 		}
+		// An external edge points at another rig's database: there is no local
+		// row to expand, and recursing would fail the whole tree on a lookup
+		// that can never succeed.
+		if rel.External {
+			continue
+		}
 		children, err := buildDependencyTreeInTx(ctx, tx, rel.ID, depth+1, maxDepth, reverse, visited, issueID, rel.DependencyType)
 		if err != nil {
 			return nil, err
