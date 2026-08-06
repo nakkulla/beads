@@ -247,3 +247,58 @@ func TestLocalStoreRecoverer_QuarantineErrorMentionsPaths(t *testing.T) {
 		t.Errorf("error %q does not name the data dir %q", err, dataDir)
 	}
 }
+
+// InspectLocalStoreDamage is the boundary's answer to "is this store damaged?",
+// so a caller never has to read engine state to decide. It must report the
+// damaged directory on the GH#3290 shape and stay silent on a healthy rig.
+func TestLocalStoreRecoverer_InspectLocalStoreDamage(t *testing.T) {
+	t.Run("reports the damaged store directory", func(t *testing.T) {
+		beadsDir := t.TempDir()
+		nomsDir := filepath.Join(beadsDir, "dolt", "beads", ".dolt", "noms")
+		if err := os.MkdirAll(filepath.Join(nomsDir, "oldgen"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(nomsDir, "manifest"), []byte("manifest-stub"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(nomsDir, "journal.idx"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(nomsDir, strings.Repeat("v", 32)), make([]byte, 40), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		logBody := "starting dolt sql-server\nerror: root hash doesn't exist: abc123\n"
+		if err := os.WriteFile(filepath.Join(beadsDir, "dolt-server.log"), []byte(logBody), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		dirs, err := LocalStoreRecoverer().InspectLocalStoreDamage(beadsDir)
+		if err != nil {
+			t.Fatalf("InspectLocalStoreDamage: %v", err)
+		}
+		if len(dirs) == 0 {
+			t.Fatal("no damaged directories reported, want the corrupt noms dir")
+		}
+		for _, dir := range dirs {
+			if !strings.HasPrefix(dir, beadsDir) {
+				t.Errorf("reported directory %q is outside %q", dir, beadsDir)
+			}
+		}
+	})
+
+	t.Run("a rig with no server log is not damaged", func(t *testing.T) {
+		dirs, err := LocalStoreRecoverer().InspectLocalStoreDamage(t.TempDir())
+		if err != nil {
+			t.Fatalf("InspectLocalStoreDamage: %v", err)
+		}
+		if len(dirs) != 0 {
+			t.Errorf("dirs = %v, want none", dirs)
+		}
+	})
+
+	t.Run("an empty beads dir is a request error", func(t *testing.T) {
+		if _, err := LocalStoreRecoverer().InspectLocalStoreDamage("  "); err == nil {
+			t.Error("InspectLocalStoreDamage(\"  \") succeeded, want a request error")
+		}
+	})
+}

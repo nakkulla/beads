@@ -4,8 +4,8 @@ import (
 	"fmt"
 
 	"github.com/steveyegge/beads/internal/config"
-	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/doltremote"
+	"github.com/steveyegge/beads/internal/doltserver"
 )
 
 // Config keys resolveSyncRemote consults, in precedence order.
@@ -24,7 +24,9 @@ type SyncRemoteShapeReport struct {
 	// Normalized is the Dolt-compatible form of Remote.
 	Normalized string
 
-	// ServerMode reports whether the rig talks to an external Dolt server.
+	// ServerMode reports whether the rig's Dolt server lifecycle is externally
+	// managed (doltserver.ServerModeExternal) — not merely that the rig talks
+	// to a sql-server, which is also true of a bd-owned local server.
 	ServerMode bool
 
 	// NotDoltRemote is finding (a): the configured value is not already a
@@ -53,15 +55,19 @@ type SyncRemoteShapeReport struct {
 // self-hosted remotesapi endpoint, so bd reports the suspicious shape and
 // leaves the value alone.
 //
-// (b) ServerModeRemote gates on configfile.Config.IsDoltServerMode(): a rig
-// backed by an external Dolt server syncs through that server, so a routine
-// sync remote is a policy violation regardless of the value's shape.
+// (b) ServerModeRemote gates on an *externally managed* rig, resolved through
+// doltserver.ResolveServerMode. configfile.Config.IsDoltServerMode() is
+// deliberately not the gate: dolt_mode is "server" for every rig that talks to
+// a sql-server at all, including one whose server bd starts and owns itself
+// (usesSQLServer() is unconditionally true in CGO_ENABLED=0 builds, which is
+// what the linux/windows releases ship). Such an owned rig syncs through its
+// sync remote like any local rig, so warning about — let alone unsetting — its
+// remote would break it. Only a rig with an external lifecycle signal syncs
+// through the server instead, and there a routine sync remote is the policy
+// violation the spec names.
 func InspectSyncRemoteShape(beadsDir string) SyncRemoteShapeReport {
 	report := SyncRemoteShapeReport{}
-
-	if cfg, err := configfile.Load(beadsDir); err == nil && cfg != nil {
-		report.ServerMode = cfg.IsDoltServerMode()
-	}
+	report.ServerMode = doltserver.ResolveServerMode(beadsDir) == doltserver.ServerModeExternal
 
 	report.Remote, report.SourceKey = resolveSyncRemoteInDir(beadsDir)
 	if report.Remote == "" {

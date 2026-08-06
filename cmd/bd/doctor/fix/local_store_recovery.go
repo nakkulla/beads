@@ -100,15 +100,23 @@ func planLocalStoreRecovery(
 		return plan
 	}
 
-	// Gate 2 — server mode. Follows serverModeIntegrityRecoveryGuard: on a rig
-	// backed by an external Dolt server the local tree is not the authority,
-	// and repairing it can replace the wrong root. Server-mode recovery needs a
-	// stop → quarantine → re-clone → restart orchestration that is out of scope
-	// here.
+	// Gate 2 — externally managed server. Follows
+	// serverModeIntegrityRecoveryGuard: on a rig whose Dolt server lifecycle
+	// belongs to someone else the local tree is not the authority, and
+	// repairing it can replace the wrong root. That recovery needs a stop →
+	// quarantine → re-clone → restart orchestration that is out of scope here.
+	//
+	// The gate is doltserver.ResolveServerMode, not
+	// configfile.Config.IsDoltServerMode(): dolt_mode is "server" for every rig
+	// that uses a sql-server at all, including one bd starts and owns itself
+	// (usesSQLServer() is unconditionally true in CGO_ENABLED=0 builds). Such a
+	// rig keeps its store in the local tree and is exactly what B1 is for, so
+	// gating on dolt_mode would refuse the primary target. A live server on an
+	// owned rig is still refused — by gate 3 below.
 	if report.ServerMode {
 		plan.Refusal = fmt.Sprintf(
-			"automatic store recovery is disabled for server-mode rigs because it can replace the wrong Dolt root; "+
-				"this rig syncs through its Dolt server, so verify the configured database %q on that server instead of rebuilding %s",
+			"automatic store recovery is disabled for externally managed server rigs because it can replace the wrong Dolt root; "+
+				"this rig syncs through a Dolt server it does not own, so verify the configured database %q on that server instead of rebuilding %s",
 			resolveRecoveryDatabase(beadsDir), doltserver.ResolveDoltDir(beadsDir))
 		return plan
 	}

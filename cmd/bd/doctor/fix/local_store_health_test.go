@@ -131,12 +131,7 @@ func seedLocalStoreRig(t *testing.T, doltMode, yaml string, corruptLayout bool) 
 	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &configfile.Config{
-		Database:     "beads.db",
-		Backend:      configfile.BackendDolt,
-		DoltMode:     doltMode,
-		DoltDatabase: "beads",
-	}
+	cfg := rigConfigFor(doltMode)
 	if err := cfg.Save(beadsDir); err != nil {
 		t.Fatal(err)
 	}
@@ -248,12 +243,12 @@ func TestInspectLocalStoreHealth_CorruptFixtureIsDiagnosticOnly(t *testing.T) {
 	if report.OpenErr == nil {
 		t.Error("OpenErr = nil, want the preserved open error")
 	}
-	if len(report.CorruptDirs) == 0 {
-		t.Error("CorruptDirs is empty, want the structurally corrupt noms dir")
+	if len(report.DamagedDirs) == 0 {
+		t.Error("DamagedDirs is empty, want the structurally damaged store dir")
 	}
-	for _, dir := range report.CorruptDirs {
+	for _, dir := range report.DamagedDirs {
 		if !strings.HasPrefix(dir, beadsDir) {
-			t.Errorf("CorruptDirs entry %q is outside %q", dir, beadsDir)
+			t.Errorf("DamagedDirs entry %q is outside %q", dir, beadsDir)
 		}
 	}
 
@@ -280,8 +275,8 @@ func TestInspectLocalStoreHealth_TransientIsNotCorrupt(t *testing.T) {
 			if report.Class != StoreOpenClassTransient {
 				t.Errorf("Class = %q, want %q", report.Class, StoreOpenClassTransient)
 			}
-			if len(report.CorruptDirs) != 0 {
-				t.Errorf("CorruptDirs = %v, want none", report.CorruptDirs)
+			if len(report.DamagedDirs) != 0 {
+				t.Errorf("DamagedDirs = %v, want none", report.DamagedDirs)
 			}
 			assertTreeUnchanged(t, beadsDir, before)
 		})
@@ -300,8 +295,8 @@ func TestInspectLocalStoreHealth_HealthyOpen(t *testing.T) {
 	if report.OpenErr != nil {
 		t.Errorf("OpenErr = %v, want nil", report.OpenErr)
 	}
-	if len(report.CorruptDirs) != 0 {
-		t.Errorf("CorruptDirs = %v, want none", report.CorruptDirs)
+	if len(report.DamagedDirs) != 0 {
+		t.Errorf("DamagedDirs = %v, want none", report.DamagedDirs)
 	}
 }
 
@@ -340,11 +335,20 @@ func TestInspectLocalStoreHealth_RemoteAvailability(t *testing.T) {
 			yaml:       "# nothing configured\n",
 			wantUsable: false,
 		},
-		"server mode is reported": {
-			doltMode:       configfile.DoltModeServer,
+		"external rig is reported as server mode": {
+			doltMode:       doltModeExternalRig,
 			yaml:           "# nothing configured\n",
 			wantUsable:     false,
 			wantServerMode: true,
+		},
+		// dolt_mode=server with no external lifecycle signal is a bd-owned
+		// local server: its store lives in the local tree, so it is a recovery
+		// target, not an external rig.
+		"owned local server rig is not server mode": {
+			doltMode:       configfile.DoltModeServer,
+			yaml:           "# nothing configured\n",
+			wantUsable:     false,
+			wantServerMode: false,
 		},
 	}
 

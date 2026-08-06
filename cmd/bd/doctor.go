@@ -574,6 +574,17 @@ func runDiagnostics(path string) doctorResult {
 	// Check 7e1: Corrupt-manifest state (GH#3290). Detection only; the
 	// destructive backup+reinit repair runs solely via doctor --fix (bd-6dnrw.6).
 	corruptManifestCheck := convertDoctorCheck(doctor.CheckCorruptManifest(path))
+	// A corrupt local store must have exactly one destructive repair path.
+	// Local Store Health quarantines outside .beads/ and re-clones from the
+	// remote; the manifest repair backs up inside .beads/ and reinitializes
+	// empty. When both apply, keep the recoverable one and leave the manifest
+	// entry diagnostic, so --fix cannot re-init the store Local Store Health
+	// just rebuilt.
+	if localStoreHealthCheck.Fix != "" && corruptManifestCheck.Fix != "" {
+		corruptManifestCheck.Fix = ""
+		corruptManifestCheck.Detail = strings.TrimSpace(corruptManifestCheck.Detail +
+			"\nAutomatic repair here is suppressed: 'Local Store Health' can rebuild this store from its sync remote, which preserves the data instead of reinitializing empty.")
+	}
 	result.Checks = append(result.Checks, corruptManifestCheck)
 	if corruptManifestCheck.Status == statusError {
 		result.OverallOK = false

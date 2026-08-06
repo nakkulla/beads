@@ -120,12 +120,12 @@ func TestPlanLocalStoreRecovery_Refusals(t *testing.T) {
 			openErr:       corruptManifestOpenErr,
 			wantSubstring: "no sync remote",
 		},
-		"server-mode rig is refused": {
-			doltMode:      configfile.DoltModeServer,
+		"externally managed server rig is refused": {
+			doltMode:      doltModeExternalRig,
 			yaml:          usableRemoteYAML,
 			corrupt:       true,
 			openErr:       corruptManifestOpenErr,
-			wantSubstring: "server-mode",
+			wantSubstring: "externally managed",
 		},
 		"transient failure is not a corruption repair": {
 			doltMode:      configfile.DoltModeEmbedded,
@@ -262,4 +262,27 @@ func TestQuarantineLocalStore_MovesStoreOutsideBeadsDir(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(beadsDir, "dolt", "beads")); !os.IsNotExist(err) {
 		t.Errorf("a copy of the corrupt store remains under .beads/ (stat err %v)", err)
 	}
+}
+
+// A rig with dolt_mode=server but no external lifecycle signal is a bd-owned
+// local sql-server: its store is in the local tree and is exactly what B1
+// repairs. Gating on dolt_mode alone would refuse the primary target, since
+// CGO_ENABLED=0 builds write dolt_mode=server for every rig they initialize.
+func TestPlanLocalStoreRecovery_OwnedServerRigIsRecoverable(t *testing.T) {
+	beadsDir := seedLocalStoreRig(t, configfile.DoltModeServer, usableRemoteYAML, true)
+	before := snapshotTree(t, beadsDir)
+
+	plan := PlanLocalStoreRecovery(beadsDir, errors.New(corruptManifestOpenErr))
+
+	if !plan.Recoverable {
+		t.Fatalf("Recoverable = false on a bd-owned server rig, want true (refusal %q)", plan.Refusal)
+	}
+	if plan.StorePath == "" {
+		t.Error("StorePath is empty, want the located store directory")
+	}
+	if plan.QuarantinePath == "" {
+		t.Error("QuarantinePath is empty, want a timestamped destination")
+	}
+
+	assertTreeUnchanged(t, beadsDir, before)
 }

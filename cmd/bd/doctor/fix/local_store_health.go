@@ -3,7 +3,7 @@ package fix
 import (
 	"strings"
 
-	"github.com/steveyegge/beads/internal/doltserver"
+	"github.com/steveyegge/beads/internal/storage/dolt"
 )
 
 // StoreOpenClass classifies a failed local Dolt store open.
@@ -56,9 +56,9 @@ var storeCorruptionSignatures = []string{
 	"corrupted journal",
 }
 
-// corruptManifestStructuralSignature is reported when the on-disk scan, not the
-// error text, is what proved corruption.
-const corruptManifestStructuralSignature = "corrupt manifest with no recoverable data (on-disk scan)"
+// storeStructuralDamageSignature is reported when the backend's damage
+// inspection, not the error text, is what proved corruption.
+const storeStructuralDamageSignature = "storage backend reports structural damage with no recoverable data"
 
 // ClassifyStoreOpenError classifies a store-open failure and returns the
 // corruption signature that decided a corrupt verdict ("" for every other
@@ -88,9 +88,9 @@ type LocalStoreHealthReport struct {
 	Class StoreOpenClass
 	// Signature is the corruption marker behind Class == StoreOpenClassCorrupt.
 	Signature string
-	// CorruptDirs are the .dolt/noms directories the on-disk scan found
-	// structurally corrupt, if any.
-	CorruptDirs []string
+	// DamagedDirs are the store directories the storage backend reported as
+	// structurally damaged, if any.
+	DamagedDirs []string
 
 	// Remote is the effective sync remote, "" when none is configured, and
 	// RemoteKey the config.yaml key it came from.
@@ -134,15 +134,17 @@ func InspectLocalStoreHealth(beadsDir string, openErr error) LocalStoreHealthRep
 		return report
 	}
 
-	// Corroborate (or establish) corruption from disk. DetectCorruptManifest
-	// is detection-only by contract (bd-6dnrw.6) and only fires when the server
-	// log carries the signature AND the databases hold no recoverable data, so
-	// a positive result on top of a failed open is strong evidence.
-	if dirs, err := doltserver.DetectCorruptManifest(beadsDir); err == nil && len(dirs) > 0 {
-		report.CorruptDirs = dirs
+	// Corroborate (or establish) corruption through the storage boundary's
+	// recovery capability rather than by reading engine state here: the open
+	// error alone under-reports, because a store can be damaged in a way that
+	// surfaces as a failed server start instead of a corruption message, and
+	// this report is what admits a rig to a destructive repair
+	// (docs/PROJECT_CHARTER.md "Storage Boundary").
+	if dirs, err := dolt.LocalStoreRecoverer().InspectLocalStoreDamage(beadsDir); err == nil && len(dirs) > 0 {
+		report.DamagedDirs = dirs
 		if report.Class != StoreOpenClassCorrupt {
 			report.Class = StoreOpenClassCorrupt
-			report.Signature = corruptManifestStructuralSignature
+			report.Signature = storeStructuralDamageSignature
 		}
 	}
 

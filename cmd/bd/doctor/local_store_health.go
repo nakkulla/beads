@@ -66,8 +66,8 @@ func localStoreHealthCheck(plan fix.LocalStoreRecoveryPlan) DoctorCheck {
 		check.Status = StatusError
 		check.Message = "Dolt store failed to open with a corruption signature; " + remoteClause(plan)
 		details = append(details, fmt.Sprintf("Corruption signature: %q.", report.Signature))
-		if len(report.CorruptDirs) > 0 {
-			details = append(details, "Corrupt Dolt directories:\n  "+strings.Join(report.CorruptDirs, "\n  "))
+		if len(report.DamagedDirs) > 0 {
+			details = append(details, "Damaged store directories:\n  "+strings.Join(report.DamagedDirs, "\n  "))
 		}
 	} else {
 		check.Status = StatusWarning

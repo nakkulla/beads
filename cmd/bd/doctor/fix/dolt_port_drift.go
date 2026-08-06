@@ -132,7 +132,13 @@ func resolvePortAuthority(beadsDir string, effectivePort int) string {
 	if port := doltserver.ReadPortFile(beadsDir); port > 0 && port == effectivePort {
 		return PortAuthorityPortFile
 	}
-	if v := config.GetYamlConfig("dolt.port"); v != "" {
+	// Read the target's own config.yaml, not the caller's. DefaultConfig
+	// consults the process-wide viper view, so under `bd doctor <other-repo>`
+	// the effective port can come from the caller's config — and this fixer
+	// deletes a key from the *target*. Scoping the lookup to beadsDir means a
+	// foreign value simply fails to match, leaving PortAuthorityUnknown, which
+	// the caller treats as "no higher-authority source" and refuses to act on.
+	if v := config.GetStringFromDirAnyShape(beadsDir, "dolt.port"); v != "" {
 		if port, err := strconv.Atoi(v); err == nil && port > 0 && port == effectivePort {
 			return PortAuthorityConfigYaml
 		}

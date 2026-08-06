@@ -10,6 +10,37 @@ import (
 	"github.com/steveyegge/beads/internal/configfile"
 )
 
+// doltModeExternalRig is a test-only marker meaning "a rig whose Dolt server
+// lifecycle is external". The helpers below translate it into what actually
+// makes doltserver.ResolveServerMode say External: dolt_mode=server *plus* a
+// persisted dolt_server_port. Passing plain configfile.DoltModeServer therefore
+// builds a bd-owned local server rig, which is the negative case — dolt_mode
+// alone is not an external signal (CGO_ENABLED=0 builds write it for every rig).
+const doltModeExternalRig = "external-rig"
+
+// unroutableExternalPort is the persisted dolt_server_port an "external rig"
+// fixture carries. It must not be a port a real dolt server could be listening
+// on: a reachable port makes the fixture's store open for real, which turns a
+// refusal test into a false pass.
+const unroutableExternalPort = 1
+
+const externalRigServerPort = unroutableExternalPort
+
+// rigConfigFor builds the metadata.json config for a seeded rig.
+func rigConfigFor(doltMode string) *configfile.Config {
+	cfg := &configfile.Config{
+		Database:     "beads.db",
+		Backend:      configfile.BackendDolt,
+		DoltMode:     doltMode,
+		DoltDatabase: "beads",
+	}
+	if doltMode == doltModeExternalRig {
+		cfg.DoltMode = configfile.DoltModeServer
+		cfg.DoltServerPort = externalRigServerPort
+	}
+	return cfg
+}
+
 func seedRemoteShapeRig(t *testing.T, doltMode, yaml string) string {
 	t.Helper()
 	t.Setenv("BEADS_DOLT_SERVER_MODE", "")
@@ -20,12 +51,7 @@ func seedRemoteShapeRig(t *testing.T, doltMode, yaml string) string {
 	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &configfile.Config{
-		Database:     "beads.db",
-		Backend:      configfile.BackendDolt,
-		DoltMode:     doltMode,
-		DoltDatabase: "beads",
-	}
+	cfg := rigConfigFor(doltMode)
 	if err := cfg.Save(beadsDir); err != nil {
 		t.Fatal(err)
 	}
@@ -71,27 +97,36 @@ func TestInspectSyncRemoteShape_Findings(t *testing.T) {
 			yaml:       "sync.remote: \"git+https://github.com/org/repo.git\"\n",
 			wantRemote: "git+https://github.com/org/repo.git",
 		},
-		"server mode with a canonical remote": {
-			doltMode:         configfile.DoltModeServer,
+		"external rig with a canonical remote": {
+			doltMode:         doltModeExternalRig,
 			yaml:             "sync.remote: \"git+https://github.com/org/repo.git\"\n",
 			wantRemote:       "git+https://github.com/org/repo.git",
 			wantServerRemote: true,
 			wantUnsettable:   true,
 		},
-		"server mode with a plain git URL trips both": {
-			doltMode:         configfile.DoltModeServer,
+		"external rig with a plain git URL trips both": {
+			doltMode:         doltModeExternalRig,
 			yaml:             "sync.remote: \"https://github.com/org/repo.git\"\n",
 			wantRemote:       "https://github.com/org/repo.git",
 			wantNotDolt:      true,
 			wantServerRemote: true,
 			wantUnsettable:   true,
 		},
-		"server mode with no remote": {
-			doltMode: configfile.DoltModeServer,
+		"external rig with no remote": {
+			doltMode: doltModeExternalRig,
 			yaml:     "# nothing\n",
 		},
+		// dolt_mode=server without an external lifecycle signal is a rig whose
+		// sql-server bd starts and owns. It syncs through its remote like any
+		// local rig, so (b) must stay silent — otherwise the fixer would unset
+		// the remote it depends on.
+		"owned local server rig is not a policy violation": {
+			doltMode:   configfile.DoltModeServer,
+			yaml:       "sync.remote: \"git+https://github.com/org/repo.git\"\n",
+			wantRemote: "git+https://github.com/org/repo.git",
+		},
 		"deprecated sync.git-remote is not unsettable via sync.remote": {
-			doltMode:         configfile.DoltModeServer,
+			doltMode:         doltModeExternalRig,
 			yaml:             "sync.git-remote: \"git+https://github.com/org/repo.git\"\n",
 			wantRemote:       "git+https://github.com/org/repo.git",
 			wantServerRemote: true,
@@ -121,7 +156,7 @@ func TestInspectSyncRemoteShape_Findings(t *testing.T) {
 }
 
 func TestSyncRemoteShape_UnsetsServerModeRemote(t *testing.T) {
-	tmpDir := seedRemoteShapeRig(t, configfile.DoltModeServer,
+	tmpDir := seedRemoteShapeRig(t, doltModeExternalRig,
 		"# Beads Configuration File\n\nbackup.enabled: false\nsync.remote: \"git+https://github.com/org/repo.git\"\n")
 
 	if err := SyncRemoteShape(tmpDir); err != nil {
@@ -139,7 +174,7 @@ func TestSyncRemoteShape_UnsetsServerModeRemote(t *testing.T) {
 }
 
 func TestSyncRemoteShape_UnsetsNestedServerModeRemote(t *testing.T) {
-	tmpDir := seedRemoteShapeRig(t, configfile.DoltModeServer,
+	tmpDir := seedRemoteShapeRig(t, doltModeExternalRig,
 		"sync:\n  remote: \"git+https://github.com/org/repo.git\"\n  branch: main\n")
 
 	if err := SyncRemoteShape(tmpDir); err != nil {
@@ -172,9 +207,25 @@ func TestSyncRemoteShape_RefusesEmbeddedRig(t *testing.T) {
 }
 
 func TestSyncRemoteShape_RefusesWhenNoRemoteConfigured(t *testing.T) {
-	tmpDir := seedRemoteShapeRig(t, configfile.DoltModeServer, "# nothing\n")
+	tmpDir := seedRemoteShapeRig(t, doltModeExternalRig, "# nothing\n")
 
 	if err := SyncRemoteShape(tmpDir); err == nil {
 		t.Fatalf("SyncRemoteShape succeeded with no remote configured; want a refusal")
+	}
+}
+
+// An owned local server rig keeps its sync remote: unsetting it would remove
+// the rig's only sync path. dolt_mode=server alone must never reach the fixer.
+func TestSyncRemoteShape_RefusesOwnedServerRig(t *testing.T) {
+	tmpDir := seedRemoteShapeRig(t, configfile.DoltModeServer,
+		"sync.remote: \"git+https://github.com/org/repo.git\"\n")
+
+	if err := SyncRemoteShape(tmpDir); err == nil {
+		t.Fatalf("SyncRemoteShape succeeded on a bd-owned server rig; want a refusal")
+	}
+
+	content := readRigConfigYaml(t, tmpDir)
+	if !strings.Contains(content, "sync.remote: \"git+https://github.com/org/repo.git\"") {
+		t.Errorf("config.yaml was modified for an owned rig:\n%s", content)
 	}
 }

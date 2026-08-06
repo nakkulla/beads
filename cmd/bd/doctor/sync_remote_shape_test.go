@@ -9,6 +9,22 @@ import (
 	"github.com/steveyegge/beads/internal/configfile"
 )
 
+// doltModeExternalRig is a test-only marker for "the rig's Dolt server
+// lifecycle is external". It expands to dolt_mode=server *plus* a persisted
+// dolt_server_port, which is what makes doltserver.ResolveServerMode say
+// External. Plain configfile.DoltModeServer therefore seeds a bd-owned local
+// server rig — the negative case, since CGO_ENABLED=0 builds write dolt_mode
+// server for every rig.
+const doltModeExternalRig = "external-rig"
+
+// unroutableExternalPort is the persisted dolt_server_port an "external rig"
+// fixture carries. It must not be a port a real dolt server could be listening
+// on: a reachable port makes the fixture's store open for real, which turns a
+// refusal test into a false pass.
+const unroutableExternalPort = 1
+
+const externalRigServerPort = unroutableExternalPort
+
 // seedSyncRemoteRig writes a rig with the given dolt_mode and, when yaml is
 // non-empty, that literal config.yaml body.
 func seedSyncRemoteRig(t *testing.T, doltMode, yaml string) string {
@@ -26,6 +42,10 @@ func seedSyncRemoteRig(t *testing.T, doltMode, yaml string) string {
 		Backend:      configfile.BackendDolt,
 		DoltMode:     doltMode,
 		DoltDatabase: "beads",
+	}
+	if doltMode == doltModeExternalRig {
+		cfg.DoltMode = configfile.DoltModeServer
+		cfg.DoltServerPort = externalRigServerPort
 	}
 	if err := cfg.Save(beadsDir); err != nil {
 		t.Fatal(err)
@@ -59,7 +79,7 @@ func TestCheckSyncRemoteShape_NoBeadsDir(t *testing.T) {
 }
 
 func TestCheckSyncRemoteShape_NoRemoteConfigured(t *testing.T) {
-	tmpDir := seedSyncRemoteRig(t, configfile.DoltModeServer, "# nothing configured\n")
+	tmpDir := seedSyncRemoteRig(t, doltModeExternalRig, "# nothing configured\n")
 
 	check := CheckSyncRemoteShape(tmpDir)
 
@@ -123,7 +143,7 @@ func TestCheckSyncRemoteShape_NestedShapeIsRead(t *testing.T) {
 // Positive case (b): a server-mode rig must not carry a routine sync.remote at
 // all, even when the value itself is canonical.
 func TestCheckSyncRemoteShape_ServerModeRemoteWarnsAndIsFixable(t *testing.T) {
-	tmpDir := seedSyncRemoteRig(t, configfile.DoltModeServer, flatRemoteYaml("git+https://github.com/org/repo.git"))
+	tmpDir := seedSyncRemoteRig(t, doltModeExternalRig, flatRemoteYaml("git+https://github.com/org/repo.git"))
 
 	check := CheckSyncRemoteShape(tmpDir)
 
@@ -141,7 +161,7 @@ func TestCheckSyncRemoteShape_ServerModeRemoteWarnsAndIsFixable(t *testing.T) {
 // Both findings at once: the report must carry both, and say which one --fix
 // acts on.
 func TestCheckSyncRemoteShape_ServerModeAndUnparseableReportsBoth(t *testing.T) {
-	tmpDir := seedSyncRemoteRig(t, configfile.DoltModeServer, flatRemoteYaml("https://github.com/org/repo.git"))
+	tmpDir := seedSyncRemoteRig(t, doltModeExternalRig, flatRemoteYaml("https://github.com/org/repo.git"))
 
 	check := CheckSyncRemoteShape(tmpDir)
 

@@ -76,6 +76,16 @@ func assertStoreTreeUnchanged(t *testing.T, root string, before map[string]store
 // seedCorruptRecoveryRig writes a local (non-server) rig whose Dolt store
 // carries the GH#3290 corrupt-manifest shape on disk, and returns
 // (repoPath, beadsDir).
+// doltModeExternalRig is a test-only marker for a rig whose Dolt server
+// lifecycle is external, as opposed to a bd-owned local sql-server.
+const doltModeExternalRig = "external-rig"
+
+// unroutableExternalPort is the persisted dolt_server_port an "external rig"
+// fixture carries. It must not be a port a real dolt server could be listening
+// on: a reachable port makes the fixture's store open for real, which turns a
+// refusal test into a false pass.
+const unroutableExternalPort = 1
+
 func seedCorruptRecoveryRig(t *testing.T, doltMode, syncRemote string) (string, string) {
 	t.Helper()
 	// Keep the rig off any ambient server/shared-mode configuration, and keep
@@ -97,6 +107,13 @@ func seedCorruptRecoveryRig(t *testing.T, doltMode, syncRemote string) (string, 
 		Backend:      configfile.BackendDolt,
 		DoltMode:     doltMode,
 		DoltDatabase: "beads",
+	}
+	if doltMode == doltModeExternalRig {
+		// What actually makes ResolveServerMode say External: dolt_mode=server
+		// plus a persisted port. dolt_mode alone is what every CGO_ENABLED=0
+		// build writes, including for a server bd owns itself.
+		cfg.DoltMode = configfile.DoltModeServer
+		cfg.DoltServerPort = unroutableExternalPort
 	}
 	if err := cfg.Save(beadsDir); err != nil {
 		t.Fatal(err)
@@ -192,17 +209,42 @@ func TestDoctorLocalStoreRecovery_RefusesWithoutRemote(t *testing.T) {
 	assertStoreTreeUnchanged(t, repoPath, before)
 }
 
-func TestDoctorLocalStoreRecovery_RefusesServerModeRig(t *testing.T) {
-	repoPath, _ := seedCorruptRecoveryRig(t, configfile.DoltModeServer, "file:///tmp/does-not-exist-remote")
+func TestDoctorLocalStoreRecovery_RefusesExternalServerRig(t *testing.T) {
+	repoPath, _ := seedCorruptRecoveryRig(t, doltModeExternalRig, "file:///tmp/does-not-exist-remote")
 	before := snapshotStoreTree(t, repoPath)
 
 	err := recoverLocalStore(repoPath)
 	if err == nil {
-		t.Fatal("expected a refusal for a server-mode rig")
+		t.Fatal("expected a refusal for an externally managed server rig")
 	}
-	if !strings.Contains(err.Error(), "server-mode") {
-		t.Errorf("error %q does not explain the server-mode refusal", err)
+	if !strings.Contains(err.Error(), "externally managed") {
+		t.Errorf("error %q does not explain the external-server refusal", err)
 	}
+	assertStoreTreeUnchanged(t, repoPath, before)
+}
+
+// dolt_mode=server without an external lifecycle signal is a server bd starts
+// and owns; its store is in the local tree and must stay repairable. Gating on
+// dolt_mode alone would refuse the very rigs B1 exists for, because every
+// CGO_ENABLED=0 build writes dolt_mode=server at init.
+func TestDoctorLocalStoreRecovery_OwnedServerRigIsRepaired(t *testing.T) {
+	repoPath, beadsDir := seedCorruptRecoveryRig(t, configfile.DoltModeServer, "")
+	before := snapshotStoreTree(t, repoPath)
+
+	// No remote is configured, so the repair still stops — but at the remote
+	// gate, not the server-mode gate. That is what proves an owned rig is not
+	// classified as externally managed.
+	err := recoverLocalStore(repoPath)
+	if err == nil {
+		t.Fatal("expected a refusal: the fixture has no re-clone source")
+	}
+	if strings.Contains(err.Error(), "externally managed") {
+		t.Errorf("owned server rig was refused as externally managed: %v", err)
+	}
+	if !strings.Contains(err.Error(), "no sync remote") {
+		t.Errorf("error %q does not explain the missing re-clone source", err)
+	}
+	_ = beadsDir
 	assertStoreTreeUnchanged(t, repoPath, before)
 }
 

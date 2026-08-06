@@ -269,11 +269,16 @@ func applyFixList(path string, fixes []doctorCheck) {
 
 	fixedCount := 0
 	errorCount := 0
+	skippedCount := 0
 
 	for _, check := range fixes {
 		fmt.Printf("\nFixing %s...\n", check.Name)
 
 		var err error
+		// skipped marks a case that reported no error but also repaired
+		// nothing, so the shared tail below neither counts nor prints it as
+		// fixed.
+		skipped := false
 		switch check.Name {
 		case "Metadata Config":
 			err = fix.FixMissingMetadataJSON(path)
@@ -387,7 +392,11 @@ func applyFixList(path string, fixes []doctorCheck) {
 						fmt.Printf("  Removed %s\n", removed)
 					}
 				} else {
+					// A held start lock or a PID that re-verified as live means
+					// nothing was cleaned. Report it as skipped and do not let
+					// the shared tail below count it as fixed.
 					fmt.Printf("  %s Skipped: %s\n", ui.RenderWarn("⚠"), pidRes.Reason)
+					skipped = true
 				}
 			}
 		case doctor.DoltPortDriftCheckName:
@@ -454,6 +463,8 @@ func applyFixList(path string, fixes []doctorCheck) {
 			errorCount++
 			fmt.Printf("  %s Error: %v\n", ui.RenderFail("✗"), err)
 			fmt.Printf("  Manual fix: %s\n", check.Fix)
+		} else if skipped {
+			skippedCount++
 		} else {
 			fixedCount++
 			fmt.Printf("  %s Fixed\n", ui.RenderPass("✓"))
@@ -461,7 +472,11 @@ func applyFixList(path string, fixes []doctorCheck) {
 	}
 
 	// Summary
-	fmt.Printf("\nFix summary: %d fixed, %d errors\n", fixedCount, errorCount)
+	if skippedCount > 0 {
+		fmt.Printf("\nFix summary: %d fixed, %d skipped, %d errors\n", fixedCount, skippedCount, errorCount)
+	} else {
+		fmt.Printf("\nFix summary: %d fixed, %d errors\n", fixedCount, errorCount)
+	}
 	if errorCount > 0 {
 		fmt.Println("\nSome fixes failed. Please review the errors above and apply manual fixes as needed.")
 	}

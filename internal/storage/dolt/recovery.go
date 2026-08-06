@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage"
 )
 
@@ -91,6 +92,20 @@ func (doltLocalStoreRecovery) LocateLocalStore(dataDir, database string) (storag
 	loc.Path = candidate
 	loc.Found = true
 	return loc, nil
+}
+
+// InspectLocalStoreDamage implements storage.LocalStoreRecoverer.
+//
+// The judgement is Dolt's own GH#3290 detection: the server log carries the
+// corrupt-manifest signature AND the database directories hold no recoverable
+// data. Both halves are engine knowledge, which is why this lives here rather
+// than in the caller — doctor asks the backend whether the store is damaged
+// instead of scanning .dolt itself.
+func (doltLocalStoreRecovery) InspectLocalStoreDamage(beadsDir string) ([]string, error) {
+	if strings.TrimSpace(beadsDir) == "" {
+		return nil, fmt.Errorf("beads directory must not be empty")
+	}
+	return doltserver.DetectCorruptManifest(beadsDir)
 }
 
 // QuarantineLocalStore implements storage.LocalStoreRecoverer.
