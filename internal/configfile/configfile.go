@@ -34,6 +34,11 @@ type Config struct {
 	DoltServerTLS      bool   `json:"dolt_server_tls,omitempty"`      // Enable TLS for server connections (required for Hosted Dolt)
 	DoltDataDir        string `json:"dolt_data_dir,omitempty"`        // Custom dolt data directory (absolute path; default: .beads/dolt)
 	DoltRemotesAPIPort int    `json:"dolt_remotesapi_port,omitempty"` // Dolt remotesapi port for federation (default: 8080)
+	// DoltServerLifecycle pins who owns the sql-server lifecycle, independently
+	// of dolt_server_port. "external" is the only recognized value; "owned" is
+	// reserved for the value space but is neither written nor recognized —
+	// see HasExternalServerLifecycle for why any non-empty value means external.
+	DoltServerLifecycle string `json:"dolt_server_lifecycle,omitempty"`
 	// Note: Password should be set via BEADS_DOLT_PASSWORD env var for security
 
 	// Project identity — unique ID generated at bd init time.
@@ -215,6 +220,28 @@ const (
 	DoltModeServer        = "server"
 	DoltModeProxiedServer = "proxied-server"
 )
+
+// Dolt server lifecycle marker values (metadata.json dolt_server_lifecycle).
+const (
+	// DoltServerLifecycleExternal marks a rig whose dolt sql-server lifecycle is
+	// managed by the user (systemd, Docker, Hosted Dolt, a shared VPS). bd never
+	// starts or stops that server.
+	DoltServerLifecycleExternal = "external"
+)
+
+// HasExternalServerLifecycle reports whether metadata.json pins the sql-server
+// lifecycle to the user.
+//
+// The test is deliberately "raw value is not empty", with no trimming or case
+// folding: a typo, a whitespace-only value, or a value written by a newer bd
+// must not roll down to owned, because owned lets bd auto-start its own server
+// from .beads/dolt next to an already-running external one (the shadow database
+// failure mode). Suppressing auto-start instead surfaces as a connection error,
+// which is the recoverable direction. `bd doctor` normalizes (trim + lower) only
+// to tell a recognized value from an unrecognized one when reporting.
+func (c *Config) HasExternalServerLifecycle() bool {
+	return c.DoltServerLifecycle != ""
+}
 
 // Default Dolt server settings
 const (

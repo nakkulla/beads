@@ -24,7 +24,19 @@ import (
 
 	"github.com/spf13/pflag"
 	"github.com/steveyegge/beads/internal/config"
+	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/doltserver"
 )
+
+// initAcceptanceMetadata loads the metadata.json a completed init wrote.
+func initAcceptanceMetadata(t *testing.T, beadsDir string) *configfile.Config {
+	t.Helper()
+	cfg, err := configfile.Load(beadsDir)
+	if err != nil || cfg == nil {
+		t.Fatalf("load metadata.json in %s: %v", beadsDir, err)
+	}
+	return cfg
+}
 
 // initServerModeFixtureOrigin is a git origin that must never be contacted.
 // A1 is only meaningful when init runs in a repo that HAS an origin, and the
@@ -254,6 +266,18 @@ func TestInitServerModeAppliesFleetPolicyDefaults(t *testing.T) {
 	assertFileAbsent(t, dir, "AGENTS.md", "server-mode init defaults to --skip-agents")
 	assertFileAbsent(t, dir, "CLAUDE.md", "server-mode init defaults to --skip-agents")
 
+	// beads-ode: an explicit --server-port is user-managed lifecycle intent, so
+	// init records it as a marker instead of leaving it implied by the port key.
+	// Supplementary integration coverage — the decision rule's seam is
+	// TestShouldRecordExternalLifecycle.
+	cfg := initAcceptanceMetadata(t, beadsDir)
+	if got := cfg.DoltServerLifecycle; got != configfile.DoltServerLifecycleExternal {
+		t.Errorf("dolt_server_lifecycle = %q, want %q", got, configfile.DoltServerLifecycleExternal)
+	}
+	if mode := doltserver.ResolveServerMode(beadsDir); mode != doltserver.ServerModeExternal {
+		t.Errorf("ResolveServerMode = %v, want External", mode)
+	}
+
 	// A2: `resolved` is registered in the database, so the command path that
 	// validates status names accepts it.
 	listOut, err := runBDCommandInDir(t, dir, "list", "--status", "resolved", "--json")
@@ -342,6 +366,50 @@ func TestInitServerModeHonorsExplicitOverrides(t *testing.T) {
 	listOut, err := runBDCommandInDir(t, dir, "list", "--status", "resolved", "--json")
 	if err != nil {
 		t.Fatalf("bd list --status resolved --json failed: %v\noutput:\n%s", err, listOut)
+	}
+}
+
+// TestInitServerModeWithoutExplicitPortOmitsLifecycleMarker is the command-level
+// negative for beads-ode: `bd init --server` with no --server-port is an owned
+// auto-start rig, so nothing is pinned. The port comes from
+// BEADS_DOLT_SERVER_PORT here, which keeps the connection working while leaving
+// the flag unset — exactly the distinction the recording rule is built on.
+func TestInitServerModeWithoutExplicitPortOmitsLifecycleMarker(t *testing.T) {
+	skipIfNoDolt(t)
+	saveAndRestoreGlobals(t)
+	ensureCleanGlobalState(t)
+	t.Cleanup(config.ResetForTesting)
+	dbPath = ""
+	store = nil
+
+	dir := newInitServerModeGitFixture(t)
+	beadsDir := filepath.Join(dir, ".beads")
+	database := uniqueTestDBName(t)
+	t.Cleanup(func() {
+		dropTestDatabase(database, testDoltServerPort)
+	})
+
+	t.Setenv("BEADS_DOLT_SERVER_PORT", fmt.Sprintf("%d", testDoltServerPort))
+
+	out, err := runBDCommandInDir(t, dir,
+		"init",
+		"--server",
+		"--server-host", "127.0.0.1",
+		"--database", database,
+		"--prefix", "nom",
+		"--quiet",
+		"--skip-hooks",
+	)
+	if err != nil {
+		t.Fatalf("bd init --server without an explicit port failed: %v\noutput:\n%s", err, out)
+	}
+
+	cfg := initAcceptanceMetadata(t, beadsDir)
+	if got := cfg.DoltServerLifecycle; got != "" {
+		t.Errorf("dolt_server_lifecycle = %q, want it unset", got)
+	}
+	if cfg.DoltServerPort != 0 {
+		t.Errorf("dolt_server_port = %d, want it unset (the port came from the env var)", cfg.DoltServerPort)
 	}
 }
 

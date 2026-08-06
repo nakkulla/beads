@@ -555,7 +555,17 @@ func runDiagnostics(path string) doctorResult {
 		result.OverallOK = false
 	}
 
-	// Check 7e0b: git-tracked metadata.json dolt_server_port that disagrees
+	// Check 7e0b: an external sql-server lifecycle still implied by
+	// dolt_server_port instead of the explicit dolt_server_lifecycle marker.
+	// Runs before the port-drift check so a pinned rig can have its stale port
+	// key dropped on the following --fix run (beads-ode).
+	lifecyclePinCheck := convertDoctorCheck(doctor.CheckExternalLifecyclePin(path))
+	result.Checks = append(result.Checks, lifecyclePinCheck)
+	if lifecyclePinCheck.Status == statusWarning || lifecyclePinCheck.Status == statusError {
+		result.OverallOK = false
+	}
+
+	// Check 7e0c: git-tracked metadata.json dolt_server_port that disagrees
 	// with the port bd actually connects on (GH#2372 authority chain).
 	portDriftCheck := convertDoctorCheck(doctor.CheckDoltPortDrift(path))
 	result.Checks = append(result.Checks, portDriftCheck)
@@ -563,7 +573,7 @@ func runDiagnostics(path string) doctorResult {
 		result.OverallOK = false
 	}
 
-	// Check 7e0c: sync.remote that is not a Dolt remote, and server-mode rigs
+	// Check 7e0d: sync.remote that is not a Dolt remote, and server-mode rigs
 	// carrying a routine sync.remote at all. Only the latter is auto-fixable.
 	syncRemoteShapeCheck := convertDoctorCheck(doctor.CheckSyncRemoteShape(path))
 	result.Checks = append(result.Checks, syncRemoteShapeCheck)

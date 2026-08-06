@@ -28,6 +28,19 @@ func TestServerModeForConfig_MatchesResolveServerMode(t *testing.T) {
 		// auto-start (dolt.resolveAutoStart) for those rigs.
 		{"server mode without port", &configfile.Config{DoltMode: configfile.DoltModeServer}, ServerModeOwned},
 		{"proxied server", &configfile.Config{DoltMode: configfile.DoltModeProxiedServer}, ServerModeOwned},
+
+		// dolt_server_lifecycle is the explicit lifecycle marker (beads-ode). It
+		// outranks dolt_server_port so a rig can be External without carrying a
+		// git-tracked port key.
+		{"lifecycle marker alone", &configfile.Config{DoltServerLifecycle: configfile.DoltServerLifecycleExternal}, ServerModeExternal},
+		{"lifecycle marker on a portless server rig", &configfile.Config{DoltMode: configfile.DoltModeServer, DoltServerLifecycle: configfile.DoltServerLifecycleExternal}, ServerModeExternal},
+		{"lifecycle marker with port", &configfile.Config{DoltMode: configfile.DoltModeServer, DoltServerPort: 13307, DoltServerLifecycle: configfile.DoltServerLifecycleExternal}, ServerModeExternal},
+		// Fail-safe: any non-empty value pins External. A typo or a future value
+		// must not roll down to Owned, which would let bd fork a shadow server.
+		{"unrecognized lifecycle value", &configfile.Config{DoltServerLifecycle: "extenral"}, ServerModeExternal},
+		{"whitespace-only lifecycle value", &configfile.Config{DoltServerLifecycle: "   "}, ServerModeExternal},
+		// embedded has no server at all, so it keeps priority over the marker.
+		{"embedded outranks lifecycle marker", &configfile.Config{DoltMode: configfile.DoltModeEmbedded, DoltServerLifecycle: configfile.DoltServerLifecycleExternal}, ServerModeEmbedded},
 	}
 
 	for _, tc := range cases {

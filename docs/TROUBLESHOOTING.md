@@ -286,7 +286,7 @@ bd doctor --server
 
 **Symptom (after shadow DB fix):** `bd` returns "database not found on Dolt server" when the configured server is down.
 
-**Cause:** When `metadata.json` has an explicit `dolt_server_port`, auto-start is intentionally disabled. Starting a different server would create a shadow database.
+**Cause:** When `metadata.json` carries the `dolt_server_lifecycle` marker or an explicit `dolt_server_port`, auto-start is intentionally disabled. Starting a different server would create a shadow database.
 
 **Fix:**
 
@@ -298,7 +298,16 @@ bd dolt start
 dolt sql-server --host 127.0.0.1 --port 3307 --data-dir /path/to/your/dolt/data
 ```
 
-If you want auto-start behavior, remove `dolt_server_port` from `.beads/metadata.json`.
+If you want auto-start behavior, remove **both** `dolt_server_lifecycle` and
+`dolt_server_port` from `.beads/metadata.json`. Either key on its own keeps the
+rig classified as externally managed, so removing only the port leaves auto-start
+disabled.
+
+`dolt_server_lifecycle` is the explicit marker: `bd init --server --server-port
+<port>` records it, and `bd doctor --fix` adds it to older rigs that only carry
+`dolt_server_port`. Any non-empty value is read as "externally managed" — a typo
+suppresses auto-start rather than silently enabling a shadow server, and
+`bd doctor` warns about unrecognized values.
 
 ### Dolt journal corruption after restart
 
