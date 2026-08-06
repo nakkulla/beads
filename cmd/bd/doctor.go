@@ -446,6 +446,17 @@ func runDiagnostics(path string) doctorResult {
 	sharedStore := doctor.NewSharedStore(path)
 	defer sharedStore.Close()
 
+	// Check 1d: Local store health. NewSharedStore reports a failed open only
+	// as a nil store, which every store-backed check below reads as "no
+	// database". This check surfaces the preserved open error and classifies
+	// it (on-disk corruption vs transient) so a damaged store is not silently
+	// downgraded to a missing one. Diagnostic only — no fixer is attached.
+	localStoreHealthCheck := convertDoctorCheck(doctor.CheckLocalStoreHealth(path, sharedStore))
+	result.Checks = append(result.Checks, localStoreHealthCheck)
+	if localStoreHealthCheck.Status == statusError {
+		result.OverallOK = false
+	}
+
 	// Check 2: Database version
 	dbCheck := convertWithCategory(doctor.CheckDatabaseVersionWithStore(sharedStore, Version), doctor.CategoryCore)
 	result.Checks = append(result.Checks, dbCheck)
@@ -536,9 +547,44 @@ func runDiagnostics(path string) doctorResult {
 		result.OverallOK = false
 	}
 
+	// Check 7e0a: Stale dolt server PID/port files left by a dead process.
+	// Read-only: a live server is reported healthy and never touched.
+	stalePIDCheck := convertDoctorCheck(doctor.CheckStaleServerPIDState(path))
+	result.Checks = append(result.Checks, stalePIDCheck)
+	if stalePIDCheck.Status == statusWarning || stalePIDCheck.Status == statusError {
+		result.OverallOK = false
+	}
+
+	// Check 7e0b: git-tracked metadata.json dolt_server_port that disagrees
+	// with the port bd actually connects on (GH#2372 authority chain).
+	portDriftCheck := convertDoctorCheck(doctor.CheckDoltPortDrift(path))
+	result.Checks = append(result.Checks, portDriftCheck)
+	if portDriftCheck.Status == statusWarning || portDriftCheck.Status == statusError {
+		result.OverallOK = false
+	}
+
+	// Check 7e0c: sync.remote that is not a Dolt remote, and server-mode rigs
+	// carrying a routine sync.remote at all. Only the latter is auto-fixable.
+	syncRemoteShapeCheck := convertDoctorCheck(doctor.CheckSyncRemoteShape(path))
+	result.Checks = append(result.Checks, syncRemoteShapeCheck)
+	if syncRemoteShapeCheck.Status == statusWarning || syncRemoteShapeCheck.Status == statusError {
+		result.OverallOK = false
+	}
+
 	// Check 7e1: Corrupt-manifest state (GH#3290). Detection only; the
 	// destructive backup+reinit repair runs solely via doctor --fix (bd-6dnrw.6).
 	corruptManifestCheck := convertDoctorCheck(doctor.CheckCorruptManifest(path))
+	// A corrupt local store must have exactly one destructive repair path.
+	// Local Store Health quarantines outside .beads/ and re-clones from the
+	// remote; the manifest repair backs up inside .beads/ and reinitializes
+	// empty. When both apply, keep the recoverable one and leave the manifest
+	// entry diagnostic, so --fix cannot re-init the store Local Store Health
+	// just rebuilt.
+	if localStoreHealthCheck.Fix != "" && corruptManifestCheck.Fix != "" {
+		corruptManifestCheck.Fix = ""
+		corruptManifestCheck.Detail = strings.TrimSpace(corruptManifestCheck.Detail +
+			"\nAutomatic repair here is suppressed: 'Local Store Health' can rebuild this store from its sync remote, which preserves the data instead of reinitializing empty.")
+	}
 	result.Checks = append(result.Checks, corruptManifestCheck)
 	if corruptManifestCheck.Status == statusError {
 		result.OverallOK = false

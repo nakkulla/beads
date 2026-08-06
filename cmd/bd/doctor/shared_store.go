@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 
+	"github.com/steveyegge/beads/cmd/bd/doctor/fix"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 )
@@ -24,6 +25,14 @@ import (
 type SharedStore struct {
 	store    *dolt.DoltStore
 	beadsDir string
+
+	// openErr preserves the store-open failure that NewSharedStore used to
+	// swallow outright, and openClass its classification. Both are additive:
+	// Store() still returns nil on a failed open, so every check that keys off
+	// the nil store keeps its existing behavior (GH#2636). Only the new
+	// LocalStoreHealth check reads these fields.
+	openErr   error
+	openClass fix.StoreOpenClass
 }
 
 func beadsDirFromSharedStore(path string, ss *SharedStore) string {
@@ -62,6 +71,7 @@ func NewSharedStore(path string) *SharedStore {
 	ctx := context.Background()
 	store, err := dolt.NewFromConfigWithOptions(ctx, beadsDir, &dolt.Config{ReadOnly: true})
 	if err != nil {
+		ss.recordOpenErr(err)
 		return ss // Can't open, store stays nil
 	}
 
@@ -75,6 +85,35 @@ func (ss *SharedStore) Store() *dolt.DoltStore {
 		return nil
 	}
 	return ss.store
+}
+
+// recordOpenErr preserves a failed store open and its classification.
+func (ss *SharedStore) recordOpenErr(err error) {
+	if ss == nil || err == nil {
+		return
+	}
+	ss.openErr = err
+	ss.openClass, _ = fix.ClassifyStoreOpenError(err)
+}
+
+// OpenErr returns the error from the store-open attempt, or nil when the store
+// opened successfully or no open was attempted (no local Dolt directory to
+// open). Close() does not clear it: the error describes the run, not the
+// handle.
+func (ss *SharedStore) OpenErr() error {
+	if ss == nil {
+		return nil
+	}
+	return ss.openErr
+}
+
+// OpenClass returns the classification of OpenErr, or StoreOpenClassNone when
+// there was no open failure.
+func (ss *SharedStore) OpenClass() fix.StoreOpenClass {
+	if ss == nil {
+		return fix.StoreOpenClassNone
+	}
+	return ss.openClass
 }
 
 // BeadsDir returns the resolved .beads directory path.

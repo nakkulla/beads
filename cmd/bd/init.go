@@ -26,6 +26,7 @@ import (
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/storage/schema"
 	"github.com/steveyegge/beads/internal/templates/agents"
+	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/utils"
 	"golang.org/x/term"
@@ -338,6 +339,20 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 					cmdCtx.ServerMode = initServerMode
 				}
 			}
+		}
+
+		// Server-mode default: skip the local-Dolt-shaped agent instruction
+		// files unless the caller named an agents flag. Placed here because
+		// initServerMode is final only after the config.yaml dolt.mode
+		// fallback above.
+		if shouldDefaultSkipAgentsForServerMode(
+			initServerMode,
+			cmd.Flags().Changed("skip-agents"),
+			cmd.Flags().Changed("agents-file"),
+			cmd.Flags().Changed("agents-template"),
+			cmd.Flags().Changed("agents-profile"),
+		) {
+			skipAgents = true
 		}
 
 		// Reject hyphens in --database for embedded mode. Must run AFTER
@@ -856,7 +871,7 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 				}
 				syncFromRemote = bootstrap
 			}
-		} else if syncRemoteSource == initSyncRemoteNone && !stealth && isGitRepo() && !isBareGitRepo() {
+		} else if shouldDeriveSyncRemoteFromGitOrigin(syncRemoteSource, initServerMode, stealth, isGitRepo, isBareGitRepo) {
 			if originURL, err := gitOriginGetURL(); err == nil && originURL != "" {
 				syncURL = normalizeRemoteURL(originURL)
 				syncURLFromGitOrigin = true
@@ -1077,6 +1092,15 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			}
 		}
 
+		// Server-mode rigs get the "resolved" workflow status registered here
+		// instead of by an out-of-band setup script. Non-fatal: a rig missing
+		// the custom status is degraded, not broken.
+		if seeded, err := seedServerModeResolvedStatus(ctx, store, initServerMode); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to seed %q custom status: %v\n", customStatusResolved, err)
+		} else if seeded && !quiet {
+			fmt.Printf("  %s Custom status %q registered\n", ui.RenderPass("✓"), customStatusResolved)
+		}
+
 		// === TRACKING METADATA (Pattern B: Warn and Continue) ===
 		// Tracking metadata enhances functionality (diagnostics, version checks, collision detection)
 		// but the system works without it. Failures here degrade gracefully - we warn but continue.
@@ -1225,6 +1249,13 @@ Non-interactive mode (--non-interactive or BD_NON_INTERACTIVE=1):
 			// Create config.yaml template (prefix is stored in DB, not config.yaml)
 			if err := createConfigYaml(beadsDir, false, ""); err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to create config.yaml: %v\n", err)
+				// Non-fatal - continue anyway
+			}
+
+			// Server-mode rigs default auto-backup off; an existing
+			// backup.enabled value is preserved.
+			if _, err := applyServerModeBackupDefault(beadsDir, initServerMode); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to set default backup.enabled: %v\n", err)
 				// Non-fatal - continue anyway
 			}
 
@@ -2400,6 +2431,152 @@ func resolveInitConfiguredSyncRemote(initRemote string, initRemoteChanged bool, 
 		return syncURL, initSyncRemoteConfigured
 	}
 	return "", initSyncRemoteNone
+}
+
+// shouldDeriveSyncRemoteFromGitOrigin reports whether init may fall back to the
+// git origin URL as the sync remote. Server-mode rigs opt out: their sync path
+// is the external Dolt server, so persisting a git code URL as sync.remote
+// records a remote that is never the sync source. An explicit --remote is a
+// different source (initSyncRemoteExplicit) and is unaffected.
+//
+// inGitRepo/bareGitRepo are passed as callbacks because they shell out to git;
+// the cheap conditions short-circuit before either probe runs.
+func shouldDeriveSyncRemoteFromGitOrigin(source initSyncRemoteSource, initServerMode, stealth bool, inGitRepo, bareGitRepo func() bool) bool {
+	if source != initSyncRemoteNone || initServerMode || stealth {
+		return false
+	}
+	return inGitRepo() && !bareGitRepo()
+}
+
+// shouldDefaultSkipAgentsForServerMode reports whether init should default
+// --skip-agents to true. The generated agent instructions assume the local-Dolt
+// layout (bd dolt push/pull, .beads/dolt/), which is wrong for a server-mode
+// rig. Any explicit agents flag — including --skip-agents=false — is user
+// intent and wins over this default.
+func shouldDefaultSkipAgentsForServerMode(initServerMode, skipAgentsChanged, agentsFileChanged, agentsTemplateChanged, agentsProfileChanged bool) bool {
+	if !initServerMode {
+		return false
+	}
+	return !skipAgentsChanged && !agentsFileChanged && !agentsTemplateChanged && !agentsProfileChanged
+}
+
+// shouldSeedServerModeBackupDisabled reports whether init should write the
+// backup.enabled default for a server-mode rig. This is a default injection,
+// not a policy override: an existing value (true or false) is left alone.
+func shouldSeedServerModeBackupDisabled(initServerMode bool, existingBackupEnabled string) bool {
+	return initServerMode && existingBackupEnabled == ""
+}
+
+// existingConfigYamlValue reports the value already recorded for a dotted key in
+// <beadsDir>/config.yaml, or "" when the key is absent.
+//
+// Both shapes must be accepted: config.SetYamlConfigInDir writes the nested
+// form (backup: / enabled:) only when config.yaml already has an uncommented
+// mapping, and the freshly rendered init template is entirely comments, so
+// writes land as a flat "backup.enabled" root key instead.
+func existingConfigYamlValue(beadsDir, key string) string {
+	return config.GetStringFromDirAnyShape(beadsDir, key)
+}
+
+// applyServerModeBackupDefault writes backup.enabled=false into
+// <beadsDir>/config.yaml when shouldSeedServerModeBackupDisabled allows it.
+// Reports whether a value was written.
+func applyServerModeBackupDefault(beadsDir string, initServerMode bool) (bool, error) {
+	if !shouldSeedServerModeBackupDisabled(initServerMode, existingConfigYamlValue(beadsDir, "backup.enabled")) {
+		return false, nil
+	}
+	if err := config.SetYamlConfigInDir(beadsDir, "backup.enabled", "false"); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// customStatusConfigKey is the DB config key holding the comma-separated custom
+// status list; writing it also rebuilds the custom_statuses table that
+// `bd list --status <name>` validates against.
+const customStatusConfigKey = "status.custom"
+
+// customStatusResolved is the workflow status a server-mode (fleet) rig is
+// expected to answer `bd list --status resolved` for. It used to be registered
+// only by an out-of-band setup script, which no-ops once a rig is already
+// initialized — so a raw `bd init --server` left the policy unapplied.
+const customStatusResolved = "resolved"
+
+// customStatusConfigStore is the narrow store surface the resolved-status
+// seeding needs. Declared as an interface so the wiring is testable without a
+// live Dolt server.
+type customStatusConfigStore interface {
+	GetConfig(ctx context.Context, key string) (string, error)
+	SetConfig(ctx context.Context, key, value string) error
+}
+
+// mergeCustomStatusValue merges a status name into an existing status.custom
+// value and reports whether the result differs from what is stored. SetConfig
+// replaces the whole value, so the caller must read first and merge here rather
+// than write the token alone.
+//
+// A name already present under any category (e.g. "resolved:done") counts as
+// present and the stored value is returned untouched: this is a default
+// injection, not a policy rewrite. Both the existing value and the merge result
+// are validated with types.ParseCustomStatusConfig, so an unparseable stored
+// value is reported instead of being clobbered, and init never persists a value
+// that would fail the custom_statuses sync.
+func mergeCustomStatusValue(existing, add string) (string, bool, error) {
+	add = strings.TrimSpace(add)
+	if add == "" {
+		return "", false, fmt.Errorf("custom status name is empty")
+	}
+	parsed, err := types.ParseCustomStatusConfig(existing)
+	if err != nil {
+		return "", false, fmt.Errorf("existing %s is invalid: %w", customStatusConfigKey, err)
+	}
+	for _, s := range parsed {
+		if strings.EqualFold(s.Name, add) {
+			return existing, false, nil
+		}
+	}
+	merged := add
+	if trimmed := strings.TrimSpace(existing); trimmed != "" {
+		merged = trimmed + "," + add
+	}
+	if _, err := types.ParseCustomStatusConfig(merged); err != nil {
+		return "", false, fmt.Errorf("merged %s is invalid: %w", customStatusConfigKey, err)
+	}
+	return merged, true, nil
+}
+
+// seedServerModeResolvedStatus merges customStatusResolved into the database
+// status.custom config for a server-mode rig, and reports whether a write
+// happened.
+//
+// The write goes through store.SetConfig rather than a direct table write so it
+// rides the same transaction that rebuilds the custom_statuses table
+// (internal/storage/dolt/config.go -> issueops.SyncCustomStatusesTable); that
+// table is what `bd list --status resolved` validates against.
+//
+// Spec decision (docs/superpowers/specs/2026-08-05-bd-skill-absorption-design.md
+// A2): re-running init on a rig where the user deliberately removed "resolved"
+// re-adds it. Seeding is init-time policy and init holds no record that would
+// distinguish an intentional removal from a rig that never had the status.
+func seedServerModeResolvedStatus(ctx context.Context, s customStatusConfigStore, initServerMode bool) (bool, error) {
+	if !initServerMode || s == nil {
+		return false, nil
+	}
+	existing, err := s.GetConfig(ctx, customStatusConfigKey)
+	if err != nil {
+		return false, fmt.Errorf("reading %s: %w", customStatusConfigKey, err)
+	}
+	merged, changed, err := mergeCustomStatusValue(existing, customStatusResolved)
+	if err != nil {
+		return false, err
+	}
+	if !changed {
+		return false, nil
+	}
+	if err := s.SetConfig(ctx, customStatusConfigKey, merged); err != nil {
+		return false, fmt.Errorf("writing %s: %w", customStatusConfigKey, err)
+	}
+	return true, nil
 }
 
 func initRemoteCloneMode(initServerMode, externalServer bool) remoteCloneMode {
