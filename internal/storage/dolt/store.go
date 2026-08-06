@@ -191,8 +191,8 @@ type DoltStore struct {
 	remotePassword string // Remote auth password for Hosted Dolt push/pull (optional)
 	serverMode     bool   // true when connected to external dolt sql-server (not embedded)
 
-	// externalOpts configures query-time resolution of external:<project>:
-	// <capability> dependencies in the ready-work path. The zero value is
+	// externalOpts configures query-time resolution of cross-prefix external
+	// dependencies in the ready-work path. The zero value is
 	// fail-closed (ServerMode=false). Populated by the cmd layer (task U1c);
 	// storage only exposes the field via SetExternalResolverOptions.
 	externalOpts issueops.ExternalResolverOptions

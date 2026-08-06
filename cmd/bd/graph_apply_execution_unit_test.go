@@ -264,7 +264,7 @@ func TestExecuteGraphApplyUnitSkipsSQLCycleChecksAfterGraphPreflight(t *testing.
 		Edges: []GraphApplyEdge{
 			{FromID: "ga-existing", ToKey: "a", Type: "blocks"},
 			{FromKey: "a", ToKey: "b", Type: "blocks"},
-			{FromKey: "b", ToID: "external:other:shipped", Type: "blocks"},
+			{FromKey: "b", ToID: "other-9f3a11", Type: "blocks"},
 		},
 	}
 

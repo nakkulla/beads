@@ -715,30 +715,28 @@ func TestAddDependency_ExternalReference(t *testing.T) {
 		t.Fatalf("failed to create issue: %v", err)
 	}
 
-	// Add dependency on external reference (cross-rig tracking)
-	// This should NOT fail with FK violation after the fix
-	externalRef := "external:da:da-7eo"
+	// A cross-rig target cannot be resolved outside shared-server mode, so the
+	// edge is refused instead of being stored as a permanent blocker.
+	externalRef := "da-7eo111"
 	dep := &types.Dependency{
 		IssueID:     issue.ID,
 		DependsOnID: externalRef,
 		Type:        types.DepBlocks,
 	}
-	if err := store.AddDependency(ctx, dep, "tester"); err != nil {
-		t.Fatalf("failed to add external dependency: %v", err)
+	err := store.AddDependency(ctx, dep, "tester")
+	if err == nil {
+		t.Fatal("AddDependency must reject an unresolvable cross-rig target")
+	}
+	if !strings.Contains(err.Error(), "shared-server mode") {
+		t.Errorf("expected a shared-server-mode rejection, got: %v", err)
 	}
 
-	// Verify the dependency was created
 	records, err := store.GetDependencyRecords(ctx, issue.ID)
 	if err != nil {
 		t.Fatalf("GetDependencyRecords failed: %v", err)
 	}
-
-	if len(records) != 1 {
-		t.Fatalf("expected 1 dependency, got %d", len(records))
-	}
-
-	if records[0].DependsOnID != externalRef {
-		t.Errorf("expected DependsOnID %q, got %q", externalRef, records[0].DependsOnID)
+	if len(records) != 0 {
+		t.Fatalf("expected no stored dependency, got %d", len(records))
 	}
 }
 
@@ -761,11 +759,12 @@ func TestAddDependency_MultipleExternalReferences(t *testing.T) {
 		t.Fatalf("failed to create convoy: %v", err)
 	}
 
-	// Add multiple external dependencies (simulating cross-rig tracking)
+	// Every cross-rig tracking target is unresolvable outside shared-server
+	// mode, so none of them may be stored.
 	externalRefs := []string{
-		"external:da:da-7eo",
-		"external:da:da-1nw",
-		"external:gt:gt-abc",
+		"da-7eo111",
+		"da-1nw222",
+		"gt-abc333",
 	}
 
 	for _, ref := range externalRefs {
@@ -774,19 +773,17 @@ func TestAddDependency_MultipleExternalReferences(t *testing.T) {
 			DependsOnID: ref,
 			Type:        "tracks", // convoy tracking type
 		}
-		if err := store.AddDependency(ctx, dep, "tester"); err != nil {
-			t.Fatalf("failed to add external dependency %s: %v", ref, err)
+		if err := store.AddDependency(ctx, dep, "tester"); err == nil {
+			t.Fatalf("AddDependency must reject unresolvable cross-rig target %s", ref)
 		}
 	}
 
-	// Verify all dependencies were created
 	records, err := store.GetDependencyRecords(ctx, convoy.ID)
 	if err != nil {
 		t.Fatalf("GetDependencyRecords failed: %v", err)
 	}
-
-	if len(records) != len(externalRefs) {
-		t.Errorf("expected %d dependencies, got %d", len(externalRefs), len(records))
+	if len(records) != 0 {
+		t.Errorf("expected no stored dependencies, got %d", len(records))
 	}
 }
 
@@ -795,6 +792,12 @@ func TestAddDependency_MultipleExternalReferences(t *testing.T) {
 // =============================================================================
 
 func TestIsCrossPrefixDep(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+
 	tests := []struct {
 		name     string
 		source   string
@@ -811,7 +814,9 @@ func TestIsCrossPrefixDep(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isCrossPrefixDep(tt.source, tt.target)
+			// Not in shared-server mode: classification compares the source and
+			// target prefixes and never consults other databases.
+			got := store.isCrossPrefixDep(ctx, tt.source, tt.target)
 			if got != tt.expected {
 				t.Errorf("isCrossPrefixDep(%q, %q) = %v, want %v", tt.source, tt.target, got, tt.expected)
 			}
@@ -819,14 +824,17 @@ func TestIsCrossPrefixDep(t *testing.T) {
 	}
 }
 
-func TestAddDependency_CrossPrefix_SkipsTargetExistence(t *testing.T) {
+// TestAddDependency_CrossPrefix_RejectedWithoutServerMode locks the write-time
+// guarantee that replaced "cross-prefix deps skip target validation": a target
+// that cannot be resolved must not be stored at all. Outside shared-server mode
+// no cross-prefix target is resolvable, so the write is refused.
+func TestAddDependency_CrossPrefix_RejectedWithoutServerMode(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	// Create a source issue with prefix "test-"
 	source := &types.Issue{
 		ID:        "test-source",
 		Title:     "Source Issue",
@@ -838,32 +846,27 @@ func TestAddDependency_CrossPrefix_SkipsTargetExistence(t *testing.T) {
 		t.Fatalf("failed to create source issue: %v", err)
 	}
 
-	// Add a cross-prefix dependency — target "other-xyz" doesn't exist in this DB,
-	// but should succeed because cross-prefix deps skip target existence check.
 	dep := &types.Dependency{
 		IssueID:     "test-source",
 		DependsOnID: "other-xyz",
 		Type:        types.DepBlocks,
 	}
 	err := store.AddDependency(ctx, dep, "tester")
-	if err != nil {
-		t.Fatalf("AddDependency should succeed for cross-prefix dep, got: %v", err)
+	if err == nil {
+		t.Fatal("AddDependency must reject an unresolvable cross-prefix target")
+	}
+	if !strings.Contains(err.Error(), "shared-server mode") {
+		t.Errorf("expected a shared-server-mode rejection, got: %v", err)
 	}
 
-	// Verify the dependency was stored
 	records, err := store.GetDependencyRecords(ctx, "test-source")
 	if err != nil {
 		t.Fatalf("GetDependencyRecords failed: %v", err)
 	}
-	found := false
 	for _, r := range records {
 		if r.DependsOnID == "other-xyz" {
-			found = true
-			break
+			t.Fatal("rejected cross-prefix dependency must not be stored")
 		}
-	}
-	if !found {
-		t.Error("cross-prefix dependency was not stored")
 	}
 }
 

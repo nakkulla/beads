@@ -11,39 +11,39 @@ import (
 )
 
 // TestExternalDiagCollectorDedup verifies that repeated diagnostic deliveries
-// for the same project produce exactly one stderr warning line, first-reason /
-// first-refcount wins, and distinct projects each warn once. This mirrors bd
+// for the same prefix produce exactly one stderr warning line, first-reason /
+// first-refcount wins, and distinct prefixes each warn once. This mirrors bd
 // ready resolving ready work multiple times per invocation.
 func TestExternalDiagCollectorDedup(t *testing.T) {
 	var buf bytes.Buffer
 	c := newExternalDiagCollector(&buf)
 
-	// First delivery (e.g. GetReadyWork): two projects unresolvable.
+	// First delivery (e.g. GetReadyWork): two prefixes unresolvable.
 	c.sink([]issueops.ExternalDiag{
-		{Project: "beads", Reason: "no external_databases mapping", Refs: []string{"external:beads:cap-a"}},
-		{Project: "gt", Reason: "server mode required", Refs: []string{"external:gt:cap-b", "external:gt:cap-c"}},
+		{Prefix: "beads", Reason: "unknown prefix", Refs: []string{"beads-cap0a1"}},
+		{Prefix: "gt", Reason: "server mode required", Refs: []string{"gt-cap0b2", "gt-cap0c3"}},
 	})
-	// Second delivery (e.g. the truncation-probe GetReadyWork): same projects,
+	// Second delivery (e.g. the truncation-probe GetReadyWork): same prefixes,
 	// a different reason and ref count for beads. First-wins must hold.
 	c.sink([]issueops.ExternalDiag{
-		{Project: "beads", Reason: "external database query failed: boom", Refs: []string{"external:beads:cap-a", "external:beads:cap-d"}},
-		{Project: "gt", Reason: "server mode required", Refs: []string{"external:gt:cap-b"}},
+		{Prefix: "beads", Reason: "external database query failed: boom", Refs: []string{"beads-cap0a1", "beads-cap0d4"}},
+		{Prefix: "gt", Reason: "server mode required", Refs: []string{"gt-cap0b2"}},
 	})
 	// Third delivery (e.g. the --claim path): still no new lines.
 	c.sink([]issueops.ExternalDiag{
-		{Project: "beads", Reason: "no external_databases mapping", Refs: []string{"external:beads:cap-a"}},
+		{Prefix: "beads", Reason: "unknown prefix", Refs: []string{"beads-cap0a1"}},
 	})
 
 	got := buf.String()
 	lines := nonEmptyLines(got)
 	if len(lines) != 2 {
-		t.Fatalf("expected exactly 2 warning lines (one per project), got %d:\n%s", len(lines), got)
+		t.Fatalf("expected exactly 2 warning lines (one per prefix), got %d:\n%s", len(lines), got)
 	}
 
 	// beads: first reason and first ref count (1) win, not the later query-failed/2.
-	wantBeads := "warning: external dependency unresolvable (project beads): no external_databases mapping [1 refs]"
+	wantBeads := "warning: external dependency unresolvable (prefix beads): unknown prefix [1 refs]"
 	// gt: first delivery had 2 refs.
-	wantGT := "warning: external dependency unresolvable (project gt): server mode required [2 refs]"
+	wantGT := "warning: external dependency unresolvable (prefix gt): server mode required [2 refs]"
 	if !containsLine(lines, wantBeads) {
 		t.Errorf("missing/incorrect beads line.\n got: %v\nwant: %q", lines, wantBeads)
 	}
@@ -79,8 +79,9 @@ func (f *fakeConfigurableStore) SetExternalResolverOptions(opts issueops.Externa
 }
 
 // TestApplyExternalResolverOptionsWiring verifies the cmd-layer wiring:
-// applyExternalResolverOptions populates the DiagSink (the process singleton),
-// the Databases map from config, and ServerMode from the effective mode.
+// applyExternalResolverOptions populates the DiagSink (the process singleton)
+// and ServerMode from the effective mode. Prefix -> database mapping is
+// discovered inside storage, so no config-sourced map is wired here.
 func TestApplyExternalResolverOptionsWiring(t *testing.T) {
 	// BEADS_DOLT_SERVER_MODE=1 forces doltserver.ResolveServerMode to External
 	// (its highest-priority check), so the resolver ServerMode gate is true.
@@ -101,9 +102,6 @@ func TestApplyExternalResolverOptionsWiring(t *testing.T) {
 	if fake.got.DiagSink == nil {
 		t.Error("DiagSink should be populated so unresolvable diagnostics reach the CLI collector")
 	}
-	// Databases mirrors config.GetExternalDatabases() (typically empty in tests);
-	// nil vs empty is acceptable, we only assert no panic and a usable value.
-	_ = fake.got.Databases
 }
 
 // TestExternalResolverServerModeEmbedded verifies the fail-closed default: with

@@ -4,13 +4,19 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"sort"
 	"testing"
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
-const providedLabelsQueryRegex = `SELECT DISTINCT l\.label FROM`
-const refCollectRegex = `SELECT DISTINCT depends_on_external FROM`
+const (
+	currentDBQueryRegex    = `SELECT DATABASE\(\)`
+	showDatabasesRegex     = `SHOW DATABASES`
+	selfPrefixQueryRegex   = "SELECT value FROM config WHERE"
+	closedIssuesQueryRegex = `SELECT id FROM .*\.issues WHERE status = 'closed'`
+	refCollectRegex        = `SELECT DISTINCT depends_on_external FROM`
+)
 
 func newResolverMock(t *testing.T) (sqlmock.Sqlmock, DBTX) {
 	t.Helper()
@@ -22,17 +28,54 @@ func newResolverMock(t *testing.T) (sqlmock.Sqlmock, DBTX) {
 	return mock, db
 }
 
+// rig is one database on the shared server and the issue prefix its config
+// table declares.
+type rig struct{ db, prefix string }
+
+// expectDiscovery queues the exact query sequence discoverPrefixMap issues:
+// current database, database list, the local issue_prefix, then one
+// config.issue_prefix probe per foreign database in sorted name order.
+func expectDiscovery(mock sqlmock.Sqlmock, selfDB, selfPrefix string, others []rig) {
+	mock.ExpectQuery(currentDBQueryRegex).
+		WillReturnRows(sqlmock.NewRows([]string{"DATABASE()"}).AddRow(selfDB))
+
+	names := []string{selfDB}
+	for _, o := range others {
+		names = append(names, o.db)
+	}
+	sort.Strings(names)
+	dbRows := sqlmock.NewRows([]string{"Database"})
+	for _, n := range names {
+		dbRows.AddRow(n)
+	}
+	mock.ExpectQuery(showDatabasesRegex).WillReturnRows(dbRows)
+
+	mock.ExpectQuery(selfPrefixQueryRegex).WithArgs("issue_prefix").
+		WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow(selfPrefix))
+
+	byName := make(map[string]string, len(others))
+	for _, o := range others {
+		byName[o.db] = o.prefix
+	}
+	for _, n := range names {
+		if n == selfDB {
+			continue
+		}
+		mock.ExpectQuery("SELECT value FROM ." + n + "..config").
+			WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow(byName[n]))
+	}
+}
+
 func TestResolveExternalRefs_NonServerMode(t *testing.T) {
 	t.Parallel()
 	mock, tx := newResolverMock(t)
-	refs := []string{"external:beads:cap-a", "external:gt:cap-b"}
+	refs := []string{"dotfiles-1tif", "UI-kfl4"}
 
-	unsatisfied, diags := resolveExternalRefs(context.Background(), tx, refs, ExternalResolverOptions{ServerMode: false})
-	wantUnsat := []string{"external:beads:cap-a", "external:gt:cap-b"}
-	if !reflect.DeepEqual(unsatisfied, wantUnsat) {
-		t.Fatalf("unsatisfied = %v, want %v", unsatisfied, wantUnsat)
+	blocking, diags := resolveExternalRefs(context.Background(), tx, refs, ExternalResolverOptions{ServerMode: false})
+	want := []string{"UI-kfl4", "dotfiles-1tif"}
+	if !reflect.DeepEqual(blocking, want) {
+		t.Fatalf("blocking = %v, want %v", blocking, want)
 	}
-	// One diag per project, reason "server mode required".
 	if len(diags) != 2 {
 		t.Fatalf("diags = %v, want 2 entries", diags)
 	}
@@ -46,145 +89,164 @@ func TestResolveExternalRefs_NonServerMode(t *testing.T) {
 	}
 }
 
-func TestResolveExternalRefs_MissingMapping(t *testing.T) {
+func TestResolveExternalRefs_SatisfiedWhenTargetClosed(t *testing.T) {
 	t.Parallel()
 	mock, tx := newResolverMock(t)
-	refs := []string{"external:beads:cap-a"}
+	expectDiscovery(mock, "beads", "beads", []rig{{db: "dotfiles", prefix: "dotfiles"}})
+	mock.ExpectQuery(closedIssuesQueryRegex).WithArgs("dotfiles-1tif").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("dotfiles-1tif"))
 
-	unsatisfied, diags := resolveExternalRefs(context.Background(), tx, refs,
-		ExternalResolverOptions{ServerMode: true, Databases: map[string]string{}})
-	if !reflect.DeepEqual(unsatisfied, refs) {
-		t.Fatalf("unsatisfied = %v, want %v", unsatisfied, refs)
-	}
-	if len(diags) != 1 || diags[0].Reason != "no external_databases mapping" || diags[0].Project != "beads" {
-		t.Fatalf("diags = %+v, want single no-mapping diag for beads", diags)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unexpected queries: %v", err)
-	}
-}
-
-func TestResolveExternalRefs_InvalidIdentifier(t *testing.T) {
-	t.Parallel()
-	mock, tx := newResolverMock(t)
-	refs := []string{"external:beads:cap-a"}
-
-	unsatisfied, diags := resolveExternalRefs(context.Background(), tx, refs,
-		ExternalResolverOptions{ServerMode: true, Databases: map[string]string{"beads": "bad name;DROP"}})
-	if !reflect.DeepEqual(unsatisfied, refs) {
-		t.Fatalf("unsatisfied = %v, want %v", unsatisfied, refs)
-	}
-	if len(diags) != 1 || diags[0].Project != "beads" {
-		t.Fatalf("diags = %+v, want single diag for beads", diags)
-	}
-	if got := diags[0].Reason; got == "" || got[:7] != "invalid" {
-		t.Fatalf("diag reason = %q, want invalid-identifier reason", got)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unexpected queries (must not query invalid db): %v", err)
-	}
-}
-
-func TestResolveExternalRefs_MalformedRef(t *testing.T) {
-	t.Parallel()
-	mock, tx := newResolverMock(t)
-	// Missing capability, and a fully malformed ref.
-	refs := []string{"external:beads", "garbage"}
-
-	unsatisfied, diags := resolveExternalRefs(context.Background(), tx, refs,
-		ExternalResolverOptions{ServerMode: true, Databases: map[string]string{"beads": "beadsdb"}})
-	if len(unsatisfied) != 2 {
-		t.Fatalf("unsatisfied = %v, want both malformed refs blocking", unsatisfied)
-	}
-	for _, d := range diags {
-		if d.Reason != "malformed external reference" {
-			t.Errorf("diag reason = %q, want malformed external reference", d.Reason)
-		}
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("unexpected queries for malformed refs: %v", err)
-	}
-}
-
-func TestResolveExternalRefs_QueryError(t *testing.T) {
-	t.Parallel()
-	mock, tx := newResolverMock(t)
-	refs := []string{"external:beads:cap-a"}
-	mock.ExpectQuery(providedLabelsQueryRegex).WillReturnError(errors.New("unknown database 'beadsdb'"))
-
-	unsatisfied, diags := resolveExternalRefs(context.Background(), tx, refs,
-		ExternalResolverOptions{ServerMode: true, Databases: map[string]string{"beads": "beadsdb"}})
-	if !reflect.DeepEqual(unsatisfied, refs) {
-		t.Fatalf("unsatisfied = %v, want %v (fail-closed on query error)", unsatisfied, refs)
-	}
-	if len(diags) != 1 || diags[0].Project != "beads" {
-		t.Fatalf("diags = %+v, want single diag for beads", diags)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("query expectation not met: %v", err)
-	}
-}
-
-func TestResolveExternalRefs_Satisfied(t *testing.T) {
-	t.Parallel()
-	mock, tx := newResolverMock(t)
-	refs := []string{"external:beads:cap-a"}
-	mock.ExpectQuery(providedLabelsQueryRegex).
-		WithArgs("provides:cap-a").
-		WillReturnRows(sqlmock.NewRows([]string{"label"}).AddRow("provides:cap-a"))
-
-	unsatisfied, diags := resolveExternalRefs(context.Background(), tx, refs,
-		ExternalResolverOptions{ServerMode: true, Databases: map[string]string{"beads": "beadsdb"}})
-	if len(unsatisfied) != 0 {
-		t.Fatalf("unsatisfied = %v, want empty (satisfied)", unsatisfied)
+	blocking, diags := resolveExternalRefs(context.Background(), tx,
+		[]string{"dotfiles-1tif"}, ExternalResolverOptions{ServerMode: true})
+	if len(blocking) != 0 {
+		t.Fatalf("blocking = %v, want empty (target closed)", blocking)
 	}
 	if len(diags) != 0 {
-		t.Fatalf("diags = %v, want none (satisfied is not unresolvable)", diags)
+		t.Fatalf("diags = %v, want none", diags)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("query expectation not met: %v", err)
+		t.Fatalf("query expectations not met: %v", err)
 	}
 }
 
-func TestResolveExternalRefs_UnsatisfiedLabelAbsent(t *testing.T) {
+func TestResolveExternalRefs_UnsatisfiedWhenTargetNotClosed(t *testing.T) {
 	t.Parallel()
 	mock, tx := newResolverMock(t)
-	refs := []string{"external:beads:cap-a"}
-	// The label is absent (or only present on a non-closed issue, which the
-	// status='closed' filter excludes): the query returns no rows.
-	mock.ExpectQuery(providedLabelsQueryRegex).
-		WithArgs("provides:cap-a").
-		WillReturnRows(sqlmock.NewRows([]string{"label"}))
+	expectDiscovery(mock, "beads", "beads", []rig{{db: "dotfiles", prefix: "dotfiles"}})
+	// Open, resolved, or absent all look the same here: not in the closed set.
+	mock.ExpectQuery(closedIssuesQueryRegex).WithArgs("dotfiles-1tif").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 
-	unsatisfied, diags := resolveExternalRefs(context.Background(), tx, refs,
-		ExternalResolverOptions{ServerMode: true, Databases: map[string]string{"beads": "beadsdb"}})
-	if !reflect.DeepEqual(unsatisfied, refs) {
-		t.Fatalf("unsatisfied = %v, want %v", unsatisfied, refs)
+	blocking, diags := resolveExternalRefs(context.Background(), tx,
+		[]string{"dotfiles-1tif"}, ExternalResolverOptions{ServerMode: true})
+	if !reflect.DeepEqual(blocking, []string{"dotfiles-1tif"}) {
+		t.Fatalf("blocking = %v, want the ref", blocking)
 	}
 	if len(diags) != 0 {
 		t.Fatalf("diags = %v, want none (unsatisfied is not unresolvable)", diags)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("query expectation not met: %v", err)
+		t.Fatalf("query expectations not met: %v", err)
 	}
 }
 
-func TestResolveExternalRefs_MixedCapabilitiesOneQueryPerProject(t *testing.T) {
+func TestResolveExternalRefs_UnknownPrefix(t *testing.T) {
 	t.Parallel()
 	mock, tx := newResolverMock(t)
-	refs := []string{"external:beads:cap-a", "external:beads:cap-b"}
-	// One query for the whole project; only cap-a is provided by a closed issue.
-	mock.ExpectQuery(providedLabelsQueryRegex).
-		WillReturnRows(sqlmock.NewRows([]string{"label"}).AddRow("provides:cap-a"))
+	expectDiscovery(mock, "beads", "beads", []rig{{db: "dotfiles", prefix: "dotfiles"}})
 
-	unsatisfied, _ := resolveExternalRefs(context.Background(), tx, refs,
-		ExternalResolverOptions{ServerMode: true, Databases: map[string]string{"beads": "beadsdb"}})
-	want := []string{"external:beads:cap-b"}
-	if !reflect.DeepEqual(unsatisfied, want) {
-		t.Fatalf("unsatisfied = %v, want %v", unsatisfied, want)
+	blocking, diags := resolveExternalRefs(context.Background(), tx,
+		[]string{"nosuch-abc123"}, ExternalResolverOptions{ServerMode: true})
+	if !reflect.DeepEqual(blocking, []string{"nosuch-abc123"}) {
+		t.Fatalf("blocking = %v, want the ref (fail-closed)", blocking)
+	}
+	if len(diags) != 1 || diags[0].Reason != "unknown prefix" || diags[0].Prefix != "nosuch" {
+		t.Fatalf("diags = %+v, want a single unknown-prefix diag for nosuch", diags)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Fatalf("expected exactly one project query: %v", err)
+		t.Fatalf("must not query any database for an unknown prefix: %v", err)
+	}
+}
+
+func TestResolveExternalRefs_AmbiguousPrefix(t *testing.T) {
+	t.Parallel()
+	mock, tx := newResolverMock(t)
+	expectDiscovery(mock, "beads", "beads", []rig{
+		{db: "dotfiles_a", prefix: "dotfiles"},
+		{db: "dotfiles_b", prefix: "dotfiles"},
+	})
+
+	blocking, diags := resolveExternalRefs(context.Background(), tx,
+		[]string{"dotfiles-1tif"}, ExternalResolverOptions{ServerMode: true})
+	if !reflect.DeepEqual(blocking, []string{"dotfiles-1tif"}) {
+		t.Fatalf("blocking = %v, want the ref (fail-closed)", blocking)
+	}
+	if len(diags) != 1 || diags[0].Reason != "ambiguous prefix (dotfiles_a, dotfiles_b)" {
+		t.Fatalf("diags = %+v, want an ambiguous-prefix diag naming both databases", diags)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("must not query either database for an ambiguous prefix: %v", err)
+	}
+}
+
+func TestResolveExternalRefs_DiscoveryFailureFailsClosed(t *testing.T) {
+	t.Parallel()
+	mock, tx := newResolverMock(t)
+	mock.ExpectQuery(currentDBQueryRegex).
+		WillReturnRows(sqlmock.NewRows([]string{"DATABASE()"}).AddRow("beads"))
+	mock.ExpectQuery(showDatabasesRegex).WillReturnError(errors.New("access denied"))
+
+	refs := []string{"dotfiles-1tif"}
+	blocking, diags := resolveExternalRefs(context.Background(), tx, refs, ExternalResolverOptions{ServerMode: true})
+	if !reflect.DeepEqual(blocking, refs) {
+		t.Fatalf("blocking = %v, want %v (fail-closed on discovery error)", blocking, refs)
+	}
+	if len(diags) != 1 || diags[0].Prefix != "dotfiles" {
+		t.Fatalf("diags = %+v, want one diag attributed to dotfiles", diags)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("query expectations not met: %v", err)
+	}
+}
+
+func TestResolveExternalRefs_TargetQueryErrorFailsClosed(t *testing.T) {
+	t.Parallel()
+	mock, tx := newResolverMock(t)
+	expectDiscovery(mock, "beads", "beads", []rig{{db: "dotfiles", prefix: "dotfiles"}})
+	mock.ExpectQuery(closedIssuesQueryRegex).WillReturnError(errors.New("unknown database 'dotfiles'"))
+
+	refs := []string{"dotfiles-1tif"}
+	blocking, diags := resolveExternalRefs(context.Background(), tx, refs, ExternalResolverOptions{ServerMode: true})
+	if !reflect.DeepEqual(blocking, refs) {
+		t.Fatalf("blocking = %v, want %v (fail-closed on query error)", blocking, refs)
+	}
+	if len(diags) != 1 || diags[0].Prefix != "dotfiles" {
+		t.Fatalf("diags = %+v, want one diag attributed to dotfiles", diags)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("query expectations not met: %v", err)
+	}
+}
+
+func TestResolveExternalRefs_OneQueryPerDatabase(t *testing.T) {
+	t.Parallel()
+	mock, tx := newResolverMock(t)
+	expectDiscovery(mock, "beads", "beads", []rig{{db: "dotfiles", prefix: "dotfiles"}})
+	// Both refs belong to the same database: a single IN query covers them.
+	mock.ExpectQuery(closedIssuesQueryRegex).WithArgs("dotfiles-1tif", "dotfiles-2aaa").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("dotfiles-1tif"))
+
+	blocking, _ := resolveExternalRefs(context.Background(), tx,
+		[]string{"dotfiles-1tif", "dotfiles-2aaa"}, ExternalResolverOptions{ServerMode: true})
+	if !reflect.DeepEqual(blocking, []string{"dotfiles-2aaa"}) {
+		t.Fatalf("blocking = %v, want only the still-open ref", blocking)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expected exactly one satisfaction query: %v", err)
+	}
+}
+
+func TestResolveExternalRefs_LongestPrefixWins(t *testing.T) {
+	t.Parallel()
+	mock, tx := newResolverMock(t)
+	expectDiscovery(mock, "beads", "beads", []rig{
+		{db: "team_alpha", prefix: "team-alpha"},
+		{db: "team_root", prefix: "team"},
+	})
+	// team-alpha-abc123 must route to team_alpha, not to the shorter "team".
+	mock.ExpectQuery("SELECT id FROM .team_alpha..issues").WithArgs("team-alpha-abc123").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("team-alpha-abc123"))
+
+	blocking, diags := resolveExternalRefs(context.Background(), tx,
+		[]string{"team-alpha-abc123"}, ExternalResolverOptions{ServerMode: true})
+	if len(blocking) != 0 {
+		t.Fatalf("blocking = %v, want empty (closed in team_alpha)", blocking)
+	}
+	if len(diags) != 0 {
+		t.Fatalf("diags = %v, want none", diags)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("query expectations not met: %v", err)
 	}
 }
 
@@ -193,16 +255,16 @@ func TestCollectBlockingExternalRefs_UnionDedup(t *testing.T) {
 	mock, tx := newResolverMock(t)
 	mock.ExpectQuery(refCollectRegex).
 		WillReturnRows(sqlmock.NewRows([]string{"depends_on_external"}).
-			AddRow("external:beads:cap-a").AddRow("external:gt:cap-b"))
+			AddRow("dotfiles-1tif").AddRow("UI-kfl4"))
 	mock.ExpectQuery(refCollectRegex).
 		WillReturnRows(sqlmock.NewRows([]string{"depends_on_external"}).
-			AddRow("external:beads:cap-a").AddRow("external:wisp:cap-c"))
+			AddRow("dotfiles-1tif").AddRow("gt-9zz9"))
 
 	refs, err := collectBlockingExternalRefs(context.Background(), tx)
 	if err != nil {
 		t.Fatalf("collectBlockingExternalRefs: %v", err)
 	}
-	want := []string{"external:beads:cap-a", "external:gt:cap-b", "external:wisp:cap-c"}
+	want := []string{"UI-kfl4", "dotfiles-1tif", "gt-9zz9"}
 	if !reflect.DeepEqual(refs, want) {
 		t.Fatalf("refs = %v, want %v (deduped+sorted)", refs, want)
 	}
@@ -214,19 +276,19 @@ func TestCollectBlockingExternalRefs_UnionDedup(t *testing.T) {
 func TestResolveReadyExternalBlocks_EmptyShortCircuit(t *testing.T) {
 	t.Parallel()
 	mock, tx := newResolverMock(t)
-	// Both collection queries return no rows; the resolver must NOT run any
-	// per-project satisfaction query (zero overhead / no cross-db query).
+	// Both collection queries return no rows; the resolver must NOT run
+	// discovery or any satisfaction query (zero overhead / no cross-db query).
 	mock.ExpectQuery(refCollectRegex).WillReturnRows(sqlmock.NewRows([]string{"depends_on_external"}))
 	mock.ExpectQuery(refCollectRegex).WillReturnRows(sqlmock.NewRows([]string{"depends_on_external"}))
 
 	var sinkCalled bool
-	unsatisfied, err := ResolveReadyExternalBlocksInTx(context.Background(), tx,
+	blocking, err := ResolveReadyExternalBlocksInTx(context.Background(), tx,
 		ExternalResolverOptions{ServerMode: true, DiagSink: func([]ExternalDiag) { sinkCalled = true }})
 	if err != nil {
 		t.Fatalf("ResolveReadyExternalBlocksInTx: %v", err)
 	}
-	if len(unsatisfied) != 0 {
-		t.Fatalf("unsatisfied = %v, want empty", unsatisfied)
+	if len(blocking) != 0 {
+		t.Fatalf("blocking = %v, want empty", blocking)
 	}
 	if sinkCalled {
 		t.Fatal("DiagSink must not fire when there are no external refs")
@@ -240,18 +302,18 @@ func TestResolveReadyExternalBlocks_DiagSinkFires(t *testing.T) {
 	t.Parallel()
 	mock, tx := newResolverMock(t)
 	mock.ExpectQuery(refCollectRegex).
-		WillReturnRows(sqlmock.NewRows([]string{"depends_on_external"}).AddRow("external:beads:cap-a"))
+		WillReturnRows(sqlmock.NewRows([]string{"depends_on_external"}).AddRow("dotfiles-1tif"))
 	mock.ExpectQuery(refCollectRegex).
 		WillReturnRows(sqlmock.NewRows([]string{"depends_on_external"}))
 
 	var got []ExternalDiag
-	unsatisfied, err := ResolveReadyExternalBlocksInTx(context.Background(), tx,
+	blocking, err := ResolveReadyExternalBlocksInTx(context.Background(), tx,
 		ExternalResolverOptions{ServerMode: false, DiagSink: func(d []ExternalDiag) { got = d }})
 	if err != nil {
 		t.Fatalf("ResolveReadyExternalBlocksInTx: %v", err)
 	}
-	if !reflect.DeepEqual(unsatisfied, []string{"external:beads:cap-a"}) {
-		t.Fatalf("unsatisfied = %v", unsatisfied)
+	if !reflect.DeepEqual(blocking, []string{"dotfiles-1tif"}) {
+		t.Fatalf("blocking = %v", blocking)
 	}
 	if len(got) != 1 || got[0].Reason != "server mode required" {
 		t.Fatalf("sink diags = %+v, want one server-mode-required diag", got)

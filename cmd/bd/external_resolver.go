@@ -6,20 +6,19 @@ import (
 	"os"
 	"sync"
 
-	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/issueops"
 )
 
-// externalDiagCollector turns the storage resolver's per-project diagnostics
+// externalDiagCollector turns the storage resolver's per-prefix diagnostics
 // (issueops.ExternalResolverOptions.DiagSink) into at most one stderr warning
-// per project across a single CLI invocation.
+// per prefix across a single CLI invocation.
 //
 // bd ready resolves ready work more than once per command — GetReadyWork /
 // GetReadyWorkWithCounts run twice for the truncation probe (ready.go), and the
-// --claim path resolves again — so without per-project dedup the same
-// unresolvable project would warn repeatedly. Storage never prints; it only
+// --claim path resolves again — so without per-prefix dedup the same
+// unresolvable prefix would warn repeatedly. Storage never prints; it only
 // hands unresolvable diagnostics to this sink.
 type externalDiagCollector struct {
 	mu   sync.Mutex
@@ -33,8 +32,8 @@ func newExternalDiagCollector(w io.Writer) *externalDiagCollector {
 
 // sink implements issueops.ExternalResolverOptions.DiagSink.
 //
-// Dedup key is the project; the first diagnostic seen for a project wins (its
-// reason and ref count are printed, later deliveries for the same project are
+// Dedup key is the prefix; the first diagnostic seen for a prefix wins (its
+// reason and ref count are printed, later deliveries for the same prefix are
 // dropped). Only unresolvable refs reach this sink by design — refs that are
 // merely unsatisfied (normally blocked) produce no diagnostic and no output.
 //
@@ -46,12 +45,12 @@ func (c *externalDiagCollector) sink(diags []issueops.ExternalDiag) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, d := range diags {
-		if _, dup := c.seen[d.Project]; dup {
+		if _, dup := c.seen[d.Prefix]; dup {
 			continue
 		}
-		c.seen[d.Project] = struct{}{}
-		fmt.Fprintf(c.w, "warning: external dependency unresolvable (project %s): %s [%d refs]\n",
-			d.Project, d.Reason, len(d.Refs))
+		c.seen[d.Prefix] = struct{}{}
+		fmt.Fprintf(c.w, "warning: external dependency unresolvable (prefix %s): %s [%d refs]\n",
+			d.Prefix, d.Reason, len(d.Refs))
 	}
 }
 
@@ -75,11 +74,7 @@ type externalResolverConfigurable interface {
 // so is this for embedded / owned stores (ServerMode=false): every external ref
 // stays blocking and the resolver never issues a cross-database query.
 func buildExternalResolverOptions(beadsDir string) issueops.ExternalResolverOptions {
-	return issueops.ExternalResolverOptions{
-		ServerMode: externalResolverServerMode(beadsDir),
-		Databases:  config.GetExternalDatabases(),
-		DiagSink:   externalDiag.sink,
-	}
+	return issueops.NewExternalResolverOptions(externalResolverServerMode(beadsDir), externalDiag.sink)
 }
 
 // externalResolverServerMode reports whether cross-database external dependency
@@ -88,7 +83,7 @@ func buildExternalResolverOptions(beadsDir string) issueops.ExternalResolverOpti
 // Source of truth: doltserver.ResolveServerMode (the documented single source
 // of truth for how the server lifecycle is managed). Only ServerModeExternal —
 // a user-managed / shared dolt sql-server — hosts other projects' databases and
-// can satisfy a cross-database `<db>.labels` query. Embedded (in-process,
+// can satisfy a cross-database `<db>.issues` query. Embedded (in-process,
 // single database) and Owned (a beads-auto-started single-project server)
 // cannot reach another project's database, so they stay fail-closed.
 //

@@ -738,6 +738,11 @@ type DependencyCounts struct {
 type IssueWithDependencyMetadata struct {
 	Issue
 	DependencyType DependencyType `json:"dependency_type"`
+	// External marks an edge whose target lives in another rig's database
+	// (stored in depends_on_external). Such entries carry only the target ID
+	// and the edge type — there is no local row to hydrate title/status from,
+	// so renderers must not present fabricated fields.
+	External bool `json:"external,omitempty"`
 }
 
 // IssueWithCounts extends Issue with dependency relationship counts
@@ -1019,7 +1024,7 @@ type BlockedIssue struct {
 }
 
 // ExternalBlocked carries the external-dependency half of a ready explanation.
-// Stored is_blocked is never set for external:<project>:<capability> targets
+// Stored is_blocked is never set for cross-prefix external targets
 // (satisfaction lives in another database and would go stale), so these rows
 // reach the explain assembly separately from GetBlockedIssues. It is transport
 // between storage and the CLI; nothing here is serialized.

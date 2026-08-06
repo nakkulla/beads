@@ -10,10 +10,11 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 )
 
-// TestGetDependenciesWithMetadataInTxSynthesizesExternalRefs verifies that an
-// external:<project>:<capability> dependency target — which has no row in the
-// issues/wisps tables — is surfaced as a synthesized entry rather than silently
-// dropped, so the listed edges stay consistent with the dependency counts.
+// TestGetDependenciesWithMetadataInTxSynthesizesExternalRefs verifies that a
+// cross-prefix dependency target — which has no row in the local issues/wisps
+// tables — is surfaced as a synthesized entry rather than silently dropped, so
+// the listed edges stay consistent with the dependency counts. The edge's
+// stored column decides, not the shape of the ID.
 func TestGetDependenciesWithMetadataInTxSynthesizesExternalRefs(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -22,14 +23,14 @@ func TestGetDependenciesWithMetadataInTxSynthesizesExternalRefs(t *testing.T) {
 	defer db.Close()
 
 	const localID = "loc-blocker"
-	const extRef = "external:beads:cap-a"
+	const extRef = "dotfiles-1tif"
 
 	mock.ExpectBegin()
 	// One local blocking dep + one external blocking ref in the dependencies
 	// table; wisp_dependencies has none.
 	expectDependencies(mock, "root", []dependencyRow{
 		{id: localID, depType: string(types.DepBlocks)},
-		{id: extRef, depType: string(types.DepBlocks)},
+		{id: extRef, depType: string(types.DepBlocks), external: true},
 	})
 	// GetIssuesByIDsInTx: wisps table empty, then the issues batch returns only
 	// the local blocker — the external ref has no backing row.
@@ -89,11 +90,17 @@ func TestGetDependenciesWithMetadataInTxSynthesizesExternalRefs(t *testing.T) {
 		t.Errorf("external entry has fabricated fields: title=%q status=%q priority=%d",
 			extEntry.Title, extEntry.Status, extEntry.Priority)
 	}
+	if !extEntry.External {
+		t.Error("external entry must be marked External so renderers skip issue fields")
+	}
+	if localEntry.External {
+		t.Error("local entry must not be marked External")
+	}
 }
 
 // TestNewExternalDepEntry documents the synthesized-entry field contract.
 func TestNewExternalDepEntry(t *testing.T) {
-	const ref = "external:other-project:cross-cap"
+	const ref = "other-project-9f3a11"
 	e := NewExternalDepEntry(ref, string(types.DepBlocks))
 	if e.ID != ref {
 		t.Errorf("ID = %q, want %q", e.ID, ref)
@@ -104,5 +111,61 @@ func TestNewExternalDepEntry(t *testing.T) {
 	if e.Title != "" || e.Status != "" || e.Priority != 0 || e.IssueType != "" {
 		t.Errorf("expected zero-valued display fields, got title=%q status=%q priority=%d type=%q",
 			e.Title, e.Status, e.Priority, e.IssueType)
+	}
+	if !e.External {
+		t.Error("External = false, want true")
+	}
+}
+
+// TestGetDependenciesWithMetadataInTxExternalColumnWins locks the precedence
+// rule: an edge stored in depends_on_external is external even when a local row
+// happens to carry the same ID, so the renderer never presents another rig's
+// target as a local issue.
+func TestGetDependenciesWithMetadataInTxExternalColumnWins(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	const collidingID = "loc-collide"
+
+	mock.ExpectBegin()
+	expectDependencies(mock, "root", []dependencyRow{
+		{id: collidingID, depType: string(types.DepBlocks), external: true},
+	})
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT 1 FROM wisps LIMIT 1")).
+		WillReturnError(sql.ErrNoRows)
+	// The local table does hydrate a row with this ID — the external column
+	// must still win.
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT " + IssueSelectColumns + " FROM issues WHERE id IN (?)")).
+		WithArgs(collidingID).
+		WillReturnRows(issueRows().AddRow(issueRowValues(collidingID, "Local Impostor")...))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT issue_id, label FROM labels WHERE issue_id IN (?) ORDER BY issue_id, label")).
+		WithArgs(collidingID).
+		WillReturnRows(sqlmock.NewRows([]string{"issue_id", "label"}))
+	mock.ExpectRollback()
+
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("BeginTx: %v", err)
+	}
+	got, err := GetDependenciesWithMetadataInTx(context.Background(), tx, "root")
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("GetDependenciesWithMetadataInTx: %v", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("Rollback: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("len(deps) = %d, want 1: %+v", len(got), got)
+	}
+	if !got[0].External {
+		t.Error("edge stored in depends_on_external must stay External")
+	}
+	if got[0].Title != "" {
+		t.Errorf("external entry must not borrow the colliding local row's title, got %q", got[0].Title)
 	}
 }

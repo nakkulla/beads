@@ -47,21 +47,25 @@ depends on (is blocked by) the specified issue."
 
 The depends-on-id can be:
   - A local issue ID (e.g., bd-xyz)
-  - An external reference: external:&lt;project&gt;:&lt;capability&gt;
+  - A cross-prefix issue ID from another rig (e.g., dotfiles-1tif)
 
 For bulk wiring, pass newline-delimited JSON with --file. Each line must be an
 object with "from" and "to" fields, and may include "type". The aliases
 "issue_id" and "depends_on_id" are also accepted. Use --file - to read stdin.
 
-External references are stored as-is and resolved at query time using
-the external_projects config. They block the issue until the capability
-is "shipped" in the target project.
+Cross-prefix targets are stored as the bare issue ID and resolved at query time
+against the shared Dolt server: the owning database is discovered from each
+database's own issue_prefix, and the dependency clears once that issue is
+closed. The target must already exist when the dependency is added. Resolution
+is fail-closed: the ref keeps blocking whenever the prefix is unknown or
+ambiguous, the target database is unreachable, or storage is not in
+shared-server mode.
 
 Examples:
   bd dep add bd-42 bd-41                              # Positional args
   bd dep add bd-42 --blocked-by bd-41                 # Flag syntax (same effect)
   bd dep add bd-42 --depends-on bd-41                 # Alias (same effect)
-  bd dep add gt-xyz external:beads:mol-run-assignee   # Cross-project dependency
+  bd dep add gt-xyz dotfiles-1tif                     # Cross-prefix dependency
   bd dep add bd-42 bd-41 --no-cycle-check             # Skip cycle check (bulk wiring)
   bd dep add --file deps.jsonl                        # Bulk JSONL: &#123;"from":"bd-42","to":"bd-41"&#125;
 

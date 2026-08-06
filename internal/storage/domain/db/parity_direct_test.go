@@ -475,7 +475,7 @@ func (s *testSuite) TestParityReadyExplainExternalBlocked() {
 	} {
 		_, err := s.Runner().ExecContext(s.Ctx(),
 			"INSERT INTO dependencies (id, issue_id, depends_on_issue_id, depends_on_wisp_id, depends_on_external, type, created_by) VALUES (?, ?, NULL, NULL, ?, 'blocks', 'tester')",
-			row[0], row[1], "external:parity:cap-a")
+			row[0], row[1], "parity-cap0a1")
 		s.Require().NoError(err)
 	}
 	// The mixed row also carries a live local blocker, so it is stored-blocked.
@@ -491,14 +491,14 @@ func (s *testSuite) TestParityReadyExplainExternalBlocked() {
 
 	s.Equal(externalCandidateRefs(classicBlocked), externalCandidateRefs(domainBlocked),
 		"explain external-blocked candidates: same rows and refs")
-	s.Equal(map[string][]string{"bd-par-ext-only": {"external:parity:cap-a"}},
+	s.Equal(map[string][]string{"bd-par-ext-only": {"parity-cap0a1"}},
 		externalCandidateRefs(domainBlocked),
 		"the external-only row is a blocked candidate with the raw ref as its blocker")
 
 	s.Require().NotNil(domainBlocked)
 	s.Equal(classicBlocked.StoredBlockedRefs, domainBlocked.StoredBlockedRefs,
 		"explain stored-blocked refs: same merge material")
-	s.Equal(map[string][]string{"bd-par-ext-mixed": {"external:parity:cap-a"}}, domainBlocked.StoredBlockedRefs,
+	s.Equal(map[string][]string{"bd-par-ext-mixed": {"parity-cap0a1"}}, domainBlocked.StoredBlockedRefs,
 		"a row with both a local blocker and an external ref is merge material, not a new entry")
 
 	for _, c := range domainBlocked.Candidates {

@@ -4,23 +4,24 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 
 	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 )
 
-// isCrossPrefixDep returns true if the two bead IDs have different prefixes,
-// meaning the target lives in a different rig's database.
-func isCrossPrefixDep(sourceID, targetID string) bool {
-	return types.ExtractPrefix(sourceID) != types.ExtractPrefix(targetID)
+// isCrossPrefixDep returns true if the dependency target lives in a different
+// rig's database. The decision is a longest-prefix match against the local
+// issue_prefix plus the prefixes discovered on the shared server, so a
+// hyphen-bearing prefix is classified correctly.
+func (s *DoltStore) isCrossPrefixDep(ctx context.Context, sourceID, targetID string) bool {
+	return issueops.IsCrossPrefixTarget(ctx, s.db, sourceID, targetID, s.externalOpts)
 }
 
 // AddDependency adds a dependency between two issues.
 // Delegates SQL work to issueops.AddDependencyInTx; handles Dolt versioning
 // and cache invalidation.
 func (s *DoltStore) AddDependency(ctx context.Context, dep *types.Dependency, actor string) error {
-	isCrossPrefix := isCrossPrefixDep(dep.IssueID, dep.DependsOnID)
+	isCrossPrefix := s.isCrossPrefixDep(ctx, dep.IssueID, dep.DependsOnID)
 
 	// Route to wisp_dependencies if the source is an active wisp.
 	if s.isActiveWisp(ctx, dep.IssueID) {
@@ -30,7 +31,7 @@ func (s *DoltStore) AddDependency(ctx context.Context, dep *types.Dependency, ac
 	targetTable := "issues"
 	kind := issueops.DepTargetIssue
 	switch {
-	case isCrossPrefix, strings.HasPrefix(dep.DependsOnID, "external:"):
+	case isCrossPrefix:
 		kind = issueops.DepTargetExternal
 	default:
 		if s.isActiveWisp(ctx, dep.DependsOnID) {
@@ -45,6 +46,7 @@ func (s *DoltStore) AddDependency(ctx context.Context, dep *types.Dependency, ac
 			TargetTable:   targetTable,
 			WriteTable:    "dependencies",
 			IsCrossPrefix: isCrossPrefix,
+			External:      s.externalOpts,
 			TargetKind:    &kind,
 		}
 		return issueops.AddDependencyInTx(ctx, tx, dep, actor, opts)
@@ -120,7 +122,8 @@ func (s *DoltStore) GetDependenciesWithMetadata(ctx context.Context, issueID str
 	}
 
 	rows, err := s.queryContext(ctx, fmt.Sprintf(`
-		SELECT %s AS depends_on_id, d.type, d.created_at, d.created_by, d.metadata, d.thread_id
+		SELECT %s AS depends_on_id, d.type, d.created_at, d.created_by, d.metadata, d.thread_id,
+		       d.depends_on_external IS NOT NULL
 		FROM dependencies d
 		WHERE d.issue_id = ?
 	`, issueops.DepTargetExpr), issueID)
@@ -132,18 +135,20 @@ func (s *DoltStore) GetDependenciesWithMetadata(ctx context.Context, issueID str
 	// This avoids connection pool deadlock when MaxOpenConns=1 (embedded dolt).
 	type depMeta struct {
 		depID, depType string
+		external       bool
 	}
 	var deps []depMeta
 	for rows.Next() {
 		var depID, depType, createdBy string
 		var createdAt sql.NullTime
 		var metadata, threadID sql.NullString
+		var external bool
 
-		if err := rows.Scan(&depID, &depType, &createdAt, &createdBy, &metadata, &threadID); err != nil {
+		if err := rows.Scan(&depID, &depType, &createdAt, &createdBy, &metadata, &threadID, &external); err != nil {
 			_ = rows.Close() // Best effort cleanup on error path
 			return nil, fmt.Errorf("failed to scan dependency: %w", err)
 		}
-		deps = append(deps, depMeta{depID: depID, depType: depType})
+		deps = append(deps, depMeta{depID: depID, depType: depType, external: external})
 	}
 	if err := rows.Err(); err != nil {
 		_ = rows.Close() // Best effort cleanup on error path
@@ -171,16 +176,18 @@ func (s *DoltStore) GetDependenciesWithMetadata(ctx context.Context, issueID str
 
 	var results []*types.IssueWithDependencyMetadata
 	for _, d := range deps {
+		// External refs have no local issues/wisps row but are real, counted
+		// edges — synthesize an entry so show/list stay consistent with the
+		// dependency counts (matches
+		// issueops.GetDependenciesWithMetadataInTx). The stored column
+		// decides, so a same-ID local row never masks the external edge.
+		if d.external {
+			results = append(results, issueops.NewExternalDepEntry(d.depID, d.depType))
+			continue
+		}
 		issue, ok := issueMap[d.depID]
 		if !ok {
-			// External refs have no issues/wisps row but are real, counted
-			// edges — synthesize an entry so show/list stay consistent with
-			// the dependency counts (matches
-			// issueops.GetDependenciesWithMetadataInTx). Missing local IDs
-			// stay dropped.
-			if strings.HasPrefix(d.depID, "external:") {
-				results = append(results, issueops.NewExternalDepEntry(d.depID, d.depType))
-			}
+			// Genuinely missing local IDs stay dropped.
 			continue
 		}
 		results = append(results, &types.IssueWithDependencyMetadata{

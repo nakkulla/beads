@@ -49,7 +49,7 @@ func issueTitleOrEmpty(issue *types.Issue) string {
 // lookupTitle returns the title for an issue ID, or empty string on failure.
 // Best-effort lookup for feedback messages — never fails the command.
 func lookupTitle(id string) string {
-	if store == nil || IsExternalRef(id) {
+	if store == nil {
 		return ""
 	}
 	issue, err := store.GetIssue(rootCtx, id)

@@ -235,24 +235,25 @@ depends on (is blocked by) the specified issue."
 
 The depends-on-id can be:
   - A local issue ID (e.g., bd-xyz)
-  - An external reference: external:<project>:<capability>
+  - A cross-prefix issue ID from another rig (e.g., dotfiles-1tif)
 
 For bulk wiring, pass newline-delimited JSON with --file. Each line must be an
 object with "from" and "to" fields, and may include "type". The aliases
 "issue_id" and "depends_on_id" are also accepted. Use --file - to read stdin.
 
-External references are stored as-is and resolved at query time against the
-shared Dolt server using the external_databases config (project -> Dolt
-database name). Resolution is fail-closed: the ref keeps blocking whenever the
-project is unmapped, the target database is unreachable, or storage is not in
-shared-server mode. It clears once the target database has a closed issue
-carrying the matching provides:<capability> label.
+Cross-prefix targets are stored as the bare issue ID and resolved at query time
+against the shared Dolt server: the owning database is discovered from each
+database's own issue_prefix, and the dependency clears once that issue is
+closed. The target must already exist when the dependency is added. Resolution
+is fail-closed: the ref keeps blocking whenever the prefix is unknown or
+ambiguous, the target database is unreachable, or storage is not in
+shared-server mode.
 
 Examples:
   bd dep add bd-42 bd-41                              # Positional args
   bd dep add bd-42 --blocked-by bd-41                 # Flag syntax (same effect)
   bd dep add bd-42 --depends-on bd-41                 # Alias (same effect)
-  bd dep add gt-xyz external:beads:mol-run-assignee   # Cross-project dependency
+  bd dep add gt-xyz dotfiles-1tif                     # Cross-prefix dependency
   bd dep add bd-42 bd-41 --no-cycle-check             # Skip cycle check (bulk wiring)
   bd dep add --file deps.jsonl                        # Bulk JSONL: {"from":"bd-42","to":"bd-41"}`,
 	Args: func(cmd *cobra.Command, args []string) error {
@@ -330,7 +331,9 @@ Examples:
 
 		var fromID, toID string
 
-		isExternalRef := strings.HasPrefix(dependsOnArg, "external:")
+		if err := rejectCapabilityRef(dependsOnArg); err != nil {
+			return HandleErrorRespectJSON("%v", err)
+		}
 
 		// Write-intent: the source issue's store is mutated by AddDependency
 		// below, so the routed source must open writable (#4141). The depends-on
@@ -342,25 +345,20 @@ Examples:
 		}
 		defer fromCleanup()
 
-		if isExternalRef {
-			toID = dependsOnArg
-			if err := validateExternalRef(toID); err != nil {
-				return HandleErrorRespectJSON("%v", err)
+		var toCleanup func()
+		toID, _, toCleanup, err = resolveIDWithRouting(ctx, store, dependsOnArg)
+		if err != nil {
+			srcPrefix := types.ExtractPrefix(fromID)
+			tgtPrefix := types.ExtractPrefix(dependsOnArg)
+			if srcPrefix != "" && tgtPrefix != "" && srcPrefix != tgtPrefix {
+				// Foreign-rig target: keep the bare ID. Storage validates that
+				// it actually exists before the edge is written.
+				toID = dependsOnArg
+			} else {
+				return HandleErrorRespectJSON("resolving dependency ID %s: %v", dependsOnArg, err)
 			}
 		} else {
-			var toCleanup func()
-			toID, _, toCleanup, err = resolveIDWithRouting(ctx, store, dependsOnArg)
-			if err != nil {
-				srcPrefix := types.ExtractPrefix(fromID)
-				tgtPrefix := types.ExtractPrefix(dependsOnArg)
-				if srcPrefix != "" && tgtPrefix != "" && srcPrefix != tgtPrefix {
-					toID = dependsOnArg
-				} else {
-					return HandleErrorRespectJSON("resolving dependency ID %s: %v", dependsOnArg, err)
-				}
-			} else {
-				defer toCleanup()
-			}
+			defer toCleanup()
 		}
 
 		if isChildOf(fromID, toID) {
@@ -630,30 +628,26 @@ func validateBulkDepEdges(ctx context.Context, edges []bulkDepEdge) ([]bulkDepEd
 		current.Store = fromStore
 		current.StoreKey = dependencyStoreKey(fromStore)
 
-		if strings.HasPrefix(edge.DependsOnID, "external:") {
-			if err := validateExternalRef(edge.DependsOnID); err != nil {
-				errs = append(errs, fmt.Sprintf("line %d: %v", edge.Line, err))
+		if err := rejectCapabilityRef(edge.DependsOnID); err != nil {
+			errs = append(errs, fmt.Sprintf("line %d: %v", edge.Line, err))
+			resolved = append(resolved, current)
+			continue
+		}
+		toID, _, toCleanup, err := resolveIDWithRouting(ctx, store, edge.DependsOnID)
+		if err != nil {
+			srcPrefix := types.ExtractPrefix(current.IssueID)
+			tgtPrefix := types.ExtractPrefix(edge.DependsOnID)
+			if srcPrefix != "" && tgtPrefix != "" && srcPrefix != tgtPrefix {
+				toID = edge.DependsOnID
+			} else {
+				errs = append(errs, fmt.Sprintf("line %d: resolving dependency ID %s: %v", edge.Line, edge.DependsOnID, err))
 				resolved = append(resolved, current)
 				continue
 			}
-			current.DependsOnID = edge.DependsOnID
 		} else {
-			toID, _, toCleanup, err := resolveIDWithRouting(ctx, store, edge.DependsOnID)
-			if err != nil {
-				srcPrefix := types.ExtractPrefix(current.IssueID)
-				tgtPrefix := types.ExtractPrefix(edge.DependsOnID)
-				if srcPrefix != "" && tgtPrefix != "" && srcPrefix != tgtPrefix {
-					toID = edge.DependsOnID
-				} else {
-					errs = append(errs, fmt.Sprintf("line %d: resolving dependency ID %s: %v", edge.Line, edge.DependsOnID, err))
-					resolved = append(resolved, current)
-					continue
-				}
-			} else {
-				current.Cleanups = append(current.Cleanups, toCleanup)
-			}
-			current.DependsOnID = toID
+			current.Cleanups = append(current.Cleanups, toCleanup)
 		}
+		current.DependsOnID = toID
 
 		if isChildOf(current.IssueID, current.DependsOnID) {
 			errs = append(errs, fmt.Sprintf("line %d: cannot add dependency: %s is already a child of %s", edge.Line, current.IssueID, current.DependsOnID))
@@ -876,10 +870,10 @@ Examples:
 		}
 
 		for _, iss := range allIssues {
-			// External refs (external:<project>:<capability>) have no backing
-			// issue row — no status/title/priority to show. Render the ref with
-			// an (external) marker instead of fabricated fields.
-			if IsExternalRef(iss.ID) {
+			// External edges have no backing local issue row — no
+			// status/title/priority to show. Render the target ID with an
+			// (external) marker instead of fabricated fields.
+			if iss.External {
 				fmt.Println(externalDepListLine(iss))
 				continue
 			}
@@ -939,13 +933,10 @@ var depRemoveCmd = &cobra.Command{
 		}
 		defer fromCleanup()
 
-		isExternalRef := strings.HasPrefix(args[1], "external:")
-
-		if isExternalRef {
+		// Legacy capability-syntax rows are no longer writable but must stay
+		// removable by their stored value, so they bypass ID routing.
+		if strings.HasPrefix(args[1], "external:") {
 			toID = args[1]
-			if err := validateExternalRef(toID); err != nil {
-				return HandleErrorRespectJSON("%v", err)
-			}
 		} else {
 			var toCleanup func()
 			toID, _, toCleanup, err = resolveIDWithRouting(ctx, store, args[1])
@@ -1340,21 +1331,6 @@ func (r *treeRenderer) renderNode(node *types.TreeNode, children map[string][]*t
 // formatTreeNode formats a single tree node with status, ready indicator, etc.
 // isBlocked indicates the node has open blocking dependencies and should not show [READY].
 func formatTreeNode(node *types.TreeNode, isBlocked bool) string {
-	// Handle external dependencies specially
-	if IsExternalRef(node.ID) {
-		// External deps use their title directly which includes the status indicator
-		var idStr string
-		switch node.Status {
-		case types.StatusClosed:
-			idStr = ui.StatusClosedStyle.Render(node.Title)
-		case types.StatusBlocked:
-			idStr = ui.StatusBlockedStyle.Render(node.Title)
-		default:
-			idStr = node.Title
-		}
-		return fmt.Sprintf("%s (external)", idStr)
-	}
-
 	// Color the ID based on status
 	var idStr string
 	switch node.Status {
@@ -1488,55 +1464,24 @@ func mergeBidirectionalTrees(downTree, upTree []*types.TreeNode, rootID string) 
 	return result
 }
 
-// validateExternalRef validates the format of an external dependency reference.
-// Valid format: external:<project>:<capability>
-func validateExternalRef(ref string) error {
+// rejectCapabilityRef refuses the retired external:<project>:<capability>
+// syntax at the CLI boundary. Cross-project dependencies are now plain issue
+// IDs, so the old form can only be a stale habit or a copied-in doc example —
+// accepting it would store a row nothing can resolve.
+func rejectCapabilityRef(ref string) error {
 	if !strings.HasPrefix(ref, "external:") {
-		return fmt.Errorf("external reference must start with 'external:'")
+		return nil
 	}
-
-	parts := strings.SplitN(ref, ":", 3)
-	if len(parts) != 3 {
-		return fmt.Errorf("invalid external reference format: expected 'external:<project>:<capability>', got '%s'", ref)
-	}
-
-	project := parts[1]
-	capability := parts[2]
-
-	if project == "" {
-		return fmt.Errorf("external reference missing project name")
-	}
-	if capability == "" {
-		return fmt.Errorf("external reference missing capability name")
-	}
-
-	return nil
-}
-
-// IsExternalRef returns true if the dependency reference is an external reference.
-func IsExternalRef(ref string) bool {
-	return strings.HasPrefix(ref, "external:")
+	return fmt.Errorf("external reference %q is no longer supported: specify the target issue ID directly (e.g. bd dep add <issue> dotfiles-1tif)", ref)
 }
 
 // externalDepListLine renders a dep-list line for a synthesized external
-// dependency entry. External refs have no backing issue row, so only the ref,
-// an (external) marker, and the edge type are shown — never fabricated
-// status/title/priority. Shared by the direct and proxied-server list paths.
+// dependency entry. External refs have no backing local issue row, so only the
+// target ID, an (external) marker, and the edge type are shown — never
+// fabricated status/title/priority. Shared by the direct and proxied-server
+// list paths.
 func externalDepListLine(iss *types.IssueWithDependencyMetadata) string {
 	return fmt.Sprintf("  %s %s via %s", iss.ID, ui.RenderMuted("(external)"), iss.DependencyType)
-}
-
-// ParseExternalRef parses an external reference into project and capability.
-// Returns empty strings if the format is invalid.
-func ParseExternalRef(ref string) (project, capability string) {
-	if !IsExternalRef(ref) {
-		return "", ""
-	}
-	parts := strings.SplitN(ref, ":", 3)
-	if len(parts) != 3 {
-		return "", ""
-	}
-	return parts[1], parts[2]
 }
 
 func init() {

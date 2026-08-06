@@ -60,7 +60,7 @@ func TestIsContainerKey(t *testing.T) {
 	}{
 		{"directory.labels", true},
 		{"external_projects", true},
-		{"external_databases", true},
+		{"external_databases", false},
 		{"repos", true},
 		{"actor", false},
 		{"backup.enabled", false},

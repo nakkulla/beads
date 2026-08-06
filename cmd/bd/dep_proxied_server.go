@@ -26,9 +26,6 @@ func openDepProxiedUOW(ctx context.Context) uow.UnitOfWork {
 }
 
 func proxiedLookupTitle(ctx context.Context, uw uow.UnitOfWork, id string) string {
-	if IsExternalRef(id) {
-		return ""
-	}
 	issue, err := uw.IssueUseCase().GetIssue(ctx, id)
 	if err == nil && issue != nil {
 		return issue.Title
@@ -136,15 +133,10 @@ func runDepAddProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 	}
 
 	fromID := args[0]
-	var toID string
-	if strings.HasPrefix(dependsOnArg, "external:") {
-		if err := validateExternalRef(dependsOnArg); err != nil {
-			FatalErrorRespectJSON("%v", err)
-		}
-		toID = dependsOnArg
-	} else {
-		toID = dependsOnArg
+	if err := rejectCapabilityRef(dependsOnArg); err != nil {
+		FatalErrorRespectJSON("%v", err)
 	}
+	toID := dependsOnArg
 
 	if isChildOf(fromID, toID) {
 		FatalErrorRespectJSON("cannot add dependency: %s is already a child of %s. Children inherit dependency on parent completion via hierarchy. Adding an explicit dependency would create a deadlock", fromID, toID)
@@ -206,10 +198,8 @@ func runDepAddBulkProxied(cmd *cobra.Command, ctx context.Context, file, default
 		if isChildOf(edge.IssueID, edge.DependsOnID) {
 			FatalErrorRespectJSON("line %d: cannot add dependency: %s is already a child of %s", edge.Line, edge.IssueID, edge.DependsOnID)
 		}
-		if strings.HasPrefix(edge.DependsOnID, "external:") {
-			if err := validateExternalRef(edge.DependsOnID); err != nil {
-				FatalErrorRespectJSON("line %d: %v", edge.Line, err)
-			}
+		if err := rejectCapabilityRef(edge.DependsOnID); err != nil {
+			FatalErrorRespectJSON("line %d: %v", edge.Line, err)
 		}
 		deps = append(deps, &types.Dependency{
 			IssueID:     edge.IssueID,
@@ -259,11 +249,6 @@ func runDepAddBulkProxied(cmd *cobra.Command, ctx context.Context, file, default
 func runDepRemoveProxiedServer(_ *cobra.Command, ctx context.Context, args []string) {
 	fromID := args[0]
 	toID := args[1]
-	if strings.HasPrefix(toID, "external:") {
-		if err := validateExternalRef(toID); err != nil {
-			FatalErrorRespectJSON("%v", err)
-		}
-	}
 
 	uw := openDepProxiedUOW(ctx)
 	defer uw.Close(ctx)
@@ -388,10 +373,10 @@ func runDepListProxiedServer(cmd *cobra.Command, ctx context.Context, args []str
 	}
 
 	for _, iss := range allIssues {
-		// External refs (external:<project>:<capability>) have no backing
-		// issue row — no status/title/priority to show (same contract as the
-		// direct-path loop in dep.go).
-		if IsExternalRef(iss.ID) {
+		// External edges have no backing local issue row — no
+		// status/title/priority to show (same contract as the direct-path
+		// loop in dep.go).
+		if iss.External {
 			fmt.Println(externalDepListLine(iss))
 			continue
 		}

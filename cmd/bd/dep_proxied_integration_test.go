@@ -340,7 +340,7 @@ func TestProxiedServerDep(t *testing.T) {
 			}
 		})
 
-		t.Run("bulk_external_ref_passthrough", func(t *testing.T) {
+		t.Run("bulk_capability_ref_rejected", func(t *testing.T) {
 			p := bdProxiedInit(t, bd, "dpa15")
 			src := bdProxiedCreate(t, bd, p.dir, "Ext src", "--type", "task")
 			input := fmt.Sprintf("{\"from\":%q,\"to\":\"external:other:capability\"}\n", src.ID)
@@ -349,14 +349,11 @@ func TestProxiedServerDep(t *testing.T) {
 			cmd.Env = bdProxiedEnv(p.dir)
 			cmd.Stdin = strings.NewReader(input)
 			out, err := cmd.CombinedOutput()
-			if err != nil {
-				if !strings.Contains(string(out), "external") {
-					t.Fatalf("external-ref bulk add failed without a clear external-ref error: %v\n%s", err, out)
-				}
-				return
+			if err == nil {
+				t.Fatalf("capability-syntax bulk add must fail: %s", out)
 			}
-			if !strings.Contains(string(out), "Added 1 dependencies") {
-				t.Fatalf("expected 1-edge bulk add summary or clear external-ref error: %s", out)
+			if !strings.Contains(string(out), "no longer supported") {
+				t.Fatalf("expected a retired-syntax rejection, got: %s", out)
 			}
 		})
 	})

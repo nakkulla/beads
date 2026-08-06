@@ -545,7 +545,7 @@ func TestPR4107Migration0047ExecutesLegacyWispDependencySplit(t *testing.T) {
 	replaceWispDependenciesWithLegacyShape(t, ctx, store)
 	insertLegacyWispDependency(t, ctx, store, "pr4107-legacy-blocked-wisp-parent", "pr4107-legacy-issue-target", types.DepBlocks)
 	insertLegacyWispDependency(t, ctx, store, "pr4107-legacy-wisp-source", "pr4107-legacy-wisp-target", types.DepBlocks)
-	insertLegacyWispDependency(t, ctx, store, "pr4107-legacy-external-source", "external:pr4107", types.DepBlocks)
+	insertLegacyWispDependency(t, ctx, store, "pr4107-legacy-external-source", "legacyext-pr4107", types.DepBlocks)
 	insertLegacyWispDependency(t, ctx, store, "pr4107-legacy-active-child", "pr4107-legacy-spawner", types.DepParentChild)
 	if _, err := store.db.ExecContext(ctx, `
 		UPDATE issues
@@ -559,7 +559,7 @@ func TestPR4107Migration0047ExecutesLegacyWispDependencySplit(t *testing.T) {
 
 	assertWispDependencyTarget(t, ctx, store, "pr4107-legacy-blocked-wisp-parent", "pr4107-legacy-issue-target", "", "")
 	assertWispDependencyTarget(t, ctx, store, "pr4107-legacy-wisp-source", "", "pr4107-legacy-wisp-target", "")
-	assertWispDependencyTarget(t, ctx, store, "pr4107-legacy-external-source", "", "", "external:pr4107")
+	assertWispDependencyTarget(t, ctx, store, "pr4107-legacy-external-source", "", "", "legacyext-pr4107")
 	assertWispDependencyTarget(t, ctx, store, "pr4107-legacy-active-child", "", "pr4107-legacy-spawner", "")
 	assertWispDependencyPrimaryKey(t, ctx, store, []string{"issue_id", "depends_on_id"})
 	for _, indexName := range []string{

@@ -971,7 +971,7 @@ func TestProtocol_LabelAddRemoveRoundTrip(t *testing.T) {
 //
 // FINDING: computeBlockedIDs() in queries.go only marks issues blocked if BOTH
 // issue AND blocker are in the local activeIDs map. External blockers (e.g.
-// "external:project:capability") are never in activeIDs, so issues blocked by
+// a cross-prefix issue ID) are never in activeIDs, so issues blocked by
 // external deps silently appear in bd ready as if unblocked.
 //
 // Classification: DECISION — maintainer must decide whether external blockers
@@ -984,7 +984,7 @@ func TestDiscovery_ExternalBlockerIgnoredByReady(t *testing.T) {
 	blocker := w.create("--title", "Local blocker", "--type", "task", "--priority", "1")
 
 	// Add an external blocker to a
-	w.run("dep", "add", a, "external:otherproject:some-capability", "--type", "blocks")
+	w.run("dep", "add", a, "otherproject-9f3a11", "--type", "blocks")
 
 	// Add a local blocker to b (control group)
 	w.run("dep", "add", b, blocker, "--type", "blocks")

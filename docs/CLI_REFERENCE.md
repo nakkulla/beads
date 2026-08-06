@@ -285,7 +285,6 @@ Reference for bd Latest. Generated from `bd help --all`.
 - [bd orphans](#bd-orphans) — Identify orphaned issues (referenced in commits but still open)
 - [bd ready](#bd-ready) — Show ready work (open, no active blockers)
 - [bd rename](#bd-rename) — Rename an issue ID
-- [bd ship](#bd-ship) — Publish a capability for cross-project dependencies
 - [bd undefer](#bd-undefer) — Undefer one or more issues (restore to open)
 - [bd version](#bd-version) — Print version information
 
@@ -1811,21 +1810,25 @@ depends on (is blocked by) the specified issue."
 
 The depends-on-id can be:
   - A local issue ID (e.g., bd-xyz)
-  - An external reference: external:&lt;project&gt;:&lt;capability&gt;
+  - A cross-prefix issue ID from another rig (e.g., dotfiles-1tif)
 
 For bulk wiring, pass newline-delimited JSON with --file. Each line must be an
 object with "from" and "to" fields, and may include "type". The aliases
 "issue_id" and "depends_on_id" are also accepted. Use --file - to read stdin.
 
-External references are stored as-is and resolved at query time using
-the external_projects config. They block the issue until the capability
-is "shipped" in the target project.
+Cross-prefix targets are stored as the bare issue ID and resolved at query time
+against the shared Dolt server: the owning database is discovered from each
+database's own issue_prefix, and the dependency clears once that issue is
+closed. The target must already exist when the dependency is added. Resolution
+is fail-closed: the ref keeps blocking whenever the prefix is unknown or
+ambiguous, the target database is unreachable, or storage is not in
+shared-server mode.
 
 Examples:
   bd dep add bd-42 bd-41                              # Positional args
   bd dep add bd-42 --blocked-by bd-41                 # Flag syntax (same effect)
   bd dep add bd-42 --depends-on bd-41                 # Alias (same effect)
-  bd dep add gt-xyz external:beads:mol-run-assignee   # Cross-project dependency
+  bd dep add gt-xyz dotfiles-1tif                     # Cross-prefix dependency
   bd dep add bd-42 bd-41 --no-cycle-check             # Skip cycle check (bulk wiring)
   bd dep add --file deps.jsonl                        # Bulk JSONL: &#123;"from":"bd-42","to":"bd-41"&#125;
 
@@ -6766,6 +6769,10 @@ GetReadyWork API which applies blocker-aware semantics to find truly claimable w
 
 Note: 'bd list --ready' uses the same blocker-aware ready-work semantics.
 
+Note: unresolved cross-prefix dependencies keep an issue out of ready work
+(fail-closed unless the target issue is closed in its own database on the
+shared Dolt server).
+
 Use --mol to filter to a specific molecule's steps:
   bd ready --mol bd-patrol   # Show ready steps within molecule
 
@@ -6827,37 +6834,6 @@ Note: The new ID must use a valid prefix for this database.
 
 ```
 bd rename <old-id> <new-id>
-```
-
-### bd ship
-
-Ship a capability to satisfy cross-project dependencies.
-
-This command:
-  1. Finds issue with export:&lt;capability&gt; label
-  2. Validates issue is closed (or --force to override)
-  3. Adds provides:&lt;capability&gt; label
-
-External projects can depend on this capability using:
-  bd dep add &lt;issue&gt; external:&lt;project&gt;:&lt;capability&gt;
-
-The capability is resolved when the external project has a closed issue
-with the provides:&lt;capability&gt; label.
-
-Examples:
-  bd ship mol-run-assignee              # Ship the mol-run-assignee capability
-  bd ship mol-run-assignee --force      # Ship even if issue is not closed
-  bd ship mol-run-assignee --dry-run    # Preview without making changes
-
-```
-bd ship <capability> [flags]
-```
-
-**Flags:**
-
-```
-      --dry-run   Preview without making changes
-      --force     Ship even if issue is not closed
 ```
 
 ### bd undefer

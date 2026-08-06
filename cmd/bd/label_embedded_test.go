@@ -318,9 +318,16 @@ func TestEmbeddedLabel(t *testing.T) {
 		bdLabelFail(t, bd, dir, "add", issue.ID, "")
 	})
 
-	t.Run("label_add_reserved_provides", func(t *testing.T) {
-		issue := bdCreate(t, bd, dir, "Reserved label", "--type", "task")
-		bdLabelFail(t, bd, dir, "add", issue.ID, "provides:auth")
+	// provides: was reserved for the retired capability model. With that model
+	// gone it is an ordinary label again, and this reversal is what keeps the
+	// removal from being "green because the test was deleted".
+	t.Run("label_add_provides_is_an_ordinary_label", func(t *testing.T) {
+		issue := bdCreate(t, bd, dir, "Provides label", "--type", "task")
+		bdLabel(t, bd, dir, "add", issue.ID, "provides:auth")
+		out := bdLabel(t, bd, dir, "list", issue.ID)
+		if !strings.Contains(out, "provides:auth") {
+			t.Errorf("provides:auth must be accepted as a normal label, got: %s", out)
+		}
 	})
 }
 

@@ -124,8 +124,6 @@
 20 16 TestEmbeddedSearchConcurrent
 20 17 TestEmbeddedSetup
 20 18 TestEmbeddedSetupConcurrent
-20 19 TestEmbeddedShip
-20 20 TestEmbeddedShipConcurrent
 20 1 TestEmbeddedShow
 20 2 TestEmbeddedShowConcurrent
 20 3 TestEmbeddedStale

@@ -29,7 +29,9 @@ func TestIsYamlOnlyKey(t *testing.T) {
 		{"directory.labels", true},
 		{"repos.primary", true},
 		{"external_projects.beads", true},
-		{"external_databases.beads", true},
+		// external_databases was removed with the capability model; prefix ->
+		// database resolution is discovered from the shared server instead.
+		{"external_databases.beads", false},
 
 		// Hierarchy settings (GH#995)
 		{"hierarchy.max-depth", true},

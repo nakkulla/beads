@@ -86,8 +86,8 @@ bd create "Fix button" --repo backend-repo
 Track dependencies across repos:
 
 ```bash
-# In frontend-repo
-bd dep add bd-42 external:backend-repo/bd-100
+# In frontend-repo (backend-repo's issue ID, resolved by its prefix)
+bd dep add bd-42 be-100abc
 
 # View cross-repo deps
 bd dep tree bd-42 --cross-repo

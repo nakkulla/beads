@@ -236,38 +236,33 @@ bd mol distill bd-abc --var feature_name=auth-refactor --var version=1.0.0
 
 ### Concept
 
-Projects can depend on capabilities shipped by other projects:
+Projects can depend on issues owned by other projects, by their issue ID:
 
 ```bash
-# Project A ships a capability
-bd ship auth-api                # Marks capability as available
-
-# Project B depends on it
-bd dep add bd-123 external:project-a:auth-api
+# Project B depends on project A's issue
+bd dep add bd-123 pa-9f3a11
 ```
 
-### Shipping Capabilities
+There is no capability vocabulary and nothing to register: on a shared Dolt
+server, each rig records its own `issue_prefix`, so `pa-` resolves to project
+A's database automatically.
+
+### Depending on Another Project's Issue
 
 ```bash
-bd ship <capability>            # Ship capability (requires closed issue)
-bd ship <capability> --force    # Ship even if issue not closed
-bd ship <capability> --dry-run  # Preview
+bd dep add <issue> <foreign-issue-id>
 ```
 
-**How it works:**
-1. Find issue with `export:<capability>` label
-2. Validate issue is closed
-3. Add `provides:<capability>` label
+The dependency is satisfied when that issue is **closed** in its own database.
+`resolved` does not satisfy it — a PR-delivered issue is not merged work.
 
-### Depending on External Capabilities
+`bd dep add` rejects a target it cannot resolve (unknown or ambiguous prefix,
+missing issue, or a workspace not attached to the shared server), so a typo
+fails at write time rather than blocking forever.
 
-```bash
-bd dep add <issue> external:<project>:<capability>
-```
-
-The dependency is satisfied when the external project has a closed issue with `provides:<capability>` label.
-
-**`bd ready` respects external deps:** Issues blocked by unsatisfied external dependencies won't appear in ready list.
+**`bd ready` respects external deps:** Issues blocked by unsatisfied external
+dependencies won't appear in the ready list, and unresolvable refs block too
+(fail-closed).
 
 ---
 
@@ -334,7 +329,6 @@ bd mol distill bd-release-epic --as "Release Process" --var version=X.Y.Z
 | `bd mol wisp list` | List all wisps |
 | `bd mol wisp gc` | Garbage collect orphaned wisps |
 | `bd mol wisp gc --closed` | Purge all closed wisps (preview; use --force to delete) |
-| `bd ship <capability>` | Publish capability for cross-project deps |
 
 ---
 
@@ -353,5 +347,5 @@ bd mol distill bd-release-epic --as "Release Process" --var version=X.Y.Z
 - Check `bd mol wisp list` for active wisps
 
 **"External dependency not satisfied"**
-- Target project must have closed issue with `provides:<capability>` label
-- Use `bd ship <capability>` in target project first
+- The target issue must be **closed** in its own rig (`resolved` is not enough)
+- `bd ready --explain` shows the blocking refs and any unresolvable prefixes

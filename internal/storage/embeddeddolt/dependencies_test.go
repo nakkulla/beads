@@ -249,23 +249,7 @@ func TestAddDependency(t *testing.T) {
 		}
 	})
 
-	t.Run("external_ref_skips_target_validation", func(t *testing.T) {
-		te := newTestEnv(t, "er")
-		ctx := t.Context()
-
-		a := &types.Issue{ID: "er-a", Title: "A", Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask}
-		if err := te.store.CreateIssue(ctx, a, "tester"); err != nil {
-			t.Fatalf("CreateIssue A: %v", err)
-		}
-
-		// external: prefix should skip target existence check.
-		dep := &types.Dependency{IssueID: "er-a", DependsOnID: "external:other-repo/issue-1", Type: types.DepBlocks}
-		if err := te.store.AddDependency(ctx, dep, "tester"); err != nil {
-			t.Fatalf("AddDependency with external ref: %v", err)
-		}
-	})
-
-	t.Run("cross_prefix_skips_target_validation", func(t *testing.T) {
+	t.Run("cross_prefix_rejected_without_server_mode", func(t *testing.T) {
 		te := newTestEnv(t, "cp")
 		ctx := t.Context()
 
@@ -274,10 +258,15 @@ func TestAddDependency(t *testing.T) {
 			t.Fatalf("CreateIssue A: %v", err)
 		}
 
-		// Target has a different prefix — lives in another rig's database.
+		// Target lives in another rig's database, which an embedded store
+		// cannot reach — the edge must be refused, not stored unresolvable.
 		dep := &types.Dependency{IssueID: "cp-a", DependsOnID: "other-xyz", Type: types.DepBlocks}
-		if err := te.store.AddDependency(ctx, dep, "tester"); err != nil {
-			t.Fatalf("AddDependency cross-prefix: %v", err)
+		err := te.store.AddDependency(ctx, dep, "tester")
+		if err == nil {
+			t.Fatal("AddDependency must reject an unresolvable cross-prefix target")
+		}
+		if !strings.Contains(err.Error(), "shared-server mode") {
+			t.Errorf("expected a shared-server-mode rejection, got: %v", err)
 		}
 	})
 
