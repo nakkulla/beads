@@ -2,11 +2,29 @@ package fix
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
+	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/doltserver"
 )
+
+// sharedServerConfiguredForTarget answers "is the rig at beadsDir a
+// shared-server rig", scoped to that rig.
+//
+// doltserver.IsSharedServerMode consults the process-wide viper view, which
+// under `bd doctor <other-repo>` answers for the caller — but this fixer writes
+// to the target. Reading the target's own config.yaml keeps a foreign caller's
+// setting from deciding what gets pinned into another repo's git-tracked
+// metadata.json.
+func sharedServerConfiguredForTarget(beadsDir string) bool {
+	if v := os.Getenv("BEADS_DOLT_SHARED_SERVER"); v == "1" || strings.EqualFold(v, "true") {
+		return true
+	}
+	v := config.GetStringFromDirAnyShape(beadsDir, "dolt.shared-server")
+	return v == "1" || strings.EqualFold(v, "true")
+}
 
 // ExternalLifecyclePinReport describes whether a rig still relies on
 // dolt_server_port alone to be classified as externally managed, and can
@@ -43,10 +61,11 @@ type ExternalLifecyclePinReport struct {
 func InspectExternalLifecyclePin(beadsDir string) ExternalLifecyclePinReport {
 	report := ExternalLifecyclePinReport{}
 
-	if doltserver.IsSharedServerMode() {
-		// Shared-server rigs resolve External from runtime env/config.yaml, and
-		// metadata.json is git-tracked, so pinning here would propagate the
-		// verdict to clones that have no shared server.
+	// Either view saying "shared" is enough to stand down: pinning a shared rig
+	// is the harmful direction (metadata.json is git-tracked, so the verdict
+	// would propagate to clones that have no shared server), while skipping a
+	// rig that turns out not to be shared only defers the migration.
+	if doltserver.IsSharedServerMode() || sharedServerConfiguredForTarget(beadsDir) {
 		report.SkipReason = "shared-server mode (the lifecycle verdict is not owned by this rig)"
 		return report
 	}

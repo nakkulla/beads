@@ -1,6 +1,7 @@
 package fix
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -90,6 +91,39 @@ func TestInspectExternalLifecyclePin_SkipsSharedServer(t *testing.T) {
 	}
 	if !strings.Contains(report.SkipReason, "shared-server") {
 		t.Errorf("SkipReason = %q, want it to mention shared-server", report.SkipReason)
+	}
+}
+
+// TestInspectExternalLifecyclePin_SkipsSharedServerConfiguredOnTarget is the
+// foreign-target case: `bd doctor <other-repo> --fix` must read the target's own
+// config.yaml, not the caller's process-wide view, before writing a marker into
+// the target's git-tracked metadata.json.
+func TestInspectExternalLifecyclePin_SkipsSharedServerConfiguredOnTarget(t *testing.T) {
+	tmpDir := seedLifecycleRig(t, configfile.DoltModeServer, 13307, "")
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"),
+		[]byte("dolt:\n  shared-server: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The process view is deliberately left alone: only the target says shared.
+	if doltserver.IsSharedServerMode() {
+		t.Fatal("precondition: the process view must not already report shared-server mode")
+	}
+
+	report := InspectExternalLifecyclePin(beadsDir)
+	if report.Applicable {
+		t.Fatal("Applicable = true for a target rig configured as shared-server")
+	}
+	if !strings.Contains(report.SkipReason, "shared-server") {
+		t.Errorf("SkipReason = %q, want it to mention shared-server", report.SkipReason)
+	}
+
+	if err := ExternalLifecyclePin(tmpDir); err == nil {
+		t.Error("ExternalLifecyclePin succeeded on a shared-server target")
+	}
+	if _, present := rawMetadata(t, tmpDir)["dolt_server_lifecycle"]; present {
+		t.Error("dolt_server_lifecycle was written into a shared-server rig")
 	}
 }
 
