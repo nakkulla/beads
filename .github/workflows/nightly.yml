@@ -103,3 +103,35 @@ jobs:
         with:
           file: ./coverage.out
           fail_ci_if_error: false
+
+  # Embedded Dolt storage suite, moved here from the disabled Main workflow's
+  # post-merge matrix: the suite takes ~20m (each test opens a real embedded
+  # Dolt), which is too slow for the push/PR lanes but harmless nightly.
+  # Semantics mirror Main's "Test (Embedded Dolt Storage)" job, with the
+  # test timeout raised from the 20m it had outgrown.
+  embedded-storage:
+    name: Embedded Dolt Storage
+    if: ${{ github.event_name == 'schedule' || inputs.suite == 'full-test' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Configure Git
+        run: |
+          git config --global user.name "CI Bot"
+          git config --global user.email "ci@beads.test"
+
+      - name: Build embedded storage test binary
+        run: go test -tags gms_pure_go -race -c -o /tmp/embeddeddolt-test ./internal/storage/embeddeddolt/
+
+      - name: Test
+        env:
+          BEADS_TEST_EMBEDDED_DOLT: "1"
+          BEADS_TEST_EMBEDDED_TEST_BINARY: /tmp/embeddeddolt-test
+        run: /tmp/embeddeddolt-test -test.v -test.count=1 -test.timeout=40m
