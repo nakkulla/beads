@@ -304,7 +304,7 @@ func commentOutFlatKeyLines(lines []string, key string) {
 // exactly, depth included, so a deeper key with the same leaf name (a.x.b for
 // key a.b) is not mistaken for the target.
 //
-// This is a line walk rather than a yaml.Node round-trip on purpose: marshalling
+// This is a line walk rather than a yaml.Node round-trip on purpose: marshaling
 // the document back out would reflow indentation, quoting, and comment
 // placement across every unrelated key in the file.
 func commentOutNestedKeyLines(lines []string, parts []string) {
