@@ -32,7 +32,7 @@ bd-revert(905줄)·bd-recover 스킬은 bd에 기계 판독 표면이 없어 스
 - `--issue` 지정 시 `<name>` 생략 가능: name/branch 기본값 = 이슈 ID(플릿 네이밍 관례 basename == branch == Bead ID와 일치). `--issue` 없이는 기존과 동일하게 `<name>` 필수.
 - 동작 순서: ① 이슈 존재 검증(스토리지 조회; 없으면 워크트리 생성 전에 실패) → ② 이슈의 기존 `metadata.branch` 검사 — 이미 다른 값이 있으면 힌트와 함께 거부(변경은 명시적 `bd update --set-metadata branch=...`로 유도) → ③ git worktree 생성(기존 로직 그대로) → ④ 성공 후 `metadata.branch=<branch>` 기록.
 - ④ 기록이 실패해도 생성된 워크트리는 롤백하지 않고 남기며, 수동 기록 힌트와 함께 에러를 보고한다(부분 성공을 성공으로 덮지 않음).
-- `--json` 출력에 `issue_id` 필드 추가. 기존 `metadata.branch`와 같은 값을 재기록하는 재실행은 충돌로 보지 않는다(멱등).
+- `--json` 출력에 `issue_id` 필드 추가. 멱등 범위는 ② metadata 충돌 검사에 한정: 이슈의 기존 `metadata.branch`가 새 branch와 같은 값이면 충돌로 보지 않고 통과한다. 전체 create 재실행은 기존과 동일하게 ③ 이전의 `path already exists` 검사에서 실패한다(기존 계약 유지 — 재실행 성공 계약을 새로 만들지 않음).
 
 **`bd worktree list --json` enrichment**
 
@@ -62,7 +62,12 @@ bd-revert(905줄)·bd-recover 스킬은 bd에 기계 판독 표면이 없어 스
 - `worktree`는 `git worktree list --porcelain`(CWD repo, 기존 `parseWorktreeList` 재사용) 실행 후 브랜치 정확 매칭으로 계산. `metadata.branch`가 없으면 브랜치명 == 이슈 ID 폴백 — list와 동일한 해석기를 공유한다. 매칭 없으면 `worktree: null`. `exists`는 경로 존재 여부(`os.Stat`).
 - git 실행 실패(리포 밖 등)는 전체 실패가 아니라 `worktree: null` + stderr 경고로 degrade — 스냅샷은 부분 정보라도 반환해야 revert가 진행된다.
 - `--links`는 `--json`이 주 계약이며 human 모드에서는 간단한 Links 섹션을 추가 표시한다. `--as-of`와 조합 시 `links`는 항상 현재 시점 계산임을 help 텍스트에 명시한다.
-- 목표 소비 형태: `bd show <id> --json --children --links` 1콜 + 스킬 쪽 `gh pr view` 1콜. 이것으로 `inspect_revert_target.py`의 bd/git 수집 전부와 PR 폴백 매칭(`gh pr list --head`)의 필요가 사라진다 — pr_url이 기록 규약으로 안정 공급되기 때문.
+- **`--children`과의 조합 계약**: 현행 `--children`은 이슈 JSON을 대체하는 children 전용 출력 모드(`showIssueChildren` 조기 반환)이므로 `--links`는 direct 이슈 JSON 경로 전용이다. `--children --links` 동시 지정은 플래그 충돌 에러로 거부한다. `--children` 단독의 기존 출력 형태는 변경하지 않는다.
+- 목표 소비 형태: `bd show <id> --json --links` + `bd children <id> --json` 2콜 + 스킬 쪽 `gh pr view` 1콜(기존 5개 명령 → 3콜). PR 폴백 매칭(`gh pr list --head`)의 필요가 사라진다 — pr_url이 기록 규약으로 안정 공급되기 때문.
+
+### 스토리지 모드 처리 (proxied 포함)
+
+이 스펙이 신설하는 DB 접점 3곳 — `worktree create --issue`의 이슈 검증·metadata 기록, `worktree list` enrichment의 이슈 조회, `show --links`의 metadata 읽기 — 은 기존 모드 분기(`usesProxiedServer()`, `show.go`·`update.go` 선례)를 따라 embedded/server/proxied 세 모드에서 모두 동작해야 한다. `runShowProxiedServer` 등 proxied 전용 경로에도 `--links`·`--children --links` 거부 계약을 동일하게 반영하고, `worktree create --issue`의 검증·기록은 proxied에서 update와 같은 UOW 경로를 쓴다. proxied 테스트 미러는 Test scope 5 참조.
 
 ### 항목 3: `bd update --unset-metadata-prefix <prefix>`
 
@@ -79,31 +84,34 @@ bd-revert(905줄)·bd-recover 스킬은 bd에 기계 판독 표면이 없어 스
 | `create --issue` 기존 branch 충돌 | 거부 + `--set-metadata` 힌트 |
 | `create --issue` metadata 기록 실패 | 워크트리 유지 + 에러 보고(수동 기록 힌트) |
 | `show --links` git 표면 실패 | `worktree: null` + stderr 경고, 명령은 성공 |
+| `show --children --links` 동시 지정 | 플래그 충돌 에러 |
 | `list` 복수 이슈 동일 branch | ID 정렬 첫 항목 + stderr 경고 |
 | `--unset-metadata-prefix ""` | 에러 |
 | `--unset-metadata-prefix` + `--metadata` | 기존 배타 규칙대로 에러 |
 
 ## Test scope (RED-GREEN seams)
 
-command-level seam, 기존 embedded 테스트 하네스(`worktree_cmd_test.go`, `update_embedded_test.go`, show 테스트) 기준:
+command-level seam. 하네스 게이트 사실: `worktree_cmd_test.go`는 기본 실행(env 게이트 없음), `update_embedded_test.go`는 `BEADS_TEST_EMBEDDED_DOLT=1` 게이트(nightly 이관, 3c2bf4603), proxied 스위트는 `BEADS_TEST_PROXIED_SERVER=1` 게이트(`proxied_integration_helpers_test.go:30`) + `//go:build cgo` 제약(canonical `-tags gms_pure_go` 빌드에선 컴파일 대상 제외). **각 시임은 기본 실행되는 하네스에 우선 배치하고, env 게이트 하네스에만 놓이는 시임은 아래 검증 섹션의 focused 명령으로 반드시 실행한다** — 게이트 뒤에서 skip되는 공허한 GREEN을 수용 증거로 삼지 않는다.
 
-1. `worktree create --issue`: 정상 링크 기록(readback으로 `metadata.branch` 확인) / 이슈 없음 실패 / 기존 branch 충돌 거부 / 같은 값 재실행 멱등 / name 생략 시 이슈 ID 기본값.
+1. `worktree create --issue`: 정상 링크 기록(readback으로 `metadata.branch` 확인) / 이슈 없음 실패 / 기존 branch 충돌 거부 / 같은 값은 충돌 검사 통과(전체 재실행은 `path already exists`로 기존과 동일 실패) / name 생략 시 이슈 ID 기본값.
 2. `worktree list --json`: metadata 매칭(`issue_source: "metadata"`) / branch-name 폴백 / 무매칭 생략 / 복수 매칭 결정성(정렬 첫 항목).
-3. `show --links`: branch+pr_url+worktree 전체 / 워크트리 무매칭 `null` / metadata 없이 ID 폴백 / `--children` 병행 1콜 형태.
+3. `show --links`: branch+pr_url+worktree 전체 / 워크트리 무매칭 `null` / metadata 없이 ID 폴백 / `--children --links` 동시 지정 거부 + `--children` 단독 기존 출력 불변 / `--as-of`와 조합 시 links가 현재 시점 계산.
 4. `update --unset-metadata-prefix`: prefix 일치 일괄 삭제 / 비일치 보존 / 빈 prefix 에러 / `--metadata` 배타 / `--unset-metadata`·`--set-metadata` 조합.
-5. proxied 미러: update 계열은 `update_proxied_integration_test.go`에 등가 케이스가 있는 범위에서 미러.
+5. proxied 미러: 신설 DB 접점(create --issue 기록, list enrichment, show --links, unset-metadata-prefix)의 주 시나리오를 proxied 스위트에 미러.
 
 ## 검증
 
-- `go build ./...` · `go vet` · `gofmt` clean · `cmd/bd` 테스트 — 실패 집합이 pinned base와 동일(신규 0).
-- 수용 데모(이 리포 워크스페이스): `bd worktree create --issue <테스트 Bead>` → `bd worktree list --json` → `bd show <id> --json --children --links` → readback 확인.
+- `go build ./...` · `go vet` · `gofmt` clean.
+- canonical 스위트: `env TEST_TIMEOUT=10m make test`(repo-ops.toml `[verify]`) — 실패 집합이 pinned base와 동일(신규 0).
+- env 게이트 시임 필수 실행: embedded 배치 시임은 `BEADS_TEST_EMBEDDED_DOLT=1 go test ./cmd/bd -run <신규 시임 테스트>`, proxied 미러 시임은 `BEADS_TEST_PROXIED_SERVER=1 go test ./cmd/bd -run <미러 테스트>`(cgo 빌드) — 게이트 하네스에 배치된 시임은 해당 focused 명령의 PASS를 수용 증거로 기록한다(canonical 스위트의 skip·컴파일 제외는 증거가 아님).
+- 수용 데모: 프로덕션 Beads DB를 쓰지 않는다. 테스트 하네스가 만드는 격리 임시 리포+임시 DB 안에서 create --issue → list → show --links 흐름을 검증하는 통합 테스트(Test scope 1–3)가 데모를 대신하며, 하네스의 표준 cleanup으로 생성물을 정리한다.
 
 ## 스킬 소비처 영향표 (Bead B 범위, dotfiles)
 
 | 소비처 | 현행 | 이 유닛 릴리스 후 |
 | --- | --- | --- |
-| bd-revert `inspect.md` Phase 0 | 3단 폴백 휴리스틱 | `bd show --json --children --links` 1콜 |
-| `inspect_revert_target.py` + `resolve_github_repo.py` | 245줄 수집 스크립트 | 삭제 — bd 1콜 + `gh pr view` 1콜 |
+| bd-revert `inspect.md` Phase 0 | 3단 폴백 휴리스틱 | `bd show --json --links` + `bd children --json` 2콜 |
+| `inspect_revert_target.py` + `resolve_github_repo.py` | 245줄 수집 스크립트 | 삭제 — bd 2콜 + `gh pr view` 1콜 |
 | bd-revert `reset.md` Phase 5 | `--unset-metadata` ×37 열거 | family prefix + 단독 키 ~10 인자 |
 | bd-usage cheat sheet | 해당 항목 없음 | `create --issue`·`--links`·`--unset-metadata-prefix` 등재 |
 | `beads_recovery.sh` classify_failure · bd-recover `contains_lock_signal` | raw stderr 문자열 매칭 | 현행 유지 — Bead A(항목 4) 대상 |
@@ -112,6 +120,6 @@ command-level seam, 기존 embedded 테스트 하네스(`worktree_cmd_test.go`, 
 
 1. `bd worktree create --issue`가 `metadata.branch`를 기록하고 `bd show --json` readback으로 확인된다.
 2. `bd worktree list --json`이 `issue_id`/`issue_source`를 노출하고 substring 매칭 없이 두 정확-일치 규칙만 사용한다.
-3. `bd show <id> --json --children --links` 1콜이 `inspect_revert_target.py`의 bd/git 수집 전부를 대체할 정보를 담는다(gh 제외).
+3. `bd show <id> --json --links` + `bd children <id> --json` 2콜이 `inspect_revert_target.py`의 bd/git 수집 전부를 대체할 정보를 담는다(gh 제외).
 4. `bd update --unset-metadata-prefix`로 reset.md Phase 5 열거가 family 단위로 축소 가능하다.
 5. 신규 테스트가 Test scope 시임을 커버하고, 기존 테스트 실패 집합이 pinned base와 동일하다.
