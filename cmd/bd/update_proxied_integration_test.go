@@ -521,6 +521,34 @@ func TestProxiedServerUpdate(t *testing.T) {
 		}
 	})
 
+	t.Run("update_unset_metadata_prefix", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "uump")
+		issue := bdProxiedCreate(t, bd, p.dir, "Unset metadata prefix test")
+		bdProxiedUpdateOne(t, bd, p.dir, issue.ID, "--metadata", `{"review_one":"drop","review_two":"drop","keep":"yes"}`)
+		updated := bdProxiedUpdateOne(t, bd, p.dir, issue.ID, "--set-metadata", "added=yes", "--unset-metadata", "review_one", "--unset-metadata-prefix", "review_")
+		var got map[string]any
+		if err := json.Unmarshal(updated.Metadata, &got); err != nil {
+			t.Fatalf("parse metadata: %v", err)
+		}
+		if _, ok := got["review_one"]; ok {
+			t.Errorf("exact unset did not remove review_one: %v", got)
+		}
+		if _, ok := got["review_two"]; ok {
+			t.Errorf("prefix unset did not remove review_two: %v", got)
+		}
+		if got["keep"] != "yes" || got["added"] != "yes" {
+			t.Errorf("set/nonmatching values lost: %v", got)
+		}
+		out := bdProxiedUpdateFail(t, bd, p.dir, issue.ID, "--metadata", `{}`, "--unset-metadata-prefix", "review_")
+		if !strings.Contains(out, "cannot combine") {
+			t.Errorf("metadata conflict: %s", out)
+		}
+		out = bdProxiedUpdateFail(t, bd, p.dir, issue.ID, "--unset-metadata-prefix", "")
+		if !strings.Contains(out, "prefix cannot be empty") {
+			t.Errorf("empty prefix error: %s", out)
+		}
+	})
+
 	t.Run("update_set_metadata", func(t *testing.T) {
 		p := bdProxiedInit(t, bd, "usm")
 		issue := bdProxiedCreate(t, bd, p.dir, "Set metadata test")

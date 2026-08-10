@@ -8,8 +8,30 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/utils"
 )
+
+func TestEnrichWorktreeIssues_ExactAndDeterministic(t *testing.T) {
+	t.Parallel()
+	worktrees := []WorktreeInfo{{Branch: "feature"}, {Branch: "bd-fallback"}, {Branch: "feat"}}
+	issues := []*types.Issue{
+		{ID: "bd-z", Metadata: []byte(`{"branch":"feature"}`)},
+		{ID: "bd-a", Metadata: []byte(`{"branch":"feature"}`)},
+		{ID: "bd-fallback"},
+		{ID: "bd-substring", Metadata: []byte(`{"branch":"feature-extra"}`)},
+	}
+	enrichWorktreeIssues(worktrees, issues)
+	if worktrees[0].IssueID != "bd-a" || worktrees[0].IssueSource != "metadata" {
+		t.Fatalf("metadata match = %#v, want deterministic bd-a metadata", worktrees[0])
+	}
+	if worktrees[1].IssueID != "bd-fallback" || worktrees[1].IssueSource != "branch-name" {
+		t.Fatalf("branch-name fallback = %#v", worktrees[1])
+	}
+	if worktrees[2].IssueID != "" || worktrees[2].IssueSource != "" {
+		t.Fatalf("substring must not match: %#v", worktrees[2])
+	}
+}
 
 // TestGetRedirectTarget tests that getRedirectTarget resolves redirect paths correctly.
 // This is the fix for GH#1266: relative paths must be resolved from the worktree root
