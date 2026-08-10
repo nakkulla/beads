@@ -60,7 +60,11 @@ func showIssueChildren(ctx context.Context, args []string, jsonOut bool, shortMo
 
 	// Output results
 	if jsonOut {
-		return outputJSON(allChildren)
+		children := make([]*types.IssueWithDependencyMetadata, 0)
+		for _, id := range args {
+			children = append(children, allChildren[id]...)
+		}
+		return outputJSON(children)
 	}
 
 	// Display children
@@ -123,7 +127,7 @@ func showIssueAsOf(ctx context.Context, args []string, ref string, shortMode boo
 	}
 
 	if jsonOutput && len(allIssues) > 0 {
-		return outputJSON(allIssues)
+		return outputJSONForRequest(len(args), allIssues)
 	}
 	return nil
 }

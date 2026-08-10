@@ -37,7 +37,11 @@ type closeProxiedOutcome struct {
 
 func runCloseProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) {
 	if len(args) == 0 {
-		FatalErrorRespectJSON("no issue ID provided")
+		lastTouched := GetLastTouchedID()
+		if lastTouched == "" {
+			FatalErrorRespectJSON("no issue ID provided and no last touched issue")
+		}
+		args = []string{lastTouched}
 	}
 
 	reasons, updatedArgs, err := resolveCloseReasons(cmd, args)
@@ -83,7 +87,7 @@ func runCloseProxiedServer(cmd *cobra.Command, ctx context.Context, args []strin
 		}
 	}
 
-	var unblocked []*types.Issue
+	unblocked := make([]*types.Issue, 0)
 	if in.suggestNext && len(args) == 1 && len(outcomes) > 0 {
 		unblocked = closeProxiedSuggestNext(ctx, uw, args[0])
 	}
@@ -128,16 +132,12 @@ func runCloseProxiedServer(cmd *cobra.Command, ctx context.Context, args []strin
 		}
 	}
 
-	if in.jsonOut && len(closedIssues) > 0 {
-		switch {
-		case len(unblocked) > 0:
-			_ = outputJSON(map[string]interface{}{"closed": closedIssues, "unblocked": unblocked})
-		case continueResult != nil:
-			_ = outputJSON(map[string]interface{}{"closed": closedIssues, "continue": continueResult})
-		case claimedNextIssue != nil:
-			_ = outputJSON(map[string]interface{}{"closed": closedIssues, "claimed": claimedNextIssue})
-		default:
-			_ = outputJSON(closedIssues)
+	if in.jsonOut {
+		if in.suggestNext || in.continueOn || in.claimNext {
+			envelope := buildCloseJSONEnvelope(closedIssues, in.suggestNext, in.continueOn, in.claimNext, unblocked, continueResult, claimedNextIssue)
+			_ = outputJSON(envelope)
+		} else if len(closedIssues) > 0 {
+			_ = outputJSONForRequest(len(args), closedIssues)
 		}
 	}
 
@@ -157,7 +157,7 @@ func gatherCloseProxiedInput(cmd *cobra.Command) closeProxiedInput {
 	if in.session == "" {
 		in.session = os.Getenv("CLAUDE_SESSION_ID")
 	}
-	in.jsonOut, _ = cmd.Flags().GetBool("json")
+	in.jsonOut = jsonOutput
 	return in
 }
 

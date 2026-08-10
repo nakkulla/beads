@@ -16,7 +16,10 @@ var reopenCmd = &cobra.Command{
 	GroupID: "issues",
 	Short:   "Reopen one or more closed issues",
 	Long: `Reopen closed issues by setting status to 'open' and clearing the closed_at timestamp.
-This is more explicit than 'bd update --status open' and emits a Reopened event.`,
+This is more explicit than 'bd update --status open' and emits a Reopened event.
+
+With --json, one requested issue returns an object and multiple requested
+issues always return an array.`,
 	Args:          cobra.MinimumNArgs(1),
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -100,7 +103,7 @@ This is more explicit than 'bd update --status open' and emits a Reopened event.
 		}
 
 		if jsonOutput && len(reopenedIssues) > 0 {
-			if jerr := outputJSON(reopenedIssues); jerr != nil {
+			if jerr := outputJSONForRequest(len(args), reopenedIssues); jerr != nil {
 				return jerr
 			}
 		}

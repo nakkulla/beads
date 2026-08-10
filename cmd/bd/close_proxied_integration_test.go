@@ -49,15 +49,7 @@ func bdProxiedCloseJSON(t *testing.T, bd, dir string, args ...string) []*types.I
 		t.Fatalf("bd close --json %s failed: %v\nstdout:\n%s\nstderr:\n%s",
 			strings.Join(args, " "), err, stdout, stderr)
 	}
-	start := strings.Index(stdout, "[")
-	if start < 0 {
-		t.Fatalf("no JSON array in close output:\n%s", stdout)
-	}
-	var issues []*types.Issue
-	if err := json.Unmarshal([]byte(stdout[start:]), &issues); err != nil {
-		t.Fatalf("parse close JSON: %v\nraw: %s", err, stdout[start:])
-	}
-	return issues
+	return parseProxiedIssueListJSON(t, stdout, "close")
 }
 
 func bdProxiedCloseJSONEnvelope(t *testing.T, bd, dir string, args ...string) map[string]json.RawMessage {
@@ -590,12 +582,12 @@ func TestProxiedServerClose(t *testing.T) {
 		}
 	})
 
-	t.Run("last_touched_not_supported", func(t *testing.T) {
+	t.Run("last_touched_supported", func(t *testing.T) {
 		p := bdProxiedInit(t, bd, "ltns")
-		_ = bdProxiedCreate(t, bd, p.dir, "Recent create")
-		out := bdProxiedCloseFail(t, bd, p.dir)
-		if !strings.Contains(out, "no issue ID provided") {
-			t.Errorf("proxied mode must not fall back to last-touched; got: %s", out)
+		issue := bdProxiedCreate(t, bd, p.dir, "Recent create")
+		closed := bdProxiedCloseJSON(t, bd, p.dir)
+		if len(closed) != 1 || closed[0].ID != issue.ID || closed[0].Status != types.StatusClosed {
+			t.Fatalf("proxied no-ID close = %#v, want closed last-touched %s", closed, issue.ID)
 		}
 	})
 

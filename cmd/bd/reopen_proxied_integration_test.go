@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -49,15 +48,7 @@ func bdProxiedReopenJSON(t *testing.T, bd, dir string, args ...string) []*types.
 		t.Fatalf("bd reopen --json %s failed: %v\nstdout:\n%s\nstderr:\n%s",
 			strings.Join(args, " "), err, stdout, stderr)
 	}
-	start := strings.Index(stdout, "[")
-	if start < 0 {
-		t.Fatalf("no JSON array in reopen output:\n%s", stdout)
-	}
-	var issues []*types.Issue
-	if err := json.Unmarshal([]byte(stdout[start:]), &issues); err != nil {
-		t.Fatalf("parse reopen JSON: %v\nraw: %s", err, stdout[start:])
-	}
-	return issues
+	return parseProxiedIssueListJSON(t, stdout, "reopen")
 }
 
 func readReopenComment(t *testing.T, db *sql.DB, id string) string {

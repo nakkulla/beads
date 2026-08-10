@@ -56,13 +56,8 @@ func TestCLI_ReopenClearsDeferUntil(t *testing.T) {
 		t.Fatalf("show failed: %v\n%s", err, out)
 	}
 
-	var issues []map[string]interface{}
-	json.Unmarshal(out, &issues)
-	if len(issues) == 0 {
-		t.Fatalf("show returned no issues")
-	}
-
-	issue := issues[0]
+	var issue map[string]interface{}
+	json.Unmarshal(out, &issue)
 	if issue["status"] != "open" {
 		t.Errorf("expected status=open after reopen, got: %v", issue["status"])
 	}
