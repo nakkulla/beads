@@ -102,7 +102,9 @@ embedded/proxied route:
 | Exactly one explicit ID | Bare object |
 | Two or more explicit IDs | Array, even if only one operation succeeds |
 | No-ID `update` or `close` using last-touched | Bare object |
-| `show --current` or `show --as-of` | Bare object |
+| `show --current` | Bare object |
+| `show --as-of` with one ID | Bare object |
+| `show --as-of` with two or more IDs | Array |
 | Query commands such as `list`, `ready`, `children`, `show --children`, and `dep list` | Always an array |
 
 `create` continues to return one bare object. `show --thread` and `show --refs`

@@ -13,9 +13,9 @@ Generated from `bd help --doc show`
 Show issue details.
 
 With --json, one requested issue returns an object and multiple requested
-issues return an array. --current and --as-of return one object; --children is
-a query and always returns an array. Use --fields to project IssueDetails JSON
-fields in the requested order.
+issues return an array. --current returns one object; --as-of follows the same
+one-ID object/multi-ID array rule. --children is a query and always returns an
+array. Use --fields to project IssueDetails JSON fields in the requested order.
 
 ```
 bd show [id...] [--id=<id>...] [--current] [flags]
