@@ -120,20 +120,57 @@ func TestFilterStaleImportIssuesReportsTieConflicts(t *testing.T) {
 func TestImportRowChangeSummary(t *testing.T) {
 	local := &types.Issue{
 		Title: "t", Status: types.StatusClosed, Priority: 1,
-		IssueType: types.TypeBug, Notes: "local notes",
+		IssueType: types.TypeBug, Notes: "local notes", SpecID: "spec-v1",
 	}
 	incoming := &types.Issue{
 		Title: "t", Status: types.StatusOpen, Priority: 2,
-		IssueType: types.TypeBug,
+		IssueType: types.TypeBug, SpecID: "spec-v2",
 	}
 	got := importRowChangeSummary(local, incoming)
-	want := "status closed → open, priority 1 → 2, notes cleared"
+	want := "status closed → open, priority 1 → 2, notes cleared, spec_id"
 	if got != want {
 		t.Fatalf("importRowChangeSummary = %q, want %q", got, want)
 	}
 	if s := importRowChangeSummary(local, local); s != "" {
 		t.Fatalf("importRowChangeSummary(identical) = %q, want empty", s)
 	}
+}
+
+func TestImportIssuesCoreReportsSpecIDChanges(t *testing.T) {
+	base := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
+
+	t.Run("newer row is reported as updated", func(t *testing.T) {
+		store := &fakeImportIssueLookupStore{issues: []*types.Issue{
+			{ID: "bd-spec-newer", Title: "t", SpecID: "spec-v1", UpdatedAt: base},
+		}}
+		result, err := importIssuesCore(context.Background(), "", store, []*types.Issue{
+			{ID: "bd-spec-newer", Title: "t", SpecID: "spec-v2", UpdatedAt: base.Add(time.Hour)},
+		}, ImportOptions{})
+		if err != nil {
+			t.Fatalf("importIssuesCore: %v", err)
+		}
+		if result.Updated != 1 || len(result.UpdatedIssues) != 1 {
+			t.Fatalf("UpdatedIssues = %#v (Updated=%d), want one update", result.UpdatedIssues, result.Updated)
+		}
+		if got := result.UpdatedIssues[0]; got.ID != "bd-spec-newer" || got.Changes != "spec_id" {
+			t.Fatalf("UpdatedIssues[0] = %#v, want bd-spec-newer/spec_id", got)
+		}
+	})
+
+	t.Run("same timestamp conflict is reported as tie kept local", func(t *testing.T) {
+		store := &fakeImportIssueLookupStore{issues: []*types.Issue{
+			{ID: "bd-spec-tie", Title: "t", SpecID: "spec-v1", UpdatedAt: base},
+		}}
+		result, err := importIssuesCore(context.Background(), "", store, []*types.Issue{
+			{ID: "bd-spec-tie", Title: "t", SpecID: "spec-v2", UpdatedAt: base},
+		}, ImportOptions{})
+		if err != nil {
+			t.Fatalf("importIssuesCore: %v", err)
+		}
+		if len(result.TieKeptLocalIDs) != 1 || result.TieKeptLocalIDs[0] != "bd-spec-tie" {
+			t.Fatalf("TieKeptLocalIDs = %#v, want [bd-spec-tie]", result.TieKeptLocalIDs)
+		}
+	})
 }
 
 func TestImportIssuesCoreReportsStaleSkippedIDs(t *testing.T) {

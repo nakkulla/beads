@@ -282,6 +282,9 @@ func importRowChangeSummary(local, incoming *types.Issue) string {
 	if !stringPtrEqual(local.ExternalRef, incoming.ExternalRef) {
 		parts = append(parts, "external_ref")
 	}
+	if local.SpecID != incoming.SpecID {
+		parts = append(parts, "spec_id")
+	}
 	if !intPtrEqual(local.EstimatedMinutes, incoming.EstimatedMinutes) {
 		parts = append(parts, "estimate")
 	}
