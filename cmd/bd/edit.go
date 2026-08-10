@@ -10,6 +10,7 @@ import (
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/ui"
+	"golang.org/x/term"
 )
 
 var editCmd = &cobra.Command{
@@ -18,7 +19,9 @@ var editCmd = &cobra.Command{
 	Short:   "Edit an issue field in $EDITOR",
 	Long: `Edit an issue field using your configured $EDITOR.
 
-By default, edits the description. Use flags to edit other fields.
+By default, edits the description. Use flags to edit other fields. Both stdin
+and stdout must be terminals; in headless workflows, use bd update with
+--body-file instead.
 
 Examples:
   bd edit bd-42                    # Edit description
@@ -31,6 +34,9 @@ Examples:
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		CheckReadonly("edit")
+		if err := requireInteractiveEditTerminal(os.Stdin, os.Stdout); err != nil {
+			return HandleErrorRespectJSON("%v", err)
+		}
 
 		evt := metrics.NewCommandEvent("edit")
 		defer func() {
@@ -177,6 +183,13 @@ Examples:
 		fmt.Printf("%s Updated %s for issue: %s\n", ui.RenderPass("✓"), fieldName, formatFeedbackID(id, displayTitle))
 		return nil
 	},
+}
+
+func requireInteractiveEditTerminal(stdin, stdout *os.File) error {
+	if stdin == nil || stdout == nil || !term.IsTerminal(int(stdin.Fd())) || !term.IsTerminal(int(stdout.Fd())) {
+		return fmt.Errorf("bd edit requires an interactive terminal; use bd update <id> --body-file <path> for non-interactive edits")
+	}
+	return nil
 }
 
 func init() {
