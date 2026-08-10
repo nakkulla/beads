@@ -162,17 +162,14 @@ func TestSpecIDImportUpsert(t *testing.T) {
 	writeAndImport("spec-v2", "2100-01-01T00:00:00Z")
 
 	raw := w.showJSONForSnapshot(id)
-	var issues []struct {
+	var issue struct {
 		SpecID string `json:"spec_id"`
 	}
-	if err := json.Unmarshal([]byte(raw), &issues); err != nil {
+	if err := json.Unmarshal([]byte(raw), &issue); err != nil {
 		t.Fatalf("parse imported issue: %v", err)
 	}
-	if len(issues) != 1 {
-		t.Fatalf("expected one imported issue, got %d", len(issues))
-	}
-	if issues[0].SpecID != "spec-v2" {
-		t.Errorf("expected spec_id %q after import upsert, got %q", "spec-v2", issues[0].SpecID)
+	if issue.SpecID != "spec-v2" {
+		t.Errorf("expected spec_id %q after import upsert, got %q", "spec-v2", issue.SpecID)
 	}
 }
 
