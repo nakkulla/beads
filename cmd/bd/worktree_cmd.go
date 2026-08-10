@@ -403,13 +403,13 @@ func worktreeLinkIssues(ctx context.Context) ([]*types.Issue, error) {
 	if usesProxiedServer() {
 		uw := proxiedOpenReadUOW(ctx)
 		defer uw.Close(ctx)
-		page, err := uw.IssueUseCase().SearchIssues(ctx, "", types.IssueFilter{})
+		page, err := uw.IssueUseCase().SearchIssues(ctx, "", types.IssueFilter{SkipWisps: true})
 		if err != nil {
 			return nil, err
 		}
 		return page.Items, nil
 	}
-	return getStore().SearchIssues(ctx, "", types.IssueFilter{})
+	return getStore().SearchIssues(ctx, "", types.IssueFilter{SkipWisps: true})
 }
 
 func metadataValue(metadata json.RawMessage, key string) string {

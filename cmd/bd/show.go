@@ -506,10 +506,12 @@ func showIssueAsOfWithLinks(ctx context.Context, args []string, ref string, shor
 	var allIssues []interface{}
 	for idx, id := range args {
 		issue, err := store.AsOf(ctx, id, ref)
-		if err != nil || issue == nil {
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error fetching %s as of %s: %v\n", id, ref, err)
-			}
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error fetching %s as of %s: %v\n", id, ref, err)
+			continue
+		}
+		if issue == nil {
+			fmt.Fprintf(os.Stderr, "Issue %s did not exist at %s\n", id, ref)
 			continue
 		}
 		if shortMode {
@@ -534,6 +536,10 @@ func showIssueAsOfWithLinks(ctx context.Context, args []string, ref string, shor
 		fmt.Printf("\n%s (as of %s)\n", formatIssueHeader(issue), ui.RenderMuted(ref))
 		fmt.Println(formatIssueMetadata(issue))
 		renderIssueLinks(links)
+		if issue.Description != "" {
+			fmt.Printf("\n%s\n%s\n", ui.RenderBold("DESCRIPTION"), uimd.RenderMarkdown(issue.Description))
+		}
+		fmt.Println()
 	}
 	if jsonOutput && len(allIssues) > 0 {
 		return outputJSON(allIssues)
