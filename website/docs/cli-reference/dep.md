@@ -99,8 +99,9 @@ By default shows dependencies (what issues depend on). Use --direction to contro
   - down: Show dependencies (what this issue depends on) - default
   - up:   Show dependents (what depends on this issue)
 
-Multiple IDs can be provided for batch dep listing. With --json, the output
-is a flat array of dependency records across all requested issues.
+Multiple IDs can be provided for batch dep listing. With --json, the output is
+always an array of issue records across all requested issues. Use
+--format=edges for explicit &#123;issue_id, depends_on_id, type&#125; dependency records.
 
 Use --type to filter by dependency type (e.g., tracks, blocks, parent-child).
 
@@ -118,6 +119,7 @@ bd dep list [issue-id...] [flags]
 
 ```
       --direction string   Direction: 'down' (dependencies), 'up' (dependents) (default "down")
+      --format string      JSON record format: 'issues' (default) or 'edges' (default "issues")
   -t, --type string        Filter by dependency type (e.g., tracks, blocks, parent-child)
 ```
 

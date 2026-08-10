@@ -12,7 +12,9 @@ Generated from `bd help --doc edit`
 
 Edit an issue field using your configured $EDITOR.
 
-By default, edits the description. Use flags to edit other fields.
+By default, edits the description. Use flags to edit other fields. Both stdin
+and stdout must be terminals; in headless workflows, use bd update with
+--body-file instead.
 
 Examples:
   bd edit bd-42                    # Edit description

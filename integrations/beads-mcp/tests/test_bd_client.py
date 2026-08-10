@@ -486,6 +486,28 @@ async def test_close(bd_client, mock_process):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("enveloped", [False, True])
+async def test_close_accepts_single_object_shapes(bd_client, mock_process, enveloped):
+    """Normalize bd close single-object and auxiliary-envelope responses."""
+    issue_data = {
+        "id": "bd-1",
+        "title": "Closed issue",
+        "status": "closed",
+        "priority": 1,
+        "issue_type": "bug",
+        "created_at": "2025-01-25T00:00:00Z",
+        "updated_at": "2025-01-25T00:00:00Z",
+    }
+    response = {"closed": [issue_data], "unblocked": []} if enveloped else issue_data
+    mock_process.communicate = AsyncMock(return_value=(json.dumps(response).encode(), b""))
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_process):
+        issues = await bd_client.close(CloseIssueParams(issue_id="bd-1", reason="Completed"))
+
+    assert [issue.id for issue in issues] == ["bd-1"]
+
+
+@pytest.mark.asyncio
 async def test_close_invalid_response(bd_client, mock_process):
     """Test close method with invalid response type."""
     mock_process.communicate = AsyncMock(return_value=(json.dumps({"error": "not a list"}).encode(), b""))
@@ -523,6 +545,26 @@ async def test_reopen(bd_client, mock_process):
     assert issues[0].id == "bd-1"
     assert issues[0].status == "open"
     assert issues[0].closed_at is None
+
+
+@pytest.mark.asyncio
+async def test_reopen_accepts_single_object(bd_client, mock_process):
+    """Normalize bd reopen single-ID object output to the MCP list API."""
+    issue_data = {
+        "id": "bd-1",
+        "title": "Reopened issue",
+        "status": "open",
+        "priority": 1,
+        "issue_type": "bug",
+        "created_at": "2025-01-25T00:00:00Z",
+        "updated_at": "2025-01-25T02:00:00Z",
+    }
+    mock_process.communicate = AsyncMock(return_value=(json.dumps(issue_data).encode(), b""))
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_process):
+        issues = await bd_client.reopen(ReopenIssueParams(issue_ids=["bd-1"]))
+
+    assert [issue.id for issue in issues] == ["bd-1"]
 
 
 @pytest.mark.asyncio

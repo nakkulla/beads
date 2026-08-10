@@ -10,7 +10,12 @@ Generated from `bd help --doc show`
 
 ## bd show
 
-Show issue details
+Show issue details.
+
+With --json, one requested issue returns an object and multiple requested
+issues return an array. --current and --as-of return one object; --children is
+a query and always returns an array. Use --fields to project IssueDetails JSON
+fields in the requested order.
 
 ```
 bd show [id...] [--id=<id>...] [--current] [flags]
@@ -24,6 +29,7 @@ bd show [id...] [--id=<id>...] [--current] [flags]
       --as-of string         Show issue as it existed at a specific commit hash or branch (requires Dolt)
       --children             Show only the children of this issue
       --current              Show the currently active issue (in-progress, hooked, or last touched)
+      --fields string        Select JSON fields in requested order (comma-separated)
       --id stringArray       Issue ID (use for IDs that look like flags, e.g., --id=gt--xyz)
       --include-comments     Stream full comment bodies in JSON output (--json only; may be slow on issues with many comments)
       --include-dependents   Stream full dependent issues in JSON output (--json only; may be slow on hub beads)
