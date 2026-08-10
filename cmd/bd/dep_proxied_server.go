@@ -282,6 +282,10 @@ func runDepRemoveProxiedServer(_ *cobra.Command, ctx context.Context, args []str
 func runDepListProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) {
 	direction, _ := cmd.Flags().GetString("direction")
 	typeFilter, _ := cmd.Flags().GetString("type")
+	outputFormat, _ := cmd.Flags().GetString("format")
+	if err := validateDepListFormat(outputFormat); err != nil {
+		FatalErrorRespectJSON("%v", err)
+	}
 	if direction == "" {
 		direction = "down"
 	}
@@ -291,22 +295,24 @@ func runDepListProxiedServer(cmd *cobra.Command, ctx context.Context, args []str
 
 	depUC := uw.DependencyUseCase()
 
-	if len(args) > 1 && direction == "down" {
+	if len(args) > 1 && direction == "down" && (!jsonOutput || outputFormat == "edges") {
 		depMap, err := depUC.GetIssueDependencyRecords(ctx, args)
 		if err != nil {
 			FatalErrorRespectJSON("%v", err)
 		}
-		var allDeps []*types.Dependency
+		var allDeps []depListEdge
 		for _, id := range args {
 			for _, dep := range depMap[id] {
 				if typeFilter == "" || string(dep.Type) == typeFilter {
-					allDeps = append(allDeps, dep)
+					allDeps = append(allDeps, depListEdge{
+						IssueID: dep.IssueID, DependsOnID: dep.DependsOnID, Type: dep.Type,
+					})
 				}
 			}
 		}
 		if jsonOutput {
 			if allDeps == nil {
-				allDeps = []*types.Dependency{}
+				allDeps = []depListEdge{}
 			}
 			_ = outputJSON(allDeps)
 			return
@@ -329,7 +335,8 @@ func runDepListProxiedServer(cmd *cobra.Command, ctx context.Context, args []str
 		return
 	}
 
-	var allIssues []*types.IssueWithDependencyMetadata
+	allIssues := make([]*types.IssueWithDependencyMetadata, 0)
+	allEdges := make([]depListEdge, 0)
 	listDirection := domain.DepDirectionOut
 	if direction == "up" {
 		listDirection = domain.DepDirectionIn
@@ -349,11 +356,15 @@ func runDepListProxiedServer(cmd *cobra.Command, ctx context.Context, args []str
 			issues = filtered
 		}
 		allIssues = append(allIssues, issues...)
+		if outputFormat == "edges" {
+			allEdges = append(allEdges, depListEdgesForIssues(id, direction, issues)...)
+		}
 	}
 
 	if jsonOutput {
-		if allIssues == nil {
-			allIssues = []*types.IssueWithDependencyMetadata{}
+		if outputFormat == "edges" {
+			_ = outputJSON(allEdges)
+			return
 		}
 		_ = outputJSON(allIssues)
 		return

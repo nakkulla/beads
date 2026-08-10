@@ -694,8 +694,9 @@ By default shows dependencies (what issues depend on). Use --direction to contro
   - down: Show dependencies (what this issue depends on) - default
   - up:   Show dependents (what depends on this issue)
 
-Multiple IDs can be provided for batch dep listing. With --json, the output
-is a flat array of dependency records across all requested issues.
+Multiple IDs can be provided for batch dep listing. With --json, the output is
+always an array of issue records across all requested issues. Use
+--format=edges for explicit {issue_id, depends_on_id, type} dependency records.
 
 Use --type to filter by dependency type (e.g., tracks, blocks, parent-child).
 
@@ -723,6 +724,10 @@ Examples:
 		ctx := rootCtx
 		direction, _ := cmd.Flags().GetString("direction")
 		typeFilter, _ := cmd.Flags().GetString("type")
+		outputFormat, _ := cmd.Flags().GetString("format")
+		if err := validateDepListFormat(outputFormat); err != nil {
+			return HandleErrorRespectJSON("%v", err)
+		}
 		if direction == "" {
 			direction = "down"
 		}
@@ -762,7 +767,10 @@ Examples:
 		}
 		if batchMode && len(resolved) == 0 {
 			if jsonOutput {
-				return outputJSON([]*types.Dependency{})
+				if outputFormat == "edges" {
+					return outputJSON([]depListEdge{})
+				}
+				return outputJSON([]*types.IssueWithDependencyMetadata{})
 			}
 			fmt.Fprintln(os.Stderr, "no resolvable issues in batch")
 			return nil
@@ -775,7 +783,7 @@ Examples:
 			}
 		}()
 
-		if len(resolved) > 1 && direction == "down" {
+		if len(resolved) > 1 && direction == "down" && (!jsonOutput || outputFormat == "edges") {
 			allSameStore := true
 			firstStore := resolved[0].store
 			for _, r := range resolved[1:] {
@@ -791,17 +799,19 @@ Examples:
 				}
 				depMap, err := firstStore.GetDependencyRecordsForIssues(ctx, ids)
 				if err == nil {
-					var allDeps []*types.Dependency
+					var allDeps []depListEdge
 					for _, id := range ids {
 						for _, dep := range depMap[id] {
 							if typeFilter == "" || string(dep.Type) == typeFilter {
-								allDeps = append(allDeps, dep)
+								allDeps = append(allDeps, depListEdge{
+									IssueID: dep.IssueID, DependsOnID: dep.DependsOnID, Type: dep.Type,
+								})
 							}
 						}
 					}
 					if jsonOutput {
 						if allDeps == nil {
-							allDeps = []*types.Dependency{}
+							allDeps = []depListEdge{}
 						}
 						return outputJSON(allDeps)
 					}
@@ -825,7 +835,8 @@ Examples:
 			}
 		}
 
-		var allIssues []*types.IssueWithDependencyMetadata
+		allIssues := make([]*types.IssueWithDependencyMetadata, 0)
+		allEdges := make([]depListEdge, 0)
 		for _, r := range resolved {
 			var issues []*types.IssueWithDependencyMetadata
 			var err error
@@ -847,11 +858,14 @@ Examples:
 				issues = filtered
 			}
 			allIssues = append(allIssues, issues...)
+			if outputFormat == "edges" {
+				allEdges = append(allEdges, depListEdgesForIssues(r.fullID, direction, issues)...)
+			}
 		}
 
 		if jsonOutput {
-			if allIssues == nil {
-				allIssues = []*types.IssueWithDependencyMetadata{}
+			if outputFormat == "edges" {
+				return outputJSON(allEdges)
 			}
 			return outputJSON(allIssues)
 		}
@@ -1484,6 +1498,34 @@ func externalDepListLine(iss *types.IssueWithDependencyMetadata) string {
 	return fmt.Sprintf("  %s %s via %s", iss.ID, ui.RenderMuted("(external)"), iss.DependencyType)
 }
 
+type depListEdge struct {
+	IssueID     string               `json:"issue_id"`
+	DependsOnID string               `json:"depends_on_id"`
+	Type        types.DependencyType `json:"type"`
+}
+
+func validateDepListFormat(format string) error {
+	if format != "issues" && format != "edges" {
+		return fmt.Errorf("invalid --format %q: must be 'issues' or 'edges'", format)
+	}
+	return nil
+}
+
+func depListEdgesForIssues(sourceID, direction string, issues []*types.IssueWithDependencyMetadata) []depListEdge {
+	edges := make([]depListEdge, 0, len(issues))
+	for _, issue := range issues {
+		if issue == nil {
+			continue
+		}
+		fromID, toID := sourceID, issue.ID
+		if direction == "up" {
+			fromID, toID = issue.ID, sourceID
+		}
+		edges = append(edges, depListEdge{IssueID: fromID, DependsOnID: toID, Type: issue.DependencyType})
+	}
+	return edges
+}
+
 func init() {
 	// dep command shorthand flag
 	depCmd.Flags().StringP("blocks", "b", "", "Issue ID that this issue blocks (shorthand for: bd dep add <blocked> <blocker>)")
@@ -1506,6 +1548,7 @@ func init() {
 
 	depListCmd.Flags().String("direction", "down", "Direction: 'down' (dependencies), 'up' (dependents)")
 	depListCmd.Flags().StringP("type", "t", "", "Filter by dependency type (e.g., tracks, blocks, parent-child)")
+	depListCmd.Flags().String("format", "issues", "JSON record format: 'issues' (default) or 'edges'")
 
 	// Issue ID completions for dep subcommands
 	depAddCmd.ValidArgsFunction = issueIDCompletion
