@@ -508,7 +508,7 @@ func TestProxiedServerShow(t *testing.T) {
 		}
 	})
 
-	t.Run("show_children_json_map_shape", func(t *testing.T) {
+	t.Run("show_children_json_array_shape", func(t *testing.T) {
 		p := bdProxiedInit(t, bd, "scj")
 		parent := bdProxiedCreate(t, bd, p.dir, "Parent J", "--type", "epic")
 		child := bdProxiedCreate(t, bd, p.dir, "Child J",
@@ -519,23 +519,18 @@ func TestProxiedServerShow(t *testing.T) {
 			t.Fatalf("show --children --json: %v\n%s", err, out)
 		}
 		s := strings.TrimSpace(string(out))
-		start := strings.Index(s, "{")
+		start := strings.Index(s, "[")
 		if start < 0 {
-			t.Fatalf("no JSON object: %s", s)
+			t.Fatalf("no JSON array: %s", s)
 		}
-		var envelope map[string]interface{}
-		if err := json.Unmarshal([]byte(s[start:]), &envelope); err != nil {
+		var kids []map[string]interface{}
+		if err := json.Unmarshal([]byte(s[start:]), &kids); err != nil {
 			t.Fatalf("parse children JSON: %v\n%s", err, s[start:])
 		}
-		entry, ok := envelope[parent.ID]
-		if !ok {
-			t.Fatalf("expected entry for %s in children JSON: %v", parent.ID, envelope)
-		}
-		kids, _ := entry.([]interface{})
 		if len(kids) == 0 {
-			t.Fatalf("expected children slice for %s: %v", parent.ID, entry)
+			t.Fatalf("expected children slice for %s", parent.ID)
 		}
-		first, _ := kids[0].(map[string]interface{})
+		first := kids[0]
 		if first["id"] != child.ID {
 			t.Errorf("expected child %s in children JSON: %v", child.ID, first)
 		}

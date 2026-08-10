@@ -32,6 +32,7 @@ type showProxiedInput struct {
 	currentMode     bool
 	includeDepends  bool
 	includeComments bool
+	fields          []string
 }
 
 func gatherShowProxiedInput(cmd *cobra.Command, args []string) *showProxiedInput {
@@ -47,6 +48,12 @@ func gatherShowProxiedInput(cmd *cobra.Command, args []string) *showProxiedInput
 	in.currentMode, _ = cmd.Flags().GetBool("current")
 	in.includeDepends, _ = cmd.Flags().GetBool("include-dependents")
 	in.includeComments, _ = cmd.Flags().GetBool("include-comments")
+	fieldsRaw, _ := cmd.Flags().GetString("fields")
+	var err error
+	in.fields, err = parseShowFields(fieldsRaw)
+	if err != nil {
+		FatalErrorRespectJSON("%v", err)
+	}
 
 	idFlags, _ := cmd.Flags().GetStringArray("id")
 	in.ids = append(in.ids, args...)
@@ -67,6 +74,12 @@ func proxiedOpenReadUOW(ctx context.Context) uow.UnitOfWork {
 
 func runShowProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) {
 	in := gatherShowProxiedInput(cmd, args)
+	if len(in.fields) > 0 && !jsonOutput {
+		FatalErrorRespectJSON("--fields requires JSON output (--json)")
+	}
+	if len(in.fields) > 0 && (in.thread || in.refs || in.children || in.asOfRef != "") {
+		FatalErrorRespectJSON("--fields cannot be combined with --thread, --refs, --children, or --as-of")
+	}
 
 	if in.watchMode {
 		FatalErrorRespectJSON("watch mode not supported in proxied-server mode")
@@ -196,7 +209,7 @@ func runShowProxiedAsOf(ctx context.Context, uw uow.UnitOfWork, in *showProxiedI
 		fmt.Println()
 	}
 	if jsonOutput && len(jsonIssues) > 0 {
-		_ = outputJSON(jsonIssues)
+		_ = outputJSONForRequest(len(in.ids), jsonIssues)
 	}
 }
 
@@ -284,7 +297,11 @@ func runShowProxiedChildren(ctx context.Context, uw uow.UnitOfWork, in *showProx
 	}
 
 	if jsonOutput {
-		_ = outputJSON(allChildren)
+		children := make([]*types.IssueWithDependencyMetadata, 0)
+		for _, id := range in.ids {
+			children = append(children, allChildren[id]...)
+		}
+		_ = outputJSON(children)
 		return
 	}
 	for id, kids := range allChildren {
@@ -451,7 +468,15 @@ func runShowProxiedDefault(ctx context.Context, uw uow.UnitOfWork, in *showProxi
 
 		if jsonOutput {
 			details := proxiedBuildDetails(ctx, uw, issue, isWisp, in)
-			allDetails = append(allDetails, details)
+			if len(in.fields) > 0 {
+				projected, err := projectIssueDetails(details, in.fields)
+				if err != nil {
+					FatalErrorRespectJSON("%v", err)
+				}
+				allDetails = append(allDetails, projected)
+			} else {
+				allDetails = append(allDetails, details)
+			}
 			continue
 		}
 
@@ -460,7 +485,7 @@ func runShowProxiedDefault(ctx context.Context, uw uow.UnitOfWork, in *showProxi
 
 	if jsonOutput {
 		if len(allDetails) > 0 {
-			_ = outputJSON(allDetails)
+			_ = outputJSONForRequest(len(in.ids), allDetails)
 		} else {
 			FatalErrorRespectJSON("no issues found matching the provided IDs")
 		}
