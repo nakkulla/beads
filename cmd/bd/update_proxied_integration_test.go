@@ -41,6 +41,15 @@ func TestProxiedServerUpdate(t *testing.T) {
 		}
 	})
 
+	t.Run("last_touched_supported", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "unlt")
+		issue := bdProxiedCreate(t, bd, p.dir, "Recent update")
+		updated := bdProxiedUpdateOne(t, bd, p.dir, "--title", "Updated through last-touched")
+		if updated.ID != issue.ID || updated.Title != "Updated through last-touched" {
+			t.Fatalf("proxied no-ID update = %#v, want updated last-touched %s", updated, issue.ID)
+		}
+	})
+
 	t.Run("field_updates_round_trip", func(t *testing.T) {
 		p := bdProxiedInit(t, bd, "uf")
 		issue := bdProxiedCreate(t, bd, p.dir, "Original")
@@ -535,8 +544,8 @@ func TestProxiedServerUpdate(t *testing.T) {
 		if got["tier"] != "gold" {
 			t.Errorf("metadata[tier]: got %v, want %q", got["tier"], "gold")
 		}
-		if got["score"] != float64(99) {
-			t.Errorf("metadata[score]: got %v, want 99 (number-typed via toJSONValue)", got["score"])
+		if got["score"] != "99" {
+			t.Errorf("metadata[score]: got %v, want %q", got["score"], "99")
 		}
 	})
 

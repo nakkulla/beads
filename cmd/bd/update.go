@@ -25,7 +25,11 @@ var updateCmd = &cobra.Command{
 	Long: `Update one or more issues.
 
 If no issue ID is provided, updates the last touched issue (from most recent
-create, update, show, or close operation).`,
+create, update, show, or close operation).
+
+With --json, one requested issue (including last-touched) returns an object;
+multiple requested issues always return an array. --set-metadata stores strings;
+use --set-metadata-json for intentional typed JSON values.`,
 	Args:          cobra.MinimumNArgs(0),
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -293,12 +297,14 @@ create, update, show, or close operation).`,
 
 		// Incremental metadata edits (GH#1406)
 		setMetadataFlags, _ := cmd.Flags().GetStringArray("set-metadata")
+		setMetadataJSONFlags, _ := cmd.Flags().GetStringArray("set-metadata-json")
 		unsetMetadataFlags, _ := cmd.Flags().GetStringArray("unset-metadata")
-		if (len(setMetadataFlags) > 0 || len(unsetMetadataFlags) > 0) && cmd.Flags().Changed("metadata") {
-			return HandleErrorRespectJSON("cannot combine --metadata with --set-metadata or --unset-metadata")
+		if (len(setMetadataFlags) > 0 || len(setMetadataJSONFlags) > 0 || len(unsetMetadataFlags) > 0) && cmd.Flags().Changed("metadata") {
+			return HandleErrorRespectJSON("cannot combine --metadata with --set-metadata, --set-metadata-json, or --unset-metadata")
 		}
-		if len(setMetadataFlags) > 0 || len(unsetMetadataFlags) > 0 {
+		if len(setMetadataFlags) > 0 || len(setMetadataJSONFlags) > 0 || len(unsetMetadataFlags) > 0 {
 			updates["_set_metadata"] = setMetadataFlags
+			updates["_set_metadata_json"] = setMetadataJSONFlags
 			updates["_unset_metadata"] = unsetMetadataFlags
 		}
 
@@ -382,7 +388,7 @@ create, update, show, or close operation).`,
 			regularUpdates := make(map[string]interface{})
 			for k, v := range updates {
 				if k != "add_labels" && k != "remove_labels" && k != "set_labels" && k != "parent" && k != "append_notes" &&
-					k != "_set_metadata" && k != "_unset_metadata" {
+					k != "_set_metadata" && k != "_set_metadata_json" && k != "_unset_metadata" {
 					regularUpdates[k] = v
 				}
 			}
@@ -403,8 +409,9 @@ create, update, show, or close operation).`,
 			}
 			// Handle incremental metadata edits (GH#1406)
 			if setMeta, ok := updates["_set_metadata"].([]string); ok {
+				setMetaJSON, _ := updates["_set_metadata_json"].([]string)
 				unsetMeta, _ := updates["_unset_metadata"].([]string)
-				merged, err := applyMetadataEdits(issue.Metadata, setMeta, unsetMeta)
+				merged, err := applyMetadataEditsWithJSON(issue.Metadata, setMeta, setMetaJSON, unsetMeta)
 				if err != nil {
 					return HandleErrorRespectJSON("metadata edit failed for %s: %v", id, err)
 				}
@@ -553,7 +560,7 @@ create, update, show, or close operation).`,
 		}
 
 		if jsonOutput && len(updatedIssues) > 0 {
-			if jerr := outputJSON(updatedIssues); jerr != nil {
+			if jerr := outputJSONForRequest(len(args), updatedIssues); jerr != nil {
 				return jerr
 			}
 		}
@@ -597,6 +604,10 @@ func mergeMetadata(existing, newMeta json.RawMessage) (json.RawMessage, error) {
 // applyMetadataEdits applies --set-metadata and --unset-metadata edits to existing metadata.
 // Returns the merged JSON as json.RawMessage.
 func applyMetadataEdits(existing json.RawMessage, setFlags, unsetFlags []string) (json.RawMessage, error) {
+	return applyMetadataEditsWithJSON(existing, setFlags, nil, unsetFlags)
+}
+
+func applyMetadataEditsWithJSON(existing json.RawMessage, setFlags, setJSONFlags, unsetFlags []string) (json.RawMessage, error) {
 	// Parse existing metadata (or start with empty object)
 	data := make(map[string]json.RawMessage)
 	if len(existing) > 0 {
@@ -617,8 +628,33 @@ func applyMetadataEdits(existing json.RawMessage, setFlags, unsetFlags []string)
 		if err := storage.ValidateMetadataKey(k); err != nil {
 			return nil, err
 		}
-		// Store as JSON value: try to preserve type (number, bool, null)
-		data[k] = toJSONValue(v)
+		encoded, err := json.Marshal(v)
+		if err != nil {
+			return nil, fmt.Errorf("encoding --set-metadata value for %q: %w", k, err)
+		}
+		data[k] = encoded
+	}
+
+	stringKeys := make(map[string]struct{}, len(setFlags))
+	for _, kv := range setFlags {
+		k, _, _ := strings.Cut(kv, "=")
+		stringKeys[k] = struct{}{}
+	}
+	for _, kv := range setJSONFlags {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok || k == "" {
+			return nil, fmt.Errorf("invalid --set-metadata-json: expected key=JSON, got %q", kv)
+		}
+		if err := storage.ValidateMetadataKey(k); err != nil {
+			return nil, err
+		}
+		if _, duplicate := stringKeys[k]; duplicate {
+			return nil, fmt.Errorf("metadata key %q set by both --set-metadata and --set-metadata-json", k)
+		}
+		if !json.Valid([]byte(v)) {
+			return nil, fmt.Errorf("invalid JSON for --set-metadata-json key %q", k)
+		}
+		data[k] = json.RawMessage(v)
 	}
 
 	// Apply --unset-metadata keys
@@ -634,29 +670,6 @@ func applyMetadataEdits(existing json.RawMessage, setFlags, unsetFlags []string)
 		return nil, fmt.Errorf("failed to marshal metadata: %w", err)
 	}
 	return json.RawMessage(result), nil
-}
-
-// toJSONValue converts a string value to its most appropriate JSON representation.
-// Recognizes numbers, booleans, and null; everything else becomes a JSON string.
-func toJSONValue(s string) json.RawMessage {
-	// Check for null
-	if s == "null" {
-		return json.RawMessage("null")
-	}
-	// Check for booleans
-	if s == "true" || s == "false" {
-		return json.RawMessage(s)
-	}
-	// Check for numbers (integer or float)
-	if _, err := fmt.Sscanf(s, "%f", new(float64)); err == nil {
-		// Verify it round-trips cleanly (not NaN, Inf, etc.)
-		if json.Valid([]byte(s)) {
-			return json.RawMessage(s)
-		}
-	}
-	// Default to JSON string
-	b, _ := json.Marshal(s)
-	return json.RawMessage(b)
 }
 
 func init() {
@@ -697,7 +710,8 @@ func init() {
 	// Metadata flag (GH#1413)
 	updateCmd.Flags().String("metadata", "", "Set custom metadata (JSON string or @file.json to read from file)")
 	// Incremental metadata edits (GH#1406)
-	updateCmd.Flags().StringArray("set-metadata", nil, "Set metadata key=value (repeatable, e.g., --set-metadata team=platform)")
+	updateCmd.Flags().StringArray("set-metadata", nil, "Set string metadata key=value (repeatable, e.g., --set-metadata team=platform)")
+	updateCmd.Flags().StringArray("set-metadata-json", nil, "Set typed metadata key=JSON (repeatable, e.g., --set-metadata-json count=42)")
 	updateCmd.Flags().StringArray("unset-metadata", nil, "Remove metadata key (repeatable, e.g., --unset-metadata team)")
 	updateCmd.ValidArgsFunction = issueIDCompletion
 	rootCmd.AddCommand(updateCmd)

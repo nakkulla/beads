@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -91,8 +92,8 @@ func TestApplyMetadataEdits_NumericValue(t *testing.T) {
 	if err := json.Unmarshal(result, &data); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if string(data["story_points"]) != "5" {
-		t.Errorf("expected 5, got %s", data["story_points"])
+	if string(data["story_points"]) != `"5"` {
+		t.Errorf("expected string \"5\", got %s", data["story_points"])
 	}
 }
 
@@ -106,8 +107,8 @@ func TestApplyMetadataEdits_BoolValue(t *testing.T) {
 	if err := json.Unmarshal(result, &data); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if string(data["urgent"]) != "true" {
-		t.Errorf("expected true, got %s", data["urgent"])
+	if string(data["urgent"]) != `"true"` {
+		t.Errorf("expected string \"true\", got %s", data["urgent"])
 	}
 }
 
@@ -121,8 +122,74 @@ func TestApplyMetadataEdits_NullValue(t *testing.T) {
 	if err := json.Unmarshal(result, &data); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if string(data["cleared"]) != "null" {
-		t.Errorf("expected null, got %s", data["cleared"])
+	if string(data["cleared"]) != `"null"` {
+		t.Errorf("expected string \"null\", got %s", data["cleared"])
+	}
+}
+
+func TestApplyMetadataEdits_StringPreservesNumericLookingValues(t *testing.T) {
+	t.Parallel()
+
+	values := []string{"0123", "12345678901234567890", "1e5", "true", "null"}
+	for _, value := range values {
+		t.Run(value, func(t *testing.T) {
+			result, err := applyMetadataEdits(nil, []string{"value=" + value}, nil)
+			if err != nil {
+				t.Fatalf("applyMetadataEdits: %v", err)
+			}
+			var data map[string]json.RawMessage
+			if err := json.Unmarshal(result, &data); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			want, _ := json.Marshal(value)
+			if string(data["value"]) != string(want) {
+				t.Errorf("value %q encoded as %s, want JSON string %s", value, data["value"], want)
+			}
+		})
+	}
+}
+
+func TestApplyMetadataEditsWithJSON_StoresTypedValues(t *testing.T) {
+	t.Parallel()
+
+	result, err := applyMetadataEditsWithJSON(nil, nil, []string{
+		"count=42",
+		"enabled=true",
+		"cleared=null",
+		`nested={"key":"value"}`,
+	}, nil)
+	if err != nil {
+		t.Fatalf("applyMetadataEditsWithJSON: %v", err)
+	}
+
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for key, want := range map[string]string{
+		"count": "42", "enabled": "true", "cleared": "null", "nested": `{"key":"value"}`,
+	} {
+		if got := string(data[key]); got != want {
+			t.Errorf("%s = %s, want %s", key, got, want)
+		}
+	}
+}
+
+func TestApplyMetadataEditsWithJSON_RejectsInvalidJSON(t *testing.T) {
+	t.Parallel()
+
+	_, err := applyMetadataEditsWithJSON(nil, nil, []string{"count=0123"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid JSON") {
+		t.Fatalf("error = %v, want invalid JSON error", err)
+	}
+}
+
+func TestApplyMetadataEditsWithJSON_RejectsDuplicateKeyAcrossFlags(t *testing.T) {
+	t.Parallel()
+
+	_, err := applyMetadataEditsWithJSON(nil, []string{"count=42"}, []string{"count=42"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "both --set-metadata and --set-metadata-json") {
+		t.Fatalf("error = %v, want cross-flag duplicate error", err)
 	}
 }
 
@@ -199,8 +266,8 @@ func TestApplyMetadataEdits_MultipleSetFlags(t *testing.T) {
 	if string(data["sprint"]) != `"Q1"` {
 		t.Errorf("expected \"Q1\", got %s", data["sprint"])
 	}
-	if string(data["priority"]) != "2" {
-		t.Errorf("expected 2, got %s", data["priority"])
+	if string(data["priority"]) != `"2"` {
+		t.Errorf("expected string \"2\", got %s", data["priority"])
 	}
 }
 
@@ -296,32 +363,5 @@ func TestMergeMetadata_NonObjectIncoming(t *testing.T) {
 	_, err := mergeMetadata(existing, incoming)
 	if err == nil {
 		t.Fatal("expected error for non-object incoming metadata")
-	}
-}
-
-func TestToJSONValue(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"hello", `"hello"`},
-		{"42", "42"},
-		{"3.14", "3.14"},
-		{"true", "true"},
-		{"false", "false"},
-		{"null", "null"},
-		{"", `""`},
-		{"hello world", `"hello world"`},
-		{"0", "0"},
-		{"-1", "-1"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got := string(toJSONValue(tt.input))
-			if got != tt.expected {
-				t.Errorf("toJSONValue(%q) = %s, want %s", tt.input, got, tt.expected)
-			}
-		})
 	}
 }

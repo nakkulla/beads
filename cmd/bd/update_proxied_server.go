@@ -19,7 +19,11 @@ import (
 
 func runUpdateProxiedServer(cmd *cobra.Command, ctx context.Context, args []string) {
 	if len(args) == 0 {
-		FatalErrorRespectJSON("no issue ID provided")
+		lastTouched := GetLastTouchedID()
+		if lastTouched == "" {
+			FatalErrorRespectJSON("no issue ID provided and no last touched issue")
+		}
+		args = []string{lastTouched}
 	}
 
 	in := gatherUpdateInput(ctx, cmd)
@@ -46,7 +50,7 @@ func runUpdateProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 	}
 
 	if jsonOut && len(updated) > 0 {
-		_ = outputJSON(updated)
+		_ = outputJSONForRequest(len(args), updated)
 	}
 	if !anyUpdated {
 		os.Exit(1)
@@ -173,8 +177,8 @@ func buildUpdateSpecForIssue(current *types.Issue, in *updateInput) (domain.Upda
 		}
 		fields["metadata"] = merged
 	}
-	if len(in.setMetadata) > 0 || len(in.unsetMetadata) > 0 {
-		merged, err := applyMetadataEdits(current.Metadata, in.setMetadata, in.unsetMetadata)
+	if len(in.setMetadata) > 0 || len(in.setMetadataJSON) > 0 || len(in.unsetMetadata) > 0 {
+		merged, err := applyMetadataEditsWithJSON(current.Metadata, in.setMetadata, in.setMetadataJSON, in.unsetMetadata)
 		if err != nil {
 			return domain.UpdateSpec{}, fmt.Errorf("metadata edit failed for %s: %w", current.ID, err)
 		}
