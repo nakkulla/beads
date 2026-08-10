@@ -318,6 +318,7 @@ func TestCreateIssue(t *testing.T) {
 			Status:    types.StatusOpen,
 			Priority:  2,
 			IssueType: types.TypeTask,
+			SpecID:    "spec-v1",
 		}
 
 		if err := te.store.CreateIssue(ctx, issue, "tester"); err != nil {
@@ -330,6 +331,7 @@ func TestCreateIssue(t *testing.T) {
 			Status:    types.StatusOpen,
 			Priority:  2,
 			IssueType: types.TypeTask,
+			SpecID:    "spec-v2",
 		}
 
 		if err := te.store.CreateIssue(ctx, issue2, "tester"); err != nil {
@@ -337,6 +339,13 @@ func TestCreateIssue(t *testing.T) {
 		}
 
 		te.assertIssueTitle(t, ctx, "issues", "up-dup1", "Updated title")
+		got, err := te.store.GetIssue(ctx, "up-dup1")
+		if err != nil {
+			t.Fatalf("GetIssue after upsert: %v", err)
+		}
+		if got.SpecID != "spec-v2" {
+			t.Errorf("expected spec_id %q after upsert, got %q", "spec-v2", got.SpecID)
+		}
 	})
 
 	t.Run("event_recorded", func(t *testing.T) {

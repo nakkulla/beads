@@ -61,7 +61,7 @@ func TableRouting(issue *types.Issue) (issueTable, eventTable string) {
 var issueUpsertColumns = []string{
 	"content_hash", "title", "description", "design", "acceptance_criteria",
 	"notes", "status", "priority", "issue_type", "assignee",
-	"estimated_minutes", "started_at", "closed_at", "external_ref",
+	"estimated_minutes", "started_at", "closed_at", "external_ref", "spec_id",
 	"source_repo", "close_reason", "metadata", "updated_at",
 }
 

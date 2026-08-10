@@ -504,6 +504,7 @@ func insertIssueRow(ctx context.Context, runner Runner, table string, issue *typ
 			started_at = VALUES(started_at),
 			closed_at = VALUES(closed_at),
 			external_ref = VALUES(external_ref),
+			spec_id = VALUES(spec_id),
 			source_repo = VALUES(source_repo),
 			close_reason = VALUES(close_reason),
 			metadata = VALUES(metadata)

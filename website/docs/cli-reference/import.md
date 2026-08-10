@@ -41,6 +41,7 @@ Common fields:
   comments               Array of comment objects.
   external_ref,          Cross-system identifiers (e.g. "gh-9").
     source_system
+  spec_id                Top-level specification document identifier.
   due_at, defer_until    RFC3339 timestamps for scheduling.
   metadata               Arbitrary JSON object preserved verbatim.
 

@@ -120,17 +120,60 @@ func TestUpdateFieldPreservation(t *testing.T) {
 	})
 }
 
-// TestExternalRefSpecID sets external_ref and spec_id, verifying round-trip.
-// Caught a new regression: spec_id is stored by v0.49.6 but silently lost
-// in main's Dolt backend (external_ref works fine in both).
+// TestExternalRefSpecID verifies external_ref and spec_id round-trip together.
 func TestExternalRefSpecID(t *testing.T) {
-	t.Skip("known regression: bd-wzgir — spec_id dropped by Dolt backend UpdateIssue")
 	compareExports(t, func(w *workspace) {
 		id := w.create("--title", "Tracked externally", "--type", "task")
 
 		w.run("update", id, "--external-ref", "gh-42")
 		w.run("update", id, "--spec-id", "RFC-007")
 	})
+}
+
+// TestSpecIDImportUpsert verifies that importing a newer snapshot updates
+// spec_id on an existing issue rather than preserving the stale value.
+func TestSpecIDImportUpsert(t *testing.T) {
+	w := newWorkspace(t, candidateBin)
+	id := w.create("--title", "Imported spec", "--type", "task")
+	path := filepath.Join(w.dir, "spec-id-upsert.jsonl")
+
+	writeAndImport := func(specID, updatedAt string) {
+		issue := map[string]any{
+			"id":         id,
+			"title":      "Imported spec",
+			"type":       "task",
+			"status":     "open",
+			"priority":   2,
+			"spec_id":    specID,
+			"created_at": "2025-01-01T00:00:00Z",
+			"updated_at": updatedAt,
+		}
+		raw, err := json.Marshal(issue)
+		if err != nil {
+			t.Fatalf("marshal import snapshot: %v", err)
+		}
+		if err := os.WriteFile(path, append(raw, '\n'), 0o644); err != nil {
+			t.Fatalf("write import snapshot: %v", err)
+		}
+		w.run("import", "-i", path)
+	}
+
+	writeAndImport("spec-v1", "2099-01-01T00:00:00Z")
+	writeAndImport("spec-v2", "2100-01-01T00:00:00Z")
+
+	raw := w.showJSONForSnapshot(id)
+	var issues []struct {
+		SpecID string `json:"spec_id"`
+	}
+	if err := json.Unmarshal([]byte(raw), &issues); err != nil {
+		t.Fatalf("parse imported issue: %v", err)
+	}
+	if len(issues) != 1 {
+		t.Fatalf("expected one imported issue, got %d", len(issues))
+	}
+	if issues[0].SpecID != "spec-v2" {
+		t.Errorf("expected spec_id %q after import upsert, got %q", "spec-v2", issues[0].SpecID)
+	}
 }
 
 // TestParentChildDependency creates a parent-child relationship via dep add --type.

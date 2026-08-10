@@ -1,18 +1,18 @@
 ---
-description: Import issues from JSONL format (removed)
-argument-hint: (removed)
+description: Import and upsert issues from JSONL
+argument-hint: [file|-]
 ---
 
-`bd import` has been **removed**.
+`bd import [file|-]` imports newline-delimited issue JSON. Existing IDs are
+updated when the incoming `updated_at` is newer; use `--allow-stale` only for an
+intentional older-snapshot restore.
 
-## Migration
-
-If you need to import issues from a JSONL file, use `bd init` with the `--from-jsonl` flag:
+`spec_id` is a top-level issue field. Create or update it with `--spec-id`; do
+not store it under metadata. `bd show`, `bd list`, `bd export`, and `bd import`
+preserve the native field across JSON round-trips.
 
 ```bash
-bd init <prefix> --from-jsonl issues.jsonl
+bd import issues.jsonl
+bd export -o issues.jsonl
+bd update bd-123 --spec-id docs/specs/feature.md --json
 ```
-
-## Note
-
-Dolt is the primary storage backend. Manual JSONL import is no longer supported as a standalone command.

@@ -1,8 +1,11 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
+	"strings"
+	"testing"
 	"time"
 
 	"github.com/steveyegge/beads/internal/storage/domain"
@@ -124,17 +127,59 @@ func (s *testSuite) issueInsertRequiresID() {
 func (s *testSuite) issueInsertIdempotent() {
 	r := s.issueRepo()
 	in := newTestIssue("bd-test-dup", "v1")
+	in.SpecID = "spec-v1"
 	s.Require().NoError(r.Insert(s.Ctx(), in, "tester", domain.InsertIssueOpts{}))
 
 	in.Title = "v2"
 	in.Description = "added on second pass"
+	in.SpecID = "spec-v2"
 	s.Require().NoError(r.Insert(s.Ctx(), in, "tester", domain.InsertIssueOpts{}))
 
 	out, err := r.Get(s.Ctx(), "bd-test-dup", domain.IssueTableOpts{})
 	s.Require().NoError(err)
 	s.Equal("v2", out.Title)
 	s.Equal("added on second pass", out.Description)
+	s.Equal("spec-v2", out.SpecID)
 }
+
+func TestIssueInsertUpsertIncludesSpecID(t *testing.T) {
+	runner := &queryCaptureRunner{}
+	repo := NewIssueSQLRepository(runner)
+	issue := newTestIssue("bd-spec-upsert", "spec upsert")
+	issue.SpecID = "spec-v2"
+
+	if err := repo.Insert(t.Context(), issue, "tester", domain.InsertIssueOpts{}); err != nil {
+		t.Fatalf("Insert: %v", err)
+	}
+	if len(runner.queries) == 0 {
+		t.Fatal("Insert executed no SQL")
+	}
+	if !strings.Contains(runner.queries[0], "spec_id = VALUES(spec_id)") {
+		t.Error("issue upsert does not update spec_id")
+	}
+}
+
+type queryCaptureRunner struct {
+	queries []string
+}
+
+func (r *queryCaptureRunner) ExecContext(_ context.Context, query string, _ ...any) (sql.Result, error) {
+	r.queries = append(r.queries, query)
+	return captureResult(1), nil
+}
+
+func (*queryCaptureRunner) QueryContext(context.Context, string, ...any) (*sql.Rows, error) {
+	return nil, errors.New("unexpected QueryContext")
+}
+
+func (*queryCaptureRunner) QueryRowContext(context.Context, string, ...any) *sql.Row {
+	return nil
+}
+
+type captureResult int64
+
+func (r captureResult) LastInsertId() (int64, error) { return int64(r), nil }
+func (r captureResult) RowsAffected() (int64, error) { return int64(r), nil }
 
 func (s *testSuite) issueInsertRecordsEvent() {
 	r := s.issueRepo()
