@@ -35,6 +35,10 @@ baseline `PR` workflow만 23.68 runner-minutes와 10.43분의 critical span을 �
   수행한다.
 - standalone lint는 `latest`, wrapper는 `v2.9.0`을 사용해 동일 검증의 tool version도
   다르다.
+- standalone jobs는 서로 독립적으로 실패를 보고하지만 `pr-policy.sh`와
+  `pr-lint.sh`는 현재 `set -e`로 첫 실패에서 멈춘다. jobs만 제거하면 merge 차단
+  자체는 유지돼도 뒤쪽 검증과 docs fix patch가 실행되지 않아 실패 진단 surface가
+  축소된다.
 - 비활성 `main.yml`에도 같은 중복이 있고, migration hygiene가 이미 포함하는
   duplicate migration scan을 별도 job이 다시 수행한다.
 
@@ -55,8 +59,10 @@ owner로 확장한다. upstream workflow 전체 cherry-pick은 현재 fork와 jo
 2. policy와 lint 검증을 각각 하나의 canonical wrapper job에만 둔다.
 3. 동일 검증을 수행하는 standalone jobs를 제거하되 검증 항목과 실패 진단은 보존한다.
 4. aggregate gate가 새 owner 집합을 누락 없이 평가하도록 정적 계약 테스트를 둔다.
-5. PR의 green critical path와 runner-minutes를 함께 줄인다.
-6. 비활성 `main.yml`도 같은 소유권 계약으로 정리해 재활성화 시 중복이 되살아나지
+5. canonical policy/lint scripts는 독립 subcheck를 끝까지 실행하고 마지막에 aggregate
+   failure를 반환한다.
+6. PR의 green critical path와 runner-minutes를 함께 줄인다.
+7. 비활성 `main.yml`도 같은 소유권 계약으로 정리해 재활성화 시 중복이 되살아나지
    않게 한다.
 
 ## 비목표
@@ -121,15 +127,33 @@ PR wrapper의 `make ci-pr-policy` step에는
 현재 standalone docs job과 같은 `cli-docs-freshness-patch` artifact를 업로드해 진단
 기능을 보존한다.
 
+`scripts/ci/pr-policy.sh`는 더 이상 첫 independent failure에서 종료하지 않는다.
+`scripts/ci/lib/timing.sh`에 상태 accumulator를 받는 최소 helper를 추가하고, 각
+independent policy subcheck는 timing summary와 exit status를 기록한 뒤 다음 subcheck로
+진행한다. helper 자체는 `set -e`를 재발동시키지 않도록 성공을 반환하되 accumulator에
+실패를 보존하고, caller는 마지막에 누적 status가 nonzero면 wrapper 전체를 실패시킨다.
+
+명시적인 producer dependency만 예외다. docs binary build가 실패하면 그 binary를
+요구하는 doc flags/drift 검사는 clear blocked message와 함께 실행하지 않지만, 독립적인
+doc freshness, `testing.Short`, `.beads` guard는 계속 실행한다. build-tag, install-guidance,
+version 같은 앞선 검사가 실패해도 docs binary build와 patch 생성 경로는 계속 시도한다.
+따라서 실행할 수 없는 dependent probe를 가짜 성공으로 만들지 않으면서 standalone
+parallel jobs가 주던 다중 실패 피드백을 보존한다.
+
 Main wrapper는 push의 비교 기준으로 `github.event.before`를 docs와 `.beads` base에
-전달한다. force push 등으로 base를 해석할 수 없을 때는 기존 scripts의 fail-safe
-warning/skip 의미를 유지한다.
+전달한다. force push 등으로 base를 해석할 수 없을 때 `.beads` guard는 warning 뒤 diff
+guard만 skip하고, docs strict probe가 실패했다면 attribution을 생략한 성공으로 바꾸지
+않는다.
 
 ### Lint owner
 
 `pr-lint-wrapper`가 `make ci-pr-lint`의 유일한 owner다. 이 target이 `make fmt-check`와
 `golangci-lint run --timeout=5m --build-tags=gms_pure_go ./...`를 수행한다.
 wrapper는 `golangci-lint v2.9.0`을 설치해 tool version을 고정한다.
+
+`scripts/ci/pr-lint.sh`도 같은 accumulator를 사용한다. `gofmt` 실패 뒤에도
+`golangci-lint`를 실행하고 두 결과를 timing summary에 남긴 뒤 하나라도 실패하면 최종
+nonzero를 반환한다.
 
 standalone `lint`의 `version: latest` 경로는 제거한다. 별도 annotations를 위해 같은
 lint를 다시 실행하지 않으며, canonical CLI의 exit status와 log를 gate authority로
@@ -209,6 +233,9 @@ upstream failure/cancel/skipped를 놓치지 않기 위해 gate의 `always()`는
 - artifact build/upload 실패: artifact consumer는 skip되고 aggregate gate는 실패한다.
 - policy 실패: timed subcheck가 실패 지점을 출력하고 docs drift면 fix patch를 업로드한다.
 - lint 실패: pinned CLI log와 nonzero status가 wrapper와 aggregate gate를 실패시킨다.
+- policy/lint의 한 independent subcheck 실패: 나머지 independent subcheck를 계속 실행하고
+  마지막에 누적 nonzero를 반환한다. 명시적 producer 실패로 실행 불가능한 dependent
+  probe만 blocked로 표시한다.
 - base SHA 해석 실패: `.beads` guard는 기존대로 warning 뒤 diff guard만 skip한다. docs
   strict probe가 실패한 상태라면 attribution을 생략한 성공으로 바꾸지 않고 strict 실패를
   유지한다. 어느 경로도 임의 base를 성공 근거로 만들지 않는다.
@@ -221,10 +248,13 @@ runtime data, schema, release artifact를 변경하지 않으므로 rollback은 
 
 ## Test scope
 
-RED-GREEN seam은 workflow validation ownership과 aggregate mapping이다.
+RED-GREEN seam은 workflow validation ownership, aggregate mapping, wrapper failure
+aggregation이다.
 
-새 `scripts/ci_workflow_test.go`는 이미 선언된 `gopkg.in/yaml.v3`를 사용해 다음을
-검증한다.
+새 `scripts/ci_workflow_test.go`는 이미 선언된 `gopkg.in/yaml.v3`를 사용해 workflow
+topology와 wrapper failure aggregation을 함께 검증한다.
+
+workflow topology seam:
 
 1. PR/Main `build-artifacts`에 lint install, policy, lint command가 없다.
 2. 각 workflow에서 `make ci-pr-policy`, `make ci-pr-lint`, `make ci-pr-core`가 지정
@@ -238,8 +268,21 @@ RED-GREEN seam은 workflow validation ownership과 aggregate mapping이다.
    scan은 없다.
 9. PR/Main migration hygiene job과 event별 `BASE_SHA`는 유지된다.
 
-테스트는 현재 topology에서 중복/오래된 gate를 검출해 RED가 되고, workflow 변경과 함께
-GREEN이 된다. action SHA ratchet이나 fork에 없는 upstream jobs는 이번 계약에 넣지 않는다.
+wrapper aggregation seam:
+
+1. `ci_time_accumulate <status-var> <label> -- <command>`의 synthetic first command를
+   실패시키고, 뒤 command가 sentinel과 docs-patch fixture를 생성하는지 확인한다.
+2. 모든 command가 실행된 뒤 aggregate status가 nonzero인지 확인한다.
+3. `pr-policy.sh`의 independent check inventory와 `pr-lint.sh`의 fmt/lint가 이 helper를
+   사용하고 final aggregate status를 반환하는지 실제 script 구조에 bind한다.
+4. docs binary build 실패 fixture에서는 binary-dependent doc flags만 blocked되고 doc
+   freshness와 뒤 policy checks는 실행되는지 확인한다.
+
+이 seam은 현재 `timing.sh`에 accumulator가 없고 wrappers가 첫 실패에서 종료하므로 실제
+RED다. test target은 기존 Go package `./scripts`이며 synthetic command를 실행해 단순 문자열
+검색만으로 통과하지 않는다. workflow topology test도 현재 중복/오래된 gate를 검출해
+RED가 되고 두 변경과 함께 GREEN이 된다. action SHA ratchet이나 fork에 없는 upstream jobs는
+이번 계약에 넣지 않는다.
 
 로컬 검증 bundle:
 
@@ -296,9 +339,11 @@ backport하지 않는다. 각 후속은 별도 Bead, brainstorming, spec, router
 1. policy와 lint의 모든 기존 검증 항목이 각각 하나의 canonical wrapper에서 실행된다.
 2. `build-artifacts`는 binary build/checksum/manifest/upload 외 검증을 수행하지 않는다.
 3. docs drift patch와 PR/merge-group exact base 검사가 wrapper 이동 뒤에도 유지된다.
-4. pure-Go compile, migration hygiene, package, core, domain/UOW 고유 surface는 유지된다.
-5. aggregate name, `always()`, owner result mapping이 workflow contract test로 고정된다.
-6. PR/Main workflow와 required-check 문서가 같은 single-owner topology를 설명한다.
-7. 집중 로컬 검증과 실제 PR aggregate CI가 통과한다.
-8. PR 성능 evidence가 baseline과 같은 방식으로 기록되며, cache/regression/storage 후속은
+4. 한 independent policy/lint failure 뒤에도 실행 가능한 나머지 subcheck가 모두 실행되고
+   최종 wrapper는 nonzero를 반환한다.
+5. pure-Go compile, migration hygiene, package, core, domain/UOW 고유 surface는 유지된다.
+6. aggregate name, `always()`, owner result mapping이 workflow contract test로 고정된다.
+7. PR/Main workflow와 required-check 문서가 같은 single-owner topology를 설명한다.
+8. 집중 로컬 검증과 실제 PR aggregate CI가 통과한다.
+9. PR 성능 evidence가 baseline과 같은 방식으로 기록되며, cache/regression/storage 후속은
    이번 diff에 섞이지 않는다.
