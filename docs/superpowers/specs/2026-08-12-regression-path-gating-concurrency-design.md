@@ -39,9 +39,9 @@ stale cancellation만 추가한다.
 3. missing/invalid bounds, diff 실패, event parse 실패와 unknown path는 full run으로 fail safe한다.
 4. `run-regression`과 `workflow_dispatch` force-run을 유지한다.
 5. `skip-regression`이 risky/unknown change를 우회하지 못하게 한다.
-6. 같은 PR의 stale workflow와 main의 stale risk-bearing heavy job을 최신 coverage-bearing SHA가
-   취소한다.
-7. detector와 workflow topology를 behavioral/static contract test로 고정한다.
+6. 같은 PR의 stale workflow와 main의 stale risk-bearing work를 SHA ancestry와 `run_id`로
+   monotonic하게 supersede한다.
+7. detector, monotonic arbitration과 workflow topology를 behavioral/static contract test로 고정한다.
 
 ## 비목표
 
@@ -57,7 +57,7 @@ stale cancellation만 추가한다.
 
 ## 소유권과 sibling 정합성
 
-- `beads-gkw`는 `.github/workflows/regression.yml`, 새 regression detector script,
+- `beads-gkw`는 `.github/workflows/regression.yml`, 새 regression detector/supersession scripts,
   regression-specific workflow contract와 관련 설명 문서만 소유한다.
 - `beads-am7`은 `PR`/`Main` single-owner DAG와 baseline aggregate를 소유한다.
 - `beads-yvf`는 `PR Risk` Embedded Dolt storage matrix를 소유한다.
@@ -72,16 +72,18 @@ Regression-specific fixture/helper는 같은 `scripts` Go package 안에서 pare
 
 ## 실행 단위 disposition과 Worker eligibility
 
-detector, workflow, tests와 docs는 현재 Bead의 한 PR이 운반한다. PR event evidence와
-implementation merge가 만드는 risky main run은 해당 PR/merge lifecycle에서 얻을 수 있다. 그러나
-“의미 없는 commit을 만들지 않는다”는 제약 아래 최초의 자연스러운 docs/metadata-only main push
-evidence는 merge 뒤 별도 외부 event를 기다려야 하며 현재
+detector, arbitration, workflow, tests와 docs는 현재 Bead의 한 PR이 운반한다. required runtime
+evidence 중 risky PR run과 implementation merge가 만드는 risky main run은 해당 PR/merge
+lifecycle에서 얻을 수 있다. 그러나 “의미 없는 commit을 만들지 않는다”는 제약 아래 최초의
+자연스러운 docs/metadata-only main push evidence는 merge 뒤 별도 외부 event를 기다려야 하며 현재
 `docs/agents/repo-ops.toml`의 managed deploy command가 그 event를 생성하지 않는다.
 
-따라서 이 표본은 현재 Bead의 required no-PR interactive residue다. formal spec gate를 닫을 때
-`spec_review`와 같은 logical write로 `worker-ineligible` label을 추가한다. 자연스러운 run의 URL,
-SHA, detector reason과 앞선 risky heavy job 보존을 read back한 뒤 label을 제거하고 Bead를 완료할
-수 있다. requirement를 완화하거나 dependency-backed Bead+PR로 옮기려면 spec delta review가
+따라서 docs-only main 표본은 현재 Bead의 required no-PR interactive residue다. formal spec gate를
+닫을 때 `spec_review`와 같은 logical write로 `worker-ineligible` label을 추가한다. required risky
+PR, risky main, docs-only main run의 URL/SHA/reason과 결과를 모두 read back한 뒤에만 label을
+제거하고 Bead를 완료할 수 있다. PR synchronize와 두 risky main push의 cancellation sequence는
+의미 있는 후속 commit이 자연스럽게 있을 때 추가로 기록하는 opportunistic evidence이며 closure
+requirement가 아니다. 이 구분을 바꾸거나 dependency-backed Bead+PR로 옮기려면 spec delta review가
 필요하다.
 
 ## 선택한 설계
@@ -175,7 +177,8 @@ path를 unsafe로 유지하는 것이 기본이다.
 ```
 
 단, `tests/regression/**`는 test-only여도 regression harness 자체이므로 항상 full run이다.
-`.github/workflows/regression.yml`, `.github/scripts/ci-regression-tier.sh`, `Makefile`,
+`.github/workflows/regression.yml`, `.github/scripts/ci-regression-tier.sh`,
+`.github/scripts/ci-regression-supersede.sh`, `Makefile`,
 `.buildflags`, `go.mod`, `go.sum`, `cmd/bd/**`, `internal/storage/**`, `internal/types/**`의
 non-test path는 full run이다.
 
@@ -200,7 +203,7 @@ label은 읽되, 모든 path가 safe일 때 reason을 `safe diff; skip-regressio
 
 두 label이 함께 있으면 `run-regression`이 이긴다. 이 precedence는 fixture로 고정한다.
 
-### 5. coverage-preserving event-aware concurrency
+### 5. coverage-preserving monotonic supersession
 
 [GitHub concurrency contract](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)는
 같은 group의 running run뿐 아니라 기존 pending run도 최신 항목으로 대체한다. 따라서 모든 main
@@ -215,28 +218,69 @@ concurrency:
   cancel-in-progress: true
 ```
 
-`regression` heavy job에는 별도 job-level concurrency를 둔다.
+main push는 GitHub의 last-entrant group ordering에 의존하지 않는다. detector가
+`run_regression=true`를 낸 trusted push에만 `supersede-stale-main` job을 실행하고, 새
+`.github/scripts/ci-regression-supersede.sh`가 GitHub Actions REST API로 monotonic arbitration을
+수행한다. [workflow-run list/cancel API](https://docs.github.com/en/rest/actions/workflow-runs)는
+workflow file, branch와 event로 run을 좁힐 수 있고 cancel에는 `Actions: write`가 필요하다.
 
 ```yaml
+permissions:
+  contents: read
+
 jobs:
+  supersede-stale-main:
+    name: Supersede stale main regression
+    needs: detect-regression-need
+    if: github.event_name == 'push' && needs.detect-regression-need.outputs.run_regression == 'true'
+    permissions:
+      actions: write
+      contents: read
+
   regression:
-    concurrency:
-      group: ${{ format('{0}-heavy-{1}-{2}', github.workflow, github.event_name, github.event_name == 'push' && github.ref || github.run_id) }}
-      cancel-in-progress: true
+    needs: [detect-regression-need, supersede-stale-main]
+    if: always() && needs.detect-regression-need.result == 'success' && needs.detect-regression-need.outputs.run_regression == 'true' && needs.supersede-stale-main.outputs.proceed != 'false'
 ```
 
-- 같은 PR number의 synchronize run은 workflow-level에서 이전 run 전체를 취소한다.
-- push workflow 자체는 `run_id`로 분리되어 docs-only detector/skip이 앞선 risky heavy job을
-  취소하지 않는다.
-- `run_regression=true`인 main push의 heavy job만 `refs/heads/main` group을 공유한다. 더 최신의
-  risk-bearing main SHA가 이전 heavy job을 취소하며, 최신 candidate는 앞선 main commit의 source를
-  포함해 누적 coverage를 보존한다.
-- PR, push와 manual은 `event_name`/`run_id`로 분리되어 서로 취소하지 않는다.
-- manual run은 workflow/job 모두 `run_id`가 group에 들어가 서로 취소하지 않는다.
+job output은 `proceed=true|false`, single-line `reason`과 취소를 요청한 run ID 목록이다. 실제
+`GITHUB_OUTPUT`에는 validated final wrapper만 쓰며 script failure, missing/duplicate output 또는
+invalid boolean은 `proceed=true`, `reason=arbitration degraded; keeping full regression`으로
+대체한다.
 
-이 구조는 GitHub의 workflow/job-level concurrency와 default pending replacement contract에
-의존한다. 취소는 stale compute를 줄이는 정책이며 이전 실패를 success로 바꾸지 않는다. PR은
-최신 run, main은 최신 completed risk-bearing heavy job을 coverage evidence로 사용한다.
+script 입력은 `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`, `GITHUB_SHA`, `GH_TOKEN`과 candidate output
+path다. workflow filename과 main branch는 regression contract 상수이며 다른 repository/ref를
+외부 입력으로 받아 취소 범위를 넓히지 않는다.
+
+arbitration algorithm은 다음으로 고정한다.
+
+1. current `GITHUB_RUN_ID`가 decimal이고 current SHA가 40-hex인지 검증한다. invalid input/API
+   failure는 cancellation을 포기하고 `proceed=true`로 full run한다.
+2. `regression.yml`, `branch=main`, `event=push`의 모든 active page를 조회한다.
+3. lower `run_id`의 non-completed run은 그 head SHA가 current SHA의 ancestor일 때만 cancel한다.
+   non-ancestor, missing object와 ancestry check failure는 취소하지 않아 두 run을 모두 보존한다.
+4. higher `run_id`의 active run job 목록에서 `Supersede stale main regression`이 이미
+   `in_progress`이거나
+   `completed` non-skipped이면 risk-bearing run으로 인정한다. current SHA가 higher head SHA의
+   ancestor일 때 current job은 `proceed=false`로 self-abort한다. 아직 detector를 기다리는 queued
+   job이나 completed-skipped job은 docs-only일 수 있으므로 supersession 근거로 쓰지 않는다.
+5. cancel `202`는 accepted, completion race의 `409`는 benign으로 기록한다. 다른 list/jobs/cancel
+   오류는 warning과 `arbitration=degraded`를 남기고 current heavy run을 계속한다.
+
+script는 API transport를 주입 가능한 함수/command로 분리해 fixture에서 실제 run을 취소하지 않는다.
+`supersede-stale-main`은 push-main commit만 checkout하고 `persist-credentials:false`,
+`fetch-depth:0`을 사용한다. `actions:write` token은 이 job에만 있고 PR/manual job이나 heavy test
+process에 전달되지 않는다. script/output schema 실패도 final wrapper가 `proceed=true`로 바꾼다.
+
+- 같은 PR number의 synchronize run은 workflow-level에서 이전 run 전체를 취소한다.
+- docs-only main push는 arbitration job 자체가 skipped라 앞선 risky run을 취소하지 않는다.
+- newer risk-bearing push는 lower run ID이면서 ancestor인 work만 cancel한다.
+- older detector가 나중에 끝나도 higher risk-bearing arbitration job을 취소할 수 없고 자신이
+  `proceed=false`가 된다.
+- API/ancestry uncertainty는 중복 실행으로 비용만 늘릴 뿐 coverage를 제거하지 않는다.
+- PR, push와 manual은 event/run ID로 분리되어 서로 취소하지 않는다.
+
+취소는 stale compute를 줄이는 정책이며 이전 실패를 success로 바꾸지 않는다. PR은 최신 run,
+main은 ancestry가 확인된 최신 completed risk-bearing heavy job을 coverage evidence로 사용한다.
 
 ### 6. workflow topology 보존
 
@@ -247,8 +291,10 @@ trigger는 계속 다음 세 개만 가진다.
 - `workflow_dispatch`
 
 workflow-level `paths`/`paths-ignore`는 추가하지 않는다. `detect-regression-need`는 항상
-실행하고, `regression` job은 기존처럼
-`needs.detect-regression-need.outputs.run_regression == 'true'`일 때만 실행한다.
+실행한다. `supersede-stale-main`은 risky main push에만 실행하며, `regression`은 detector output이
+true이고 monotonic arbitration이 current run을 superseded로 판정하지 않았을 때 실행한다.
+arbitration job의 skipped/failure dependency가 PR/manual full run을 막지 않도록 `always()`와
+detector result/output을 함께 검사한다.
 
 job display name, timeout, Dolt setup, `~/.cache/beads-regression` key/path와 다음 command는
 유지한다.
@@ -270,20 +316,22 @@ go test -tags=regression,gms_pure_go -timeout=20m -v ./tests/regression/...
 - 실제 `GITHUB_OUTPUT`에 쓸 수 없음: detector job failure, workflow red
 - safe diff: detector success + heavy job skipped
 - stale PR run: workflow-level concurrency가 cancel
-- stale risky main heavy job: 더 최신 `run_regression=true` job이 cancel
+- stale risky main work: newer run이 lower-ID ancestor를 cancel하고, reversed detector order의 older
+  run은 higher risk-bearing job을 확인해 self-abort
 - docs-only main run: 앞선 risky heavy job을 cancel하지 않고 자신은 skip
+- arbitration API/ancestry/output failure: cancel하지 않고 current heavy run 계속, warning 기록
 
 script는 fallback reason을 stderr와 `GITHUB_OUTPUT`에 모두 남긴다. raw changed paths는 log에
 한 줄씩 출력하되 output value에는 newline을 넣지 않는다.
 
-rollback은 detector script, workflow wiring, concurrency와 contract/docs를 한 PR로 revert하는
-것이다. failure fallback만 제거하거나 `skip-regression` bypass를 임시 복원하는 부분 rollback은
-금지한다.
+rollback은 detector/supersession scripts, workflow wiring, concurrency/arbitration과 contract/docs를
+한 PR로 revert하는 것이다. failure fallback만 제거하거나 `skip-regression` bypass를 임시 복원하는
+부분 rollback은 금지한다.
 
 ## Test scope
 
 RED-GREEN seam은 event bounds, safe/unknown path classification, label precedence,
-fail-safe fallback과 concurrency topology다.
+fail-safe fallback과 monotonic supersession topology다.
 
 ### RED
 
@@ -293,9 +341,9 @@ fail-safe fallback과 concurrency topology다.
 2. risky main push가 `true`를 출력한다.
 3. missing/zero SHA, invalid diff와 unknown path가 `true`를 출력한다.
 4. risky PR의 `skip-regression`이 bypass되지 않는다.
-5. 같은 PR의 workflow group과 risky main의 heavy-job group은 안정되고, docs-only main과 manual
-   workflow group은 run별로 다르다.
-6. detector logic이 external script로 behavioral fixture에서 실행된다.
+5. reversed detector completion에서 newer run만 lower ancestor를 취소하고 older run은 self-abort한다.
+6. docs-only higher run, non-ancestor와 API failure가 current risky run을 취소/skip하지 않는다.
+7. detector와 supersession logic이 external script로 behavioral fixture에서 실행된다.
 
 ### GREEN behavioral fixtures
 
@@ -330,6 +378,20 @@ Go test가 `t.TempDir()` 아래 isolated git repository와 event JSON을 만들�
 fixture는 global git config를 차단하고 repo-local `core.hooksPath`를 사용한다. production
 Beads database나 실제 GitHub event file을 변경하지 않는다.
 
+supersession fixture는 fake paginated run/jobs API와 temp git ancestry를 사용해 다음을 검증한다.
+
+| Arbitration case | Expected |
+|---|---|
+| current 102, active ancestral 101 | cancel 101, proceed true |
+| current 101 finishes detector after active risk-bearing 102 | cancel none, proceed false |
+| higher docs-only job is skipped | proceed true |
+| lower/higher SHA is non-ancestor or missing | no cancel/self-abort, proceed true |
+| list/jobs/cancel error or invalid output | warning, proceed true |
+| cancel completion race `409` | benign, proceed true |
+
+reversed-order fixture는 102 arbitration을 먼저, 101을 나중에 호출해 101이 절대 102를 취소하지
+않고 heavy suite도 시작하지 않는지 고정한다.
+
 ### GREEN static workflow contract
 
 `scripts/ci_workflow_test.go`는 YAML을 parse해 다음을 고정한다.
@@ -337,12 +399,18 @@ Beads database나 실제 GitHub event file을 변경하지 않는다.
 - 세 trigger와 branch target이 유지된다.
 - workflow-level path filter와 `merge_group`이 없다.
 - workflow-level concurrency는 같은 PR만 공유하고 push/manual은 `run_id`로 분리한다.
-- `regression` job-level concurrency는 main ref의 heavy job만 공유하며 두 level 모두
-  `cancel-in-progress: true`다.
+- heavy job-level concurrency가 없고 `supersede-stale-main`만 risky push-main에서 실행된다.
+- workflow 기본 권한은 `contents:read`이고 supersession job만 `actions:write`를 override한다.
+- supersession job만 `actions:write`, checkout `persist-credentials:false`, `fetch-depth:0`을 가지며
+  PR/manual/heavy job은 write token을 받지 않는다.
+- `regression.needs`/`if`가 detector success+true, arbitration `proceed`와 fail-safe `always()`를
+  함께 고정한다.
 - checkout `fetch-depth: 0`, detector output names와 job-level `if`가 유지된다.
 - push/PR SHA env가 script에 전달된다.
 - detector wrapper가 candidate output schema를 검증하고 nonzero/invalid output을 `true`
   fallback으로 바꾼다.
+- supersession wrapper가 candidate output schema를 검증하고 nonzero/invalid output을
+  `proceed=true` fallback으로 바꾼다.
 - repository의 현재 `//go:embed` target이 safe classifier와 교차하지 않는다.
 - Regression command, timeout과 baseline binary cache가 바뀌지 않는다.
 - PR/Main/PR Risk aggregate gate에는 Regression job이 추가되지 않는다.
@@ -366,6 +434,7 @@ regression” 문장이 active policy처럼 읽히면 historical measurement임�
 
 ```bash
 bash -n .github/scripts/ci-regression-tier.sh
+bash -n .github/scripts/ci-regression-supersede.sh
 go test ./scripts -run 'Regression|CIWorkflow'
 go test ./scripts
 git diff --check
@@ -378,16 +447,21 @@ detector 구현의 필수 RED-GREEN gate가 아니다. 실제 risky PR에서는 
 
 ## runtime acceptance
 
-1. risky implementation PR에서 detector reason과 differential regression success를 기록한다.
-2. 같은 PR에 새 commit을 연속 push해 이전 run이 cancelled되고 최신 SHA run이 남는지 확인한다.
-3. 자연스럽게 연속된 risky main push와 docs/metadata-only main push에서 risky heavy job은
-   docs-only run 때문에 cancel되지 않고, docs-only run 자체는 skip되는지 기록한다.
-4. 자연스럽게 연속된 두 risk-bearing main push에서는 최신 heavy job이 이전 heavy job을
-   supersede하고 성공하는지 기록한다.
+closure에 필요한 runtime evidence는 다음 세 가지다.
 
-docs-only/risky 실제 main evidence가 아직 발생하지 않았으면 contract test를 runtime success로
-과장하지 않는다. Bead 완료 전에 해당 run URL/SHA/reason을 notes 또는 completion report에
-추가한다. production PR을 고의로 실패시키거나 의미 없는 commit을 만들지 않는다.
+1. risky implementation PR의 detector reason과 differential regression success
+2. implementation merge가 만드는 risky main push의 arbitration/heavy success
+3. 최초의 자연스러운 docs/metadata-only main push의 detector success와 heavy skip
+
+같은 PR에 의미 있는 후속 commit이 있으면 synchronize cancellation을, 자연스럽게 연속된 두
+risk-bearing main push가 있으면 monotonic cancel/self-abort를 추가로 기록한다. 두 sequence는 static/
+behavioral contract를 보강하는 opportunistic evidence이며, 이를 만들기 위한 빈 commit이나 의미
+없는 production change는 금지한다.
+
+required docs-only/risky 실제 main evidence가 아직 발생하지 않았으면 contract test를 runtime
+success로 과장하지 않는다. Bead 완료 전에 세 required run의 URL/SHA/reason을 notes 또는
+completion report에 추가한다. production PR을 고의로 실패시키거나 의미 없는 commit을 만들지
+않는다.
 
 ## Acceptance criteria
 
@@ -396,9 +470,11 @@ docs-only/risky 실제 main evidence가 아직 발생하지 않았으면 contrac
 3. `workflow_dispatch`와 `run-regression` force-run이 유지된다.
 4. `skip-regression`은 risky/unknown change를 우회하지 못한다.
 5. missing/invalid SHA, diff/event parse 실패, empty diff와 unknown path는 full run한다.
-6. 같은 PR의 stale workflow와 main의 stale risk-bearing heavy job은 취소되지만 docs-only main
-   run은 앞선 risky heavy job을 취소하지 않고 manual runs도 서로 취소하지 않는다.
+6. 같은 PR의 stale workflow는 기존 event group으로 취소되고, main은 newer run이 lower-ID
+   ancestor만 cancel하며 reversed detector order의 older run은 self-abort한다. docs-only main과
+   manual run은 risky coverage를 취소하지 않는다.
 7. workflow는 separate/non-required로 남고 `merge_group`/branch protection을 바꾸지 않는다.
-8. behavioral/static contract tests와 실제 docs-only/risky run evidence가 있다.
+8. reversed-order/API-failure를 포함한 behavioral/static contract tests와 required risky PR,
+   risky main, docs-only main run evidence가 있다.
 9. Regression test body/baseline cache, sibling cache/sharding과 parent artifact DAG가 diff에 섞이지
    않는다.
