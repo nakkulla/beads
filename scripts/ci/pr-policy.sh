@@ -73,11 +73,26 @@ build_docs_binary() {
         ./cmd/bd
 }
 
-ci_time "check build-tag policy" -- ./scripts/check-build-tags.sh
-ci_time "check go install guidance" -- ./scripts/check-go-install-guidance.sh
-ci_time "check version consistency" -- ./scripts/check-versions.sh
-ci_time "build bd for docs checks" -- build_docs_binary
-ci_time "check doc flags" -- ./scripts/check-doc-flags.sh "$tmpdir/bd"
-ci_time "check doc freshness" -- ./scripts/check-doc-freshness.sh
-ci_time "check testing.Short boundaries" -- ./scripts/check-testing-short.sh
-ci_time "check no .beads/issues.jsonl changes" -- check_no_beads_jsonl_changes
+status=0
+docs_binary_status=0
+
+ci_time_accumulate status "check build-tag policy" -- ./scripts/check-build-tags.sh
+ci_time_accumulate status "check go install guidance" -- ./scripts/check-go-install-guidance.sh
+ci_time_accumulate status "check version consistency" -- ./scripts/check-versions.sh
+ci_time_accumulate docs_binary_status "build bd for docs checks" -- build_docs_binary
+
+if [[ "$docs_binary_status" -eq 0 ]]; then
+    ci_time_accumulate status "check doc flags" -- ./scripts/check-doc-flags.sh "$tmpdir/bd"
+else
+    printf 'Skipping doc flags and CLI docs drift checks because building bd for docs checks failed.\n' >&2
+fi
+
+if [[ "$status" -eq 0 && "$docs_binary_status" -ne 0 ]]; then
+    status="$docs_binary_status"
+fi
+
+ci_time_accumulate status "check doc freshness" -- ./scripts/check-doc-freshness.sh
+ci_time_accumulate status "check testing.Short boundaries" -- ./scripts/check-testing-short.sh
+ci_time_accumulate status "check no .beads/issues.jsonl changes" -- check_no_beads_jsonl_changes
+
+exit "$status"

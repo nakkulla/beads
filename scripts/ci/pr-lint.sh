@@ -13,6 +13,10 @@ source "$REPO_ROOT/scripts/ci/lib/timing.sh"
 
 cd "$REPO_ROOT"
 
-ci_time "gofmt check" -- make fmt-check
-ci_time "golangci-lint" -- \
+status=0
+
+ci_time_accumulate status "gofmt check" -- make fmt-check
+ci_time_accumulate status "golangci-lint" -- \
     golangci-lint run --timeout=5m --build-tags=gms_pure_go ./...
+
+exit "$status"

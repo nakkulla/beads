@@ -546,7 +546,7 @@ set -eu
 case "${1:-} ${2:-} ${3:-}" in
   "rev-parse --short HEAD") printf '%s\n' fixture-head ;;
   "rev-parse --verify --quiet") exit 0 ;;
-  "diff --name-only") printf '%s\n' check-beads >> "$FIXTURE_LOG" ;;
+  "diff --name-only "*) printf '%s\n' check-beads >> "$FIXTURE_LOG" ;;
   *) echo "unexpected fake git invocation: $*" >&2; exit 97 ;;
 esac
 `)
