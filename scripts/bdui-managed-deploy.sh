@@ -25,31 +25,36 @@ sha256_text() {
 }
 
 safe_component() {
-  safe=$(printf '%s' "$1" | LC_ALL=C sed 's/[^A-Za-z0-9._-]/_/g')
-  [ -n "$safe" ] || safe=$2
-  printf '%s' "$safe"
+  "$PYTHON" - "$1" "$2" <<'PY'
+import sys
+
+value = sys.argv[1] or sys.argv[2]
+units = value.encode("utf-16-le", "surrogatepass")
+safe = "".join(
+    chr(unit) if chr(unit).isascii() and (chr(unit).isalnum() or chr(unit) in ".-_") else "_"
+    for unit in (int.from_bytes(units[index:index + 2], "little") for index in range(0, len(units), 2))
+)
+print(safe or sys.argv[2], end="")
+PY
 }
 
-assert_safe_existing_dirs() {
-  path=$1
-  case "$path" in
-    /*) ;;
-    *) fail "path is not absolute: $path" ;;
+normalize_absolute_home() {
+  value=$1
+  fallback=$2
+  name=$3
+  case "$value" in
+    *[![:space:]]*) ;;
+    *) value=$fallback ;;
   esac
-  rest=${path#/}
-  current=/
-  old_ifs=$IFS
-  IFS=/
-  set -- $rest
-  IFS=$old_ifs
-  for component in "$@"; do
-    [ -n "$component" ] || continue
-    current=$current$component
-    if [ -e "$current" ] || [ -L "$current" ]; then
-      [ -d "$current" ] && [ ! -L "$current" ] || fail "unsafe path component: $current"
-    fi
-    current=$current/
-  done
+  case "$value" in
+    /*) ;;
+    *) fail "$name is not absolute" ;;
+  esac
+  "$PYTHON" - "$value" <<'PY'
+import os
+import sys
+print(os.path.normpath(sys.argv[1]), end="")
+PY
 }
 
 for name in \
@@ -83,32 +88,34 @@ case "$BDUI_DEPLOY_SOURCE_REPO" in
 esac
 [ -d "$BDUI_DEPLOY_SOURCE_REPO" ] || fail "source repo is not a directory"
 
-data_home=${XDG_DATA_HOME:-$HOME/.local/share}
-state_home=${XDG_STATE_HOME:-$HOME/.local/state}
-case "$data_home" in /*) ;; *) fail "XDG_DATA_HOME is not absolute" ;; esac
-case "$state_home" in /*) ;; *) fail "XDG_STATE_HOME is not absolute" ;; esac
+data_home=$(normalize_absolute_home "${XDG_DATA_HOME-}" "$HOME/.local/share" XDG_DATA_HOME)
+state_home=$(normalize_absolute_home "${XDG_STATE_HOME-}" "$HOME/.local/state" XDG_STATE_HOME)
 
 source_base=$(basename "$BDUI_DEPLOY_SOURCE_REPO")
 source_name=$(safe_component "$source_base" ws | cut -c1-40)
 source_hash=$(sha256_text "$BDUI_DEPLOY_SOURCE_REPO" | cut -c1-12)
 workspace_slug=$source_name-$source_hash
 candidate_lower=$(printf '%s' "$BDUI_DEPLOY_CANDIDATE_SHA" | tr 'A-F' 'a-f')
-release=$data_home/bdui/deploy/$workspace_slug/releases/$candidate_lower
+deployment_root=$data_home/bdui/deploy/$workspace_slug
+release_root=$deployment_root/releases
+release=$release_root/$candidate_lower
 attempt_safe=$(safe_component "$BDUI_DEPLOY_ATTEMPT_ID" attempt)
 receipt=$state_home/bdui/$workspace_slug/deploy-receipts/$attempt_safe.json
 
 [ "$BDUI_DEPLOY_RELEASE_PATH" = "$release" ] || fail "release path does not match protocol"
 [ "$BDUI_DEPLOY_RECEIPT_PATH" = "$receipt" ] || fail "receipt path does not match protocol"
-[ "$PWD" = "$release" ] || fail "adapter must run from the exact release cwd"
-[ -d "$release" ] && [ ! -L "$release" ] || fail "release is not a directory"
-assert_safe_existing_dirs "$release"
+for directory in "$deployment_root" "$release_root" "$release"; do
+  [ -d "$directory" ] && [ ! -L "$directory" ] || fail "release path is not a directory: $directory"
+done
+release_root_real=$(CDPATH= cd -P -- "$release_root" && pwd)
 release_real=$(CDPATH= cd -P -- "$release" && pwd)
-[ "$release_real" = "$release" ] || fail "release path resolves unexpectedly"
+[ "$(dirname "$release_real")" = "$release_root_real" ] || fail "release path resolves unexpectedly"
+cwd_real=$(CDPATH= cd -P -- . && pwd)
+[ "$cwd_real" = "$release_real" ] || fail "adapter must run from the exact release cwd"
 script_dir=$(CDPATH= cd -P -- "$(dirname -- "$0")" && pwd)
-[ "$script_dir" = "$release/scripts" ] || fail "adapter is not candidate-local"
+[ "$script_dir" = "$release_real/scripts" ] || fail "adapter is not candidate-local"
 
 receipt_parent=$(dirname "$receipt")
-assert_safe_existing_dirs "$receipt_parent"
 if [ -e "$receipt" ] || [ -L "$receipt" ]; then
   fail "receipt already exists"
 fi
@@ -181,7 +188,8 @@ os.makedirs(parent, mode=0o700, exist_ok=True)
 if os.path.lexists(receipt_path):
     raise SystemExit("receipt already exists")
 actions = [
-    {"action": "build_install", "outcome": "success"},
+    {"action": "build", "outcome": "success"},
+    {"action": "install", "outcome": "success"},
     {"action": "binary_hash_readback", "outcome": "success"},
     {"action": "version_readback", "outcome": "success"},
     {"action": "alias_readback", "outcome": "success"},
@@ -226,7 +234,8 @@ try:
         os.fsync(output.fileno())
     if os.path.lexists(receipt_path):
         raise FileExistsError(receipt_path)
-    os.rename(temporary, receipt_path)
+    os.link(temporary, receipt_path)
+    os.unlink(temporary)
     temporary = None
     directory = os.open(parent, os.O_RDONLY)
     try:

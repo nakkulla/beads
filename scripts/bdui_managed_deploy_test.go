@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
 
 func TestManagedDeployWritesProviderCompatibleReceipt(t *testing.T) {
@@ -43,6 +44,9 @@ func TestManagedDeployWritesProviderCompatibleReceipt(t *testing.T) {
 		if !ok || result["outcome"] != "success" {
 			t.Fatalf("receipt action is not a success object: %#v", action)
 		}
+	}
+	if got, want := actionNames(actions), []string{"build", "install", "binary_hash_readback", "version_readback", "alias_readback"}; !slicesEqual(got, want) {
+		t.Fatalf("receipt action outcomes = %q, want %q", got, want)
 	}
 	compact, err := json.Marshal(actions)
 	if err != nil {
@@ -207,6 +211,68 @@ func TestManagedDeployRejectsSymlinkReceiptTarget(t *testing.T) {
 	}
 }
 
+func TestManagedDeployUsesProviderUTF16SlugAndAttemptPath(t *testing.T) {
+	h := newManagedDeployHarnessWithSourceBase(t, "é😀repo")
+	attempt := "é😀attempt"
+	slug := managedWorkspaceSlug(h.source)
+	h.receipt = filepath.Join(h.stateHome, "bdui", slug, "deploy-receipts", managedSafeComponent(attempt, "attempt")+".json")
+
+	if slug != "___repo-"+managedWorkspaceHash(h.source) || filepath.Base(h.receipt) != "___attempt.json" {
+		t.Fatalf("provider-derived paths are wrong: slug=%q receipt=%q", slug, h.receipt)
+	}
+	if out, err := h.command(map[string]string{
+		"BDUI_DEPLOY_ATTEMPT_ID":   attempt,
+		"BDUI_DEPLOY_RECEIPT_PATH": h.receipt,
+	}).CombinedOutput(); err != nil {
+		t.Fatalf("provider-compatible Unicode paths rejected: %v\n%s", err, out)
+	}
+}
+
+func TestManagedDeployAcceptsNormalizedAbsoluteXDGPathsWithSymlinkAncestors(t *testing.T) {
+	h := newManagedDeployHarness(t)
+	dataLink := filepath.Join(filepath.Dir(h.dataHome), "data-link")
+	stateLink := filepath.Join(filepath.Dir(h.stateHome), "state-link")
+	if err := os.Symlink(h.dataHome, dataLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(h.stateHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(h.stateHome, stateLink); err != nil {
+		t.Fatal(err)
+	}
+	h.dataHome = dataLink + "/."
+	h.stateHome = stateLink + "/."
+	slug := managedWorkspaceSlug(h.source)
+	h.release = filepath.Join(dataLink, "bdui", "deploy", slug, "releases", h.candidate)
+	h.receipt = filepath.Join(stateLink, "bdui", slug, "deploy-receipts", "attempt_one.json")
+
+	h.run(t)
+	if _, err := os.Stat(h.receipt); err != nil {
+		t.Fatalf("receipt at normalized symlinked state path: %v", err)
+	}
+}
+
+func TestManagedDeployDoesNotReplaceReceiptPublishedDuringFinalWrite(t *testing.T) {
+	h := newManagedDeployHarness(t)
+	const previous = "receipt published in final write race"
+	out, err := h.command(map[string]string{
+		"BDUI_TEST_RACE_RECEIPT": h.receipt,
+		"BDUI_TEST_RACE_CONTENT": previous,
+	}).CombinedOutput()
+	if err == nil {
+		t.Fatalf("managed deploy unexpectedly succeeded:\n%s", out)
+	}
+	got, readErr := os.ReadFile(h.receipt)
+	if readErr != nil {
+		t.Fatalf("read concurrent receipt after %v:\n%s", readErr, out)
+	}
+	if string(got) != previous {
+		t.Fatalf("final receipt publish replaced concurrent receipt: %q", got)
+	}
+	h.assertMakeInvocation(t, 1)
+}
+
 func TestManagedDeployDoesNotTouchDirtyFeatureSharedSource(t *testing.T) {
 	h := newManagedDeployHarness(t)
 	prepareDirtySharedSource(t, h.source)
@@ -226,16 +292,20 @@ func TestManagedDeployDoesNotTouchDirtyFeatureSharedSource(t *testing.T) {
 }
 
 type managedDeployHarness struct {
-	source, release, receipt, home, dataHome, stateHome, candidate, floor, remote, makeLog string
+	source, release, receipt, home, dataHome, stateHome, candidate, floor, remote, makeLog, systemPython string
 }
 
 func newManagedDeployHarness(t *testing.T) managedDeployHarness {
+	return newManagedDeployHarnessWithSourceBase(t, "shared source")
+}
+
+func newManagedDeployHarnessWithSourceBase(t *testing.T, sourceBase string) managedDeployHarness {
 	t.Helper()
 	tmp, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	source := filepath.Join(tmp, "shared source")
+	source := filepath.Join(tmp, sourceBase)
 	if err := os.MkdirAll(source, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -288,8 +358,32 @@ func newManagedDeployHarness(t *testing.T) managedDeployHarness {
 	if err := os.WriteFile(filepath.Join(bin, "make"), []byte(makeScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	systemPython, err := exec.LookPath("python3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pythonWrapper := `#!/bin/sh
+set -eu
+if [ "${1-}" = "-" ] && [ -n "${BDUI_TEST_RACE_RECEIPT-}" ]; then
+  exec "$BDUI_TEST_SYSTEM_PYTHON" -c '
+import os
+import sys
+source = sys.stdin.read()
+sys.argv = sys.argv[1:]
+publish = "os.link(temporary, receipt_path)" if "os.link(temporary, receipt_path)" in source else "os.rename(temporary, receipt_path)"
+if publish in source:
+    race = "with open(os.environ[\"BDUI_TEST_RACE_RECEIPT\"], \"w\") as raced:\n        raced.write(os.environ.get(\"BDUI_TEST_RACE_CONTENT\", \"\"))\n    " + publish
+    source = source.replace(publish, race, 1)
+exec(compile(source, "<bdui-managed-deploy>", "exec"))
+' "$@"
+fi
+exec "$BDUI_TEST_SYSTEM_PYTHON" "$@"
+`
+	if err := os.WriteFile(filepath.Join(bin, "python3"), []byte(pythonWrapper), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	return managedDeployHarness{
-		source: source, release: release, home: filepath.Join(tmp, "home"), dataHome: dataHome, stateHome: stateHome,
+		source: source, release: release, home: filepath.Join(tmp, "home"), dataHome: dataHome, stateHome: stateHome, systemPython: systemPython,
 		candidate: candidate, floor: candidate, remote: remote, makeLog: filepath.Join(tmp, "make.log"),
 		receipt: filepath.Join(stateHome, "bdui", slug, "deploy-receipts", "attempt_one.json"),
 	}
@@ -320,6 +414,7 @@ func (h managedDeployHarness) command(overrides map[string]string) *exec.Cmd {
 		"XDG_STATE_HOME="+h.stateHome,
 		"PATH="+filepath.Join(filepath.Dir(h.home), "bin")+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"BDUI_TEST_MAKE_LOG="+h.makeLog,
+		"BDUI_TEST_SYSTEM_PYTHON="+h.systemPython,
 		"BDUI_TEST_VERSION_JSON={\"build\":\""+h.candidate[:7]+"\",\"note\":\"escaped \\\"build\\\":\\\"wrong\\\"\"}",
 		"BDUI_DEPLOY_PROTOCOL_VERSION=1",
 		"BDUI_DEPLOY_SOURCE_REPO="+h.source,
@@ -415,21 +510,53 @@ func git(t *testing.T, dir string, args ...string) string {
 
 func managedWorkspaceSlug(source string) string {
 	base := filepath.Base(source)
+	name := managedSafeComponent(base, "ws")
+	if len(name) > 40 {
+		name = name[:40]
+	}
+	return name + "-" + managedWorkspaceHash(source)
+}
+
+func managedWorkspaceHash(source string) string {
+	digest := sha256.Sum256([]byte(source))
+	return hex.EncodeToString(digest[:])[:12]
+}
+
+func managedSafeComponent(value, fallback string) string {
+	if value == "" {
+		value = fallback
+	}
 	var safe strings.Builder
-	for _, r := range base {
-		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || strings.ContainsRune("._-", r) {
-			safe.WriteRune(r)
+	for _, unit := range utf16.Encode([]rune(value)) {
+		if (unit >= 'A' && unit <= 'Z') || (unit >= 'a' && unit <= 'z') || (unit >= '0' && unit <= '9') || strings.ContainsRune("._-", rune(unit)) {
+			safe.WriteByte(byte(unit))
 		} else {
 			safe.WriteByte('_')
 		}
 	}
-	name := safe.String()
-	if len(name) > 40 {
-		name = name[:40]
+	if safe.Len() == 0 {
+		return fallback
 	}
-	if name == "" {
-		name = "ws"
+	return safe.String()
+}
+
+func actionNames(actions []any) []string {
+	names := make([]string, 0, len(actions))
+	for _, action := range actions {
+		result := action.(map[string]any)
+		names = append(names, result["action"].(string))
 	}
-	digest := sha256.Sum256([]byte(source))
-	return name + "-" + hex.EncodeToString(digest[:])[:12]
+	return names
+}
+
+func slicesEqual(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
