@@ -24,7 +24,7 @@ func TestManagedDeployWritesProviderCompatibleReceipt(t *testing.T) {
 	if err := json.Unmarshal(data, &receipt); err != nil {
 		t.Fatalf("parse receipt: %v", err)
 	}
-	if receipt["protocol_version"] != float64(1) || receipt["repo"] != h.source || receipt["candidate_sha"] != h.candidate {
+	if receipt["protocol_version"] != float64(1) || receipt["repo"] != h.source || receipt["target_remote"] != h.remote || receipt["target_base"] != "main" || receipt["attempt_id"] != "attempt/one" || receipt["merged_floor_sha"] != h.floor || receipt["candidate_sha"] != h.candidate {
 		t.Fatalf("receipt bindings are invalid: %#v", receipt)
 	}
 	if receipt["previous_marker"] != nil || receipt["deployed_marker"] != h.candidate || receipt["outcome"] != "success" {
@@ -57,7 +57,7 @@ func TestManagedDeployWritesProviderCompatibleReceipt(t *testing.T) {
 		t.Fatalf("receipt deployment source is invalid: %#v", receipt["deployment_source"])
 	}
 	readback, ok := receipt["readback"].(map[string]any)
-	if !ok || readback["outcome"] != "success" || readback["source_path"] != h.release || readback["source_head"] != h.candidate {
+	if !ok || readback["outcome"] != "success" || readback["deployed_marker"] != h.candidate || readback["source_path"] != h.release || readback["source_head"] != h.candidate {
 		t.Fatalf("receipt readback is invalid: %#v", receipt["readback"])
 	}
 	installed := filepath.Join(h.home, ".local", "bin", "bd")
@@ -81,6 +81,22 @@ func TestManagedDeployRejectsInvalidReleaseBindingsWithoutReceipt(t *testing.T) 
 		{
 			name:     "wrong release path",
 			override: map[string]string{"BDUI_DEPLOY_RELEASE_PATH": "/tmp/wrong-release"},
+		},
+		{
+			name:     "missing source",
+			override: map[string]string{"BDUI_DEPLOY_SOURCE_REPO": filepath.Join(t.TempDir(), "missing-source")},
+		},
+		{
+			name:     "wrong receipt path",
+			override: map[string]string{"BDUI_DEPLOY_RECEIPT_PATH": "/tmp/wrong-receipt"},
+		},
+		{
+			name:     "missing attempt",
+			override: map[string]string{"BDUI_DEPLOY_ATTEMPT_ID": ""},
+		},
+		{
+			name:     "bad protocol version",
+			override: map[string]string{"BDUI_DEPLOY_PROTOCOL_VERSION": "2"},
 		},
 		{
 			name: "wrong head",
@@ -115,12 +131,13 @@ func TestManagedDeployRejectsInvalidReleaseBindingsWithoutReceipt(t *testing.T) 
 			}
 			h.runFailure(t, tt.override)
 			h.assertNoReceipt(t)
+			h.assertNoMakeInvocation(t)
 		})
 	}
 }
 
 func TestManagedDeployReadbackFailuresDoNotWriteReceipt(t *testing.T) {
-	for _, mode := range []string{"install-fail", "hash-mismatch", "version-mismatch", "alias-mismatch"} {
+	for _, mode := range []string{"install-fail", "hash-mismatch", "version-mismatch", "invalid-version-json", "missing-version-build", "alias-mismatch", "dirty-release-after-install", "remote-mutation-after-install"} {
 		t.Run(mode, func(t *testing.T) {
 			h := newManagedDeployHarness(t)
 			h.runFailure(t, map[string]string{"BDUI_TEST_MAKE_MODE": mode})
@@ -129,9 +146,20 @@ func TestManagedDeployReadbackFailuresDoNotWriteReceipt(t *testing.T) {
 	}
 }
 
+func TestManagedDeployParsesVersionJSONRatherThanMatchingText(t *testing.T) {
+	h := newManagedDeployHarness(t)
+	out, err := h.command(map[string]string{"BDUI_TEST_MAKE_MODE": "escaped-build-string"}).CombinedOutput()
+	if err != nil {
+		t.Fatalf("valid JSON version readback failed: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(h.receipt); err != nil {
+		t.Fatalf("valid JSON version readback did not write receipt: %v", err)
+	}
+}
+
 func TestManagedDeployRetryAfterInstallFailureIsIdempotent(t *testing.T) {
 	h := newManagedDeployHarness(t)
-	h.runFailure(t, map[string]string{"BDUI_TEST_MAKE_MODE": "install-fail"})
+	h.runFailure(t, map[string]string{"BDUI_TEST_MAKE_MODE": "hash-mismatch"})
 	h.assertNoReceipt(t)
 	h.run(t)
 	h.assertMakeInvocation(t, 2)
@@ -256,7 +284,7 @@ func newManagedDeployHarness(t *testing.T) managedDeployHarness {
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	makeScript := "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$BDUI_TEST_MAKE_LOG\"\nif [ \"${BDUI_TEST_MAKE_MODE:-}\" = install-fail ]; then exit 7; fi\nshort=$(git rev-parse --short HEAD)\nif [ \"${BDUI_TEST_MAKE_MODE:-}\" = version-mismatch ]; then short=wrong; fi\nprintf '#!/bin/sh\\nprintf %s\\n' '{\\\"build\\\":\\\"'\"$short\"'\\\"}' > bd\nchmod +x bd\nmkdir -p \"$HOME/.local/bin\"\ncp bd \"$HOME/.local/bin/bd\"\nif [ \"${BDUI_TEST_MAKE_MODE:-}\" = hash-mismatch ]; then printf x >> \"$HOME/.local/bin/bd\"; fi\nrm -f \"$HOME/.local/bin/beads\"\nif [ \"${BDUI_TEST_MAKE_MODE:-}\" = alias-mismatch ]; then ln -s wrong \"$HOME/.local/bin/beads\"; else ln -s bd \"$HOME/.local/bin/beads\"; fi\n"
+	makeScript := "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$*\" >> \"$BDUI_TEST_MAKE_LOG\"\nif [ \"${BDUI_TEST_MAKE_MODE:-}\" = install-fail ]; then exit 7; fi\nshort=$(git rev-parse --short HEAD)\ncase \"${BDUI_TEST_MAKE_MODE:-}\" in version-mismatch) short=wrong ;; esac\nprintf '#!/bin/sh\\nprintf %s\\n' '{\\\"build\\\":\\\"'\"$short\"'\\\"}' > bd\ncase \"${BDUI_TEST_MAKE_MODE:-}\" in invalid-version-json) printf '#!/bin/sh\\nprintf %s\\n' not-json > bd ;; missing-version-build) printf '#!/bin/sh\\nprintf %s\\n' '{}' > bd ;; escaped-build-string) printf '#!/bin/sh\\nprintf \"%%s\\\\n\" \"$BDUI_TEST_VERSION_JSON\"\\n' > bd ;; esac\nchmod +x bd\nmkdir -p \"$HOME/.local/bin\"\ncp bd \"$HOME/.local/bin/bd\"\nif [ \"${BDUI_TEST_MAKE_MODE:-}\" = hash-mismatch ]; then printf x >> \"$HOME/.local/bin/bd\"; fi\nrm -f \"$HOME/.local/bin/beads\"\nif [ \"${BDUI_TEST_MAKE_MODE:-}\" = alias-mismatch ]; then ln -s wrong \"$HOME/.local/bin/beads\"; else ln -s bd \"$HOME/.local/bin/beads\"; fi\ncase \"${BDUI_TEST_MAKE_MODE:-}\" in dirty-release-after-install) touch release-dirty ;; remote-mutation-after-install) git remote set-url origin changed-remote ;; esac\n"
 	if err := os.WriteFile(filepath.Join(bin, "make"), []byte(makeScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -292,6 +320,7 @@ func (h managedDeployHarness) command(overrides map[string]string) *exec.Cmd {
 		"XDG_STATE_HOME="+h.stateHome,
 		"PATH="+filepath.Join(filepath.Dir(h.home), "bin")+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"BDUI_TEST_MAKE_LOG="+h.makeLog,
+		"BDUI_TEST_VERSION_JSON={\"build\":\""+h.candidate[:7]+"\",\"note\":\"escaped \\\"build\\\":\\\"wrong\\\"\"}",
 		"BDUI_DEPLOY_PROTOCOL_VERSION=1",
 		"BDUI_DEPLOY_SOURCE_REPO="+h.source,
 		"BDUI_DEPLOY_TARGET_REMOTE="+h.remote,
@@ -303,7 +332,7 @@ func (h managedDeployHarness) command(overrides map[string]string) *exec.Cmd {
 		"BDUI_DEPLOY_ATTEMPT_ID=attempt/one",
 	)
 	for key, value := range overrides {
-		env = append(env, key+"="+value)
+		env = replaceEnv(env, key, value)
 	}
 	cmd.Env = env
 	return cmd
@@ -322,6 +351,24 @@ func (h managedDeployHarness) assertNoReceipt(t *testing.T) {
 	if _, err := os.Lstat(h.receipt); !os.IsNotExist(err) {
 		t.Fatalf("terminal receipt exists after failure: %v", err)
 	}
+}
+
+func (h managedDeployHarness) assertNoMakeInvocation(t *testing.T) {
+	t.Helper()
+	if _, err := os.Stat(h.makeLog); !os.IsNotExist(err) {
+		t.Fatalf("adapter invoked make before rejecting binding: %v", err)
+	}
+}
+
+func replaceEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	filtered := env[:0]
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, prefix) {
+			filtered = append(filtered, entry)
+		}
+	}
+	return append(filtered, prefix+value)
 }
 
 func prepareDirtySharedSource(t *testing.T, source string) {

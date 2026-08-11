@@ -17,11 +17,11 @@ is_sha() {
 }
 
 sha256_file() {
-  shasum -a 256 "$1" | awk '{print $1}'
+  "$PYTHON" -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"
 }
 
 sha256_text() {
-  printf '%s' "$1" | shasum -a 256 | awk '{print $1}'
+  "$PYTHON" -c 'import hashlib, sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest())' "$1"
 }
 
 safe_component() {
@@ -68,6 +68,11 @@ done
 [ "$BDUI_DEPLOY_PROTOCOL_VERSION" = "1" ] || fail "unsupported protocol version"
 is_sha "$BDUI_DEPLOY_MERGED_FLOOR_SHA" || fail "invalid merged floor sha"
 is_sha "$BDUI_DEPLOY_CANDIDATE_SHA" || fail "invalid candidate sha"
+[ -n "${HOME-}" ] || fail "missing HOME"
+
+PYTHON=$(command -v python3) || fail "missing python3"
+command -v git >/dev/null 2>&1 || fail "missing git"
+command -v make >/dev/null 2>&1 || fail "missing make"
 
 case "$BDUI_DEPLOY_SOURCE_REPO" in
   /*) ;;
@@ -76,8 +81,8 @@ esac
 case "$BDUI_DEPLOY_SOURCE_REPO" in
   */|*/./*|*/../*) fail "source repo is not canonical" ;;
 esac
+[ -d "$BDUI_DEPLOY_SOURCE_REPO" ] || fail "source repo is not a directory"
 
-[ -n "${HOME-}" ] || fail "missing HOME"
 data_home=${XDG_DATA_HOME:-$HOME/.local/share}
 state_home=${XDG_STATE_HOME:-$HOME/.local/state}
 case "$data_home" in /*) ;; *) fail "XDG_DATA_HOME is not absolute" ;; esac
@@ -127,8 +132,15 @@ done
 release_hash=$(sha256_file "$release_binary")
 installed_hash=$(sha256_file "$installed_binary")
 [ "$release_hash" = "$installed_hash" ] || fail "installed binary hash mismatch"
-version_json=$($installed_binary version --json) || fail "installed version readback failed"
-version_build=$(printf '%s' "$version_json" | sed -n 's/.*"build"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+version_json=$("$installed_binary" version --json) || fail "installed version readback failed"
+version_build=$(printf '%s' "$version_json" | "$PYTHON" -c '
+import json
+import sys
+value = json.load(sys.stdin)
+if not isinstance(value, dict) or not isinstance(value.get("build"), str):
+    raise SystemExit("version JSON lacks string build")
+print(value["build"])
+') || fail "installed version JSON is invalid"
 [ "$version_build" = "$(git rev-parse --short HEAD)" ] || fail "installed version build mismatch"
 [ -L "$alias_path" ] || fail "alias is not a symlink"
 alias_target=$(readlink "$alias_path") || fail "cannot read alias"
@@ -154,7 +166,7 @@ export BDUI_RECEIPT_VERSION=$version_build
 export BDUI_RECEIPT_ALIAS=$alias_path
 export BDUI_RECEIPT_ALIAS_TARGET=$alias_target
 
-python3 - <<'PY'
+"$PYTHON" - <<'PY'
 import datetime
 import hashlib
 import json
