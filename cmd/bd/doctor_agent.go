@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/steveyegge/beads/cmd/bd/doctor"
+	"github.com/steveyegge/beads/internal/storage"
 )
 
 // agentDoctorResult is the top-level output for --agent mode.
@@ -34,22 +35,28 @@ func buildAgentResult(result doctorResult) agentDoctorResult {
 		case statusError:
 			errorCount++
 			ar.Diagnostics = append(ar.Diagnostics, doctor.EnrichForAgent(doctor.DoctorCheck{
-				Name:     check.Name,
-				Status:   check.Status,
-				Message:  check.Message,
-				Detail:   check.Detail,
-				Fix:      check.Fix,
-				Category: check.Category,
+				Name:        check.Name,
+				CheckCode:   check.CheckCode,
+				Status:      check.Status,
+				Message:     check.Message,
+				Detail:      check.Detail,
+				Fix:         check.Fix,
+				Category:    check.Category,
+				FailureCode: storage.FailureCode(check.FailureCode),
+				Evidence:    check.Evidence,
 			}))
 		case statusWarning:
 			warnCount++
 			ar.Diagnostics = append(ar.Diagnostics, doctor.EnrichForAgent(doctor.DoctorCheck{
-				Name:     check.Name,
-				Status:   check.Status,
-				Message:  check.Message,
-				Detail:   check.Detail,
-				Fix:      check.Fix,
-				Category: check.Category,
+				Name:        check.Name,
+				CheckCode:   check.CheckCode,
+				Status:      check.Status,
+				Message:     check.Message,
+				Detail:      check.Detail,
+				Fix:         check.Fix,
+				Category:    check.Category,
+				FailureCode: storage.FailureCode(check.FailureCode),
+				Evidence:    check.Evidence,
 			}))
 		}
 	}

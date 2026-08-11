@@ -80,13 +80,18 @@ func runValidateCheckInner(path string) (bool, error) {
 
 // collectValidateChecks runs the data-integrity checks.
 func collectValidateChecks(path string) []validateCheckResult {
-	return []validateCheckResult{
+	checks := []validateCheckResult{
 		{check: convertDoctorCheck(doctor.CheckCrossTableDuplicates(path)), fixable: true},
 		{check: convertDoctorCheck(doctor.CheckDuplicateIssues(path, doctorOrchestrator, orchestratorDuplicatesThreshold))},
 		{check: convertDoctorCheck(doctor.CheckOrphanedDependencies(path)), fixable: true},
 		{check: convertDoctorCheck(doctor.CheckTestPollution(path))},
 		{check: convertDoctorCheck(doctor.CheckGitConflicts(path))},
 	}
+	codes := []string{"cross_table_duplicates", "duplicate_issues", "orphaned_dependencies", "test_pollution", "git_conflicts"}
+	for i, code := range codes {
+		checks[i].check.CheckCode = code
+	}
+	return checks
 }
 
 func validateOverallOK(checks []validateCheckResult) bool {

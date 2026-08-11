@@ -167,6 +167,38 @@ stdout remain compatible. The common payload contains `error` and may contain
 }
 ```
 
+### Structured recovery facts
+
+The scoped recovery producers (`database_open`, `bd dolt pull`, `bd dolt push`,
+`bd dolt commit`, and auto-push) add `failure_code` to JSON failures. It is a
+stable, lower_snake_case leaf fact; `code`, where a command already provides
+one, remains the caller-specific operation identifier and is not replaced.
+Unknown in-scope failures use `operation_failed_unknown` rather than requiring
+consumers to parse `error` text.
+
+The current additive enum is: `lock_conflict`, `local_store_corrupt`,
+`database_not_found`, `database_open_failed`, `remote_not_configured`,
+`remote_auth_failed`, `remote_unreachable`, `remote_data_missing`,
+`sync_remote_ahead`, `history_diverged`, `working_set_dirty`,
+`dangling_reference`, `schema_migration_required`, and
+`operation_failed_unknown`. New values are additive; consumers must treat an
+unrecognized value conservatively. `--quiet` suppresses non-fatal auto-push
+warnings in both human and JSON modes.
+
+Optional `evidence` contains typed, additive facts such as `operation`, a
+credential-free remote `name`/`transport`, lock PID state, or schema progress.
+Consumers must ignore unknown evidence fields and treat unknown failure codes
+conservatively. URL userinfo, tokens, query credentials, Dolt/MySQL internal
+types, and error numbers are never evidence.
+
+In envelope mode these fields stay inside `.data` with `error`, `hint`, and
+any existing `code`; schema version remains 2 because the fields and future
+enum values are additive.
+
+`bd doctor --json` and `bd doctor --agent --json` expose each diagnostic's
+stable `check_code`, plus optional `failure_code` and `evidence`. `name` is
+display text, not a machine join key.
+
 ## Field Contracts by Command
 
 ### `bd list --json`

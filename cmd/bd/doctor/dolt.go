@@ -118,7 +118,24 @@ func IsDoltBackend(beadsDir string) bool {
 // shared server connection. Returns one check per health dimension.
 // Non-Dolt backends get N/A results for all dimensions.
 func RunDoltHealthChecks(path string) []DoctorCheck {
-	return runDoltHealthChecksInternal(path)
+	checks := runDoltHealthChecksInternal(path)
+	codes := []string{
+		"dolt_connection", "dolt_schema", "dolt_issue_count", "dolt_status",
+		"dolt_lock_health", "phantom_databases", "shared_server",
+	}
+	if len(checks) != len(codes) {
+		return []DoctorCheck{{
+			Name:      "Dolt Health Contract",
+			CheckCode: "dolt_health_contract",
+			Status:    StatusError,
+			Message:   fmt.Sprintf("check/code cardinality mismatch: checks=%d codes=%d", len(checks), len(codes)),
+			Category:  CategoryCore,
+		}}
+	}
+	for i, code := range codes {
+		checks[i].CheckCode = code
+	}
+	return checks
 }
 
 func runDoltHealthChecksInternal(path string) []DoctorCheck {

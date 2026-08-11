@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/schema"
 )
 
@@ -19,8 +20,8 @@ import (
 // migrator" precondition and annotated with its risk, so the agent surfaces a
 // human decision instead of auto-running it.
 func handleRemoteMigrateGateJSON(e *schema.RemoteMigrateGateError) {
-	outer := buildJSONError(e.Error(), e.AgentDirective())
-	if m, ok := outer.(map[string]interface{}); ok {
+	outer := buildJSONClassifiedError(e.Error(), e.AgentDirective(), storage.FailureSchemaMigrationRequired, map[string]interface{}{"operation": "database_open"})
+	if m := jsonErrorPayload(outer); m != nil {
 		opts := make([]map[string]interface{}, 0, len(e.Options()))
 		for _, o := range e.Options() {
 			opts = append(opts, map[string]interface{}{

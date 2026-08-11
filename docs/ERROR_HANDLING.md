@@ -62,6 +62,12 @@ JSON errors contain `schema_version` and an `error` field, plus `hint` when the
 hint helper is used. Envelope mode places that payload under `data`; see
 [JSON_SCHEMA.md](JSON_SCHEMA.md).
 
+For the scoped recovery producers, fatal JSON errors additionally contain a
+stable `failure_code` and optional typed `evidence`, on the command's existing
+stderr stream. Existing `code`, error text, hint, and exit status stay intact.
+Unknown failures are emitted as `operation_failed_unknown`; callers must not
+recover policy by reparsing human error text.
+
 Do not switch an existing command between stdout and stderr casually. Scripts
 may depend on its established stream contract.
 
@@ -71,6 +77,11 @@ Use `WarnError` or an explicit stderr warning only when the primary operation
 can still be considered successful. Typical examples are optional cleanup,
 advisory metadata, or a background convenience step whose failure is already
 reported.
+
+Auto-push is such a best-effort operation. When it fails, the primary command
+still keeps its stdout payload and exit status 0. In `--json` mode the warning
+is a single stderr JSON object with `warning`, `failure_code`, optional
+`evidence`, and `schema_version`; it is never mixed into primary stdout.
 
 ```go
 if err := refreshOptionalCache(); err != nil {

@@ -20,6 +20,7 @@ func TestDoctorNoBeadsDir(t *testing.T) {
 
 	// Run diagnostics
 	result := runDiagnostics(tmpDir)
+	assertDoctorCheckCodes(t, result)
 
 	// Should fail overall
 	if result.OverallOK {
@@ -43,6 +44,97 @@ func TestDoctorNoBeadsDir(t *testing.T) {
 	}
 }
 
+func TestAssignDoctorCheckCodesUsesExplicitKeysAndJSONCopyRedactsCredentials(t *testing.T) {
+	result := doctorResult{Checks: []doctorCheck{
+		{Name: "Renamed Display Label", Message: "remote https://user:secret@example.test/repo?token=abc failed"},
+		{Name: "Another Label"},
+	}}
+	if err := assignDoctorCheckCodes(&result, []string{"local_store_health", "server_pid_state"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Checks[0].CheckCode; got != "local_store_health" {
+		t.Fatalf("check_code = %q", got)
+	}
+	if !strings.Contains(result.Checks[0].Message, "user:secret") {
+		t.Fatal("human result was unexpectedly redacted")
+	}
+	redacted := redactDoctorResultForJSON(result)
+	if strings.Contains(redacted.Checks[0].Message, "user:secret") || strings.Contains(redacted.Checks[0].Message, "token=abc") {
+		t.Fatalf("doctor JSON detail leaked URL credentials: %q", redacted.Checks[0].Message)
+	}
+}
+
+func TestAssignDoctorCheckCodesRejectsContractMismatch(t *testing.T) {
+	tests := []struct {
+		name   string
+		checks []doctorCheck
+		codes  []string
+	}{
+		{"cardinality", []doctorCheck{{Name: "one"}}, nil},
+		{"empty", []doctorCheck{{Name: "one"}}, []string{""}},
+		{"duplicate", []doctorCheck{{Name: "one"}, {Name: "two"}}, []string{"same", "same"}},
+		{"producer conflict", []doctorCheck{{Name: "one", CheckCode: "producer"}}, []string{"contract"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := doctorResult{Checks: tt.checks}
+			if err := assignDoctorCheckCodes(&result, tt.codes); err == nil {
+				t.Fatal("expected contract error")
+			}
+		})
+	}
+}
+
+func assertDoctorCheckCodes(t *testing.T, result doctorResult) {
+	t.Helper()
+	if result.ContractError != "" {
+		t.Fatalf("doctor contract error: %s", result.ContractError)
+	}
+	seen := make(map[string]struct{}, len(result.Checks))
+	for i, check := range result.Checks {
+		if check.CheckCode == "" {
+			t.Fatalf("check %d (%q) has empty check_code", i, check.Name)
+		}
+		if _, duplicate := seen[check.CheckCode]; duplicate {
+			t.Fatalf("duplicate check_code %q", check.CheckCode)
+		}
+		seen[check.CheckCode] = struct{}{}
+	}
+}
+
+func TestUnsupportedDoctorResultCarriesStableMachineFacts(t *testing.T) {
+	for _, mode := range []string{"embedded", "proxied"} {
+		result := unsupportedDoctorResult(mode)
+		if result["mode"] != mode || result["supported"] != false || result["check_code"] != "doctor_supported" {
+			t.Fatalf("unsupported %s result = %#v", mode, result)
+		}
+	}
+}
+
+func TestExportDiagnosticsRedactsJSONCopyOnly(t *testing.T) {
+	result := doctorResult{Checks: []doctorCheck{{
+		Name:      "Remote",
+		CheckCode: "remote",
+		Status:    statusError,
+		Message:   "https://alice:secret@example.test/repo?token=abc failed",
+	}}}
+	redacted := redactDoctorResultForJSON(result)
+	path := filepath.Join(t.TempDir(), "doctor.json")
+	if err := exportDiagnostics(redacted, path); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "alice:secret") || strings.Contains(string(data), "token=abc") {
+		t.Fatalf("export leaked credentials: %s", data)
+	}
+	if !strings.Contains(result.Checks[0].Message, "alice:secret") {
+		t.Fatal("human result was mutated")
+	}
+}
+
 func TestDoctorWithBeadsDir(t *testing.T) {
 	// Create temporary directory with .beads
 	tmpDir := t.TempDir()
@@ -53,6 +145,7 @@ func TestDoctorWithBeadsDir(t *testing.T) {
 
 	// Run diagnostics
 	result := runDiagnostics(tmpDir)
+	assertDoctorCheckCodes(t, result)
 
 	// Should have installation check passing
 	if len(result.Checks) == 0 {

@@ -12,6 +12,21 @@ points here to a labeled anchor with step-by-step recovery instructions.
 See also: `bd help init-safety`, and
 [ADR 0002 — `bd init` safety invariants](adr/0002-init-safety-invariants.md).
 
+## Machine-readable recovery facts
+
+Recovery consumers should use JSON `failure_code`, doctor `check_code`, and
+optional typed `evidence` rather than matching stderr prose. `failure_code`
+describes an observed producer fact, not a retry instruction or recovery
+verdict; `operation_failed_unknown` is intentionally conservative. Bootstrap
+`action` remains a plan, not a failure code.
+
+`bd doctor --json` / `--agent --json` provide stable `check_code` values and
+may attach local-store or PID evidence. PID state is one of
+`absent`, `live`, `corrupt`, `dead`, or `reused`; an uninspectable lock is not
+silently called stale or dead. Remote evidence contains only a remote name and
+transport kind, never a credential-bearing URL. The CLI neither deletes Dolt
+lock files nor chooses retry/re-clone policy from these facts.
+
 ## Table of contents
 
 - [init-force-refused — `bd init --force`/`--reinit-local` refused because origin has Dolt history](#init-force-refused)

@@ -3,20 +3,25 @@ package doctor
 import (
 	"fmt"
 	"strings"
+
+	"github.com/steveyegge/beads/internal/storage"
 )
 
 // AgentDiagnostic represents a single check result enriched for agent consumption.
 // ZFC-compliant: Go observes and reports, the agent decides and acts.
 type AgentDiagnostic struct {
-	Name        string   `json:"name"`
-	Status      string   `json:"status"`   // "error", "warning", "ok"
-	Severity    string   `json:"severity"` // "blocking", "degraded", "advisory"
-	Category    string   `json:"category"`
-	Explanation string   `json:"explanation"`            // Full prose: what's wrong and why it matters
-	Observed    string   `json:"observed"`               // What was actually found
-	Expected    string   `json:"expected"`               // What should be the case
-	Commands    []string `json:"commands,omitempty"`     // Exact remediation commands in order
-	SourceFiles []string `json:"source_files,omitempty"` // Relevant source paths for investigation
+	Name        string                 `json:"name"`
+	CheckCode   string                 `json:"check_code,omitempty"`
+	Status      string                 `json:"status"`   // "error", "warning", "ok"
+	Severity    string                 `json:"severity"` // "blocking", "degraded", "advisory"
+	Category    string                 `json:"category"`
+	Explanation string                 `json:"explanation"`            // Full prose: what's wrong and why it matters
+	Observed    string                 `json:"observed"`               // What was actually found
+	Expected    string                 `json:"expected"`               // What should be the case
+	Commands    []string               `json:"commands,omitempty"`     // Exact remediation commands in order
+	SourceFiles []string               `json:"source_files,omitempty"` // Relevant source paths for investigation
+	FailureCode storage.FailureCode    `json:"failure_code,omitempty"`
+	Evidence    map[string]interface{} `json:"evidence,omitempty"`
 }
 
 // agentEnrichment holds the extra context fields an enricher adds.
@@ -35,13 +40,16 @@ type enricher func(dc DoctorCheck) agentEnrichment
 // EnrichForAgent converts a DoctorCheck into an AgentDiagnostic with rich context.
 func EnrichForAgent(dc DoctorCheck) AgentDiagnostic {
 	ad := AgentDiagnostic{
-		Name:     dc.Name,
-		Status:   dc.Status,
-		Category: dc.Category,
+		Name:        dc.Name,
+		CheckCode:   dc.CheckCode,
+		Status:      dc.Status,
+		Category:    dc.Category,
+		FailureCode: dc.FailureCode,
+		Evidence:    dc.Evidence,
 	}
 
-	// Look up a specialized enricher for this check name
-	if fn, ok := agentEnrichers[dc.Name]; ok {
+	// Check code is the stable machine join key; name is display-only.
+	if fn, ok := agentEnrichers[dc.CheckCode]; ok {
 		e := fn(dc)
 		ad.Severity = e.severity
 		ad.Explanation = e.explanation
@@ -88,54 +96,29 @@ func buildGenericExplanation(dc DoctorCheck) string {
 	return s
 }
 
-// agentEnrichers maps check names to specialized enrichment functions.
 var agentEnrichers = map[string]enricher{
-	"Installation":                 enrichInstallation,
-	"Permissions":                  enrichPermissions,
-	"Database":                     enrichDatabase,
-	"Schema Compatibility":         enrichSchemaCompatibility,
-	"Database Integrity":           enrichDatabaseIntegrity,
-	"Large Database":               enrichLargeDatabase,
-	"ID Format":                    enrichIDFormat,
-	"CLI Version":                  enrichCLIVersion,
-	"Git Hooks":                    enrichGitHooks,
-	"Git Hooks Dolt Compatibility": enrichGitHooksDolt,
-	"Gitignore":                    enrichGitignore,
-	"Project Gitignore":            enrichProjectGitignore,
-	"Git Working Tree":             enrichGitWorkingTree,
-	"Git Upstream":                 enrichGitUpstream,
-	"Fresh Clone":                  enrichFreshClone,
-	"Database Config":              enrichDatabaseConfig,
-	"Config Values":                enrichConfigValues,
-	"Role Configuration":           enrichBeadsRole,
-	"Lock Files":                   enrichStaleLockFiles,
-	"Dolt Connection":              enrichDoltConnection,
-	"Dolt Schema":                  enrichDoltSchema,
-	"Dolt Issue Count":             enrichDoltIssueCount,
-	"Dolt Status":                  enrichDoltStatus,
-	"Dependency Cycles":            enrichDependencyCycles,
-	"Duplicate Issues":             enrichDuplicateIssues,
-	"Test Pollution":               enrichTestPollution,
-	"Orphaned Dependencies":        enrichOrphanedDeps,
-	"Child-Parent Dependencies":    enrichChildParentDeps,
-	"Classic Artifacts":            enrichClassicArtifacts,
-	"Pending Migrations":           enrichPendingMigrations,
-	"KV Sync Status":               enrichKVSync,
-	"Stale Closed Issues":          enrichStaleClosedIssues,
-	"Stale Molecules":              enrichStaleMolecules,
-	"Claude Integration":           enrichClaude,
-	"Claude Settings Health":       enrichClaudeSettings,
-	"Claude Hook Completeness":     enrichClaudeHooks,
-	"Claude Plugin":                enrichClaudePlugin,
-	"bd prime Output":              enrichBdPrimeOutput,
-	"CLI Availability":             enrichBdInPath,
-	"Repo Fingerprint":             enrichRepoFingerprint,
-	"Version Tracking":             enrichMetadataVersion,
-	"Orphaned Issues":              enrichOrphanedIssues,
-	"Redirect Target Valid":        enrichRedirectTarget,
-	"Redirect Tracking":            enrichRedirectTracking,
-	"Redirect Target Sync":         enrichRedirectTargetSync,
-	"Untracked Files":              enrichUntrackedFiles,
+	"installation": enrichInstallation, "permissions": enrichPermissions, "database": enrichDatabase,
+	"schema_compatibility": enrichSchemaCompatibility, "database_integrity": enrichDatabaseIntegrity,
+	"large_database": enrichLargeDatabase, "id_format": enrichIDFormat, "cli_version": enrichCLIVersion,
+	"git_hooks": enrichGitHooks, "git_hooks_dolt_compatibility": enrichGitHooksDolt,
+	"gitignore": enrichGitignore, "project_gitignore": enrichProjectGitignore,
+	"git_working_tree": enrichGitWorkingTree, "git_upstream": enrichGitUpstream,
+	"fresh_clone": enrichFreshClone, "database_config": enrichDatabaseConfig,
+	"config_values": enrichConfigValues, "role_configuration": enrichBeadsRole,
+	"lock_files": enrichStaleLockFiles, "dolt_connection": enrichDoltConnection,
+	"dolt_schema": enrichDoltSchema, "dolt_issue_count": enrichDoltIssueCount,
+	"dolt_status": enrichDoltStatus, "dependency_cycles": enrichDependencyCycles,
+	"duplicate_issues": enrichDuplicateIssues, "test_pollution": enrichTestPollution,
+	"orphaned_dependencies": enrichOrphanedDeps, "child_parent_dependencies": enrichChildParentDeps,
+	"classic_artifacts": enrichClassicArtifacts, "pending_migrations": enrichPendingMigrations,
+	"kv_sync_status": enrichKVSync, "stale_closed_issues": enrichStaleClosedIssues,
+	"stale_molecules": enrichStaleMolecules, "claude_integration": enrichClaude,
+	"claude_settings_health": enrichClaudeSettings, "claude_hook_completeness": enrichClaudeHooks,
+	"claude_plugin": enrichClaudePlugin, "bd_prime_output": enrichBdPrimeOutput,
+	"cli_availability": enrichBdInPath, "repo_fingerprint": enrichRepoFingerprint,
+	"version_tracking": enrichMetadataVersion, "orphaned_issues": enrichOrphanedIssues,
+	"redirect_target_valid": enrichRedirectTarget, "redirect_tracking": enrichRedirectTracking,
+	"redirect_target_sync": enrichRedirectTargetSync, "untracked_files": enrichUntrackedFiles,
 }
 
 // --- Enrichment functions ---

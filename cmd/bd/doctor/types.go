@@ -1,10 +1,17 @@
 package doctor
 
+import "github.com/steveyegge/beads/internal/storage"
+
 // Status constants for doctor checks
 const (
 	StatusOK      = "ok"
 	StatusWarning = "warning"
 	StatusError   = "error"
+)
+
+const (
+	LocalStoreHealthCheckCode    = "local_store_health"
+	StaleServerPIDStateCheckCode = "stale_server_pid_state"
 )
 
 // Category constants for grouping doctor checks
@@ -35,12 +42,15 @@ var CategoryOrder = []string{
 
 // DoctorCheck represents a single diagnostic check result
 type DoctorCheck struct {
-	Name     string `json:"name"`
-	Status   string `json:"status"` // StatusOK, StatusWarning, or StatusError
-	Message  string `json:"message"`
-	Detail   string `json:"detail,omitempty"`
-	Fix      string `json:"fix,omitempty"`
-	Category string `json:"category,omitempty"` // category for grouping in output
+	Name        string                 `json:"name"`
+	CheckCode   string                 `json:"check_code,omitempty"`
+	Status      string                 `json:"status"` // StatusOK, StatusWarning, or StatusError
+	Message     string                 `json:"message"`
+	Detail      string                 `json:"detail,omitempty"`
+	Fix         string                 `json:"fix,omitempty"`
+	Category    string                 `json:"category,omitempty"` // category for grouping in output
+	FailureCode storage.FailureCode    `json:"failure_code,omitempty"`
+	Evidence    map[string]interface{} `json:"evidence,omitempty"`
 }
 
 // OrphanIssue represents an issue referenced in commits but still open.

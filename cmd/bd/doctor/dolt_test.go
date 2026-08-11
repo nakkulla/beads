@@ -114,6 +114,16 @@ func TestRunDoltHealthChecks_CheckNameAndCategory(t *testing.T) {
 	if check.Category != CategoryCore {
 		t.Errorf("expected CategoryCore, got %q", check.Category)
 	}
+	seen := make(map[string]struct{}, len(checks))
+	for _, check := range checks {
+		if check.CheckCode == "" {
+			t.Fatalf("check %q has empty check_code", check.Name)
+		}
+		if _, duplicate := seen[check.CheckCode]; duplicate {
+			t.Fatalf("duplicate check_code %q", check.CheckCode)
+		}
+		seen[check.CheckCode] = struct{}{}
+	}
 }
 
 // TestLockContention was removed: server-only mode does not acquire advisory

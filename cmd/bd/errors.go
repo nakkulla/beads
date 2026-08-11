@@ -4,9 +4,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"regexp"
+	"strings"
 
 	"github.com/steveyegge/beads/internal/metrics"
+	"github.com/steveyegge/beads/internal/storage"
+	storagedolt "github.com/steveyegge/beads/internal/storage/dolt"
+	"github.com/steveyegge/beads/internal/storage/schema"
 )
 
 type exitError struct {
@@ -55,11 +61,52 @@ func workspaceDiagHint(includeWhere bool) string {
 }
 
 func buildJSONError(message, hint string) interface{} {
-	inner := map[string]interface{}{
-		"error": message,
-	}
+	inner := map[string]interface{}{"error": message}
 	if hint != "" {
 		inner["hint"] = hint
+	}
+	if jsonEnvelopeEnabled() {
+		return map[string]interface{}{"schema_version": JSONSchemaVersion, "data": inner}
+	}
+	inner["schema_version"] = JSONSchemaVersion
+	return inner
+}
+
+var urlInMessage = regexp.MustCompile(`\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s]+`)
+
+// redactURLCredentials removes URL userinfo and query strings before an error
+// is projected into JSON. Query values commonly carry credentials, and neither
+// a user name nor a token is a stable recovery fact.
+func redactURLCredentials(message string) string {
+	return urlInMessage.ReplaceAllStringFunc(message, func(raw string) string {
+		trimmed := strings.TrimRight(raw, ".,;:)")
+		suffix := strings.TrimPrefix(raw, trimmed)
+		u, err := url.Parse(trimmed)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return raw
+		}
+		u.User = nil
+		u.RawQuery = ""
+		u.Fragment = ""
+		return u.String() + suffix
+	})
+}
+
+// buildJSONClassifiedError extends the established error payload at the scoped
+// recovery producer boundary. An empty code preserves the legacy helper's
+// shape for all callers outside that boundary.
+func buildJSONClassifiedError(message, hint string, failureCode storage.FailureCode, evidence map[string]interface{}) interface{} {
+	inner := map[string]interface{}{
+		"error": redactURLCredentials(message),
+	}
+	if hint != "" {
+		inner["hint"] = redactURLCredentials(hint)
+	}
+	if failureCode != "" {
+		inner["failure_code"] = failureCode
+	}
+	if len(evidence) > 0 {
+		inner["evidence"] = evidence
 	}
 	if jsonEnvelopeEnabled() {
 		return map[string]interface{}{
@@ -69,6 +116,71 @@ func buildJSONError(message, hint string) interface{} {
 	}
 	inner["schema_version"] = JSONSchemaVersion
 	return inner
+}
+
+func jsonStderrClassifiedError(message, hint string, failureCode storage.FailureCode, evidence map[string]interface{}) {
+	encoder := json.NewEncoder(os.Stderr)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(buildJSONClassifiedError(message, hint, failureCode, evidence))
+}
+
+func buildJSONWarning(message string, failureCode storage.FailureCode, evidence map[string]interface{}) interface{} {
+	inner := map[string]interface{}{
+		"warning": redactURLCredentials(message),
+	}
+	if failureCode != "" {
+		inner["failure_code"] = failureCode
+	}
+	if len(evidence) > 0 {
+		inner["evidence"] = evidence
+	}
+	if jsonEnvelopeEnabled() {
+		return map[string]interface{}{"schema_version": JSONSchemaVersion, "data": inner}
+	}
+	inner["schema_version"] = JSONSchemaVersion
+	return inner
+}
+
+func jsonStderrWarning(message string, failureCode storage.FailureCode, evidence map[string]interface{}) {
+	encoder := json.NewEncoder(os.Stderr)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(buildJSONWarning(message, failureCode, evidence))
+}
+
+func jsonErrorPayload(outer interface{}) map[string]interface{} {
+	payload, _ := outer.(map[string]interface{})
+	if payload == nil {
+		return nil
+	}
+	if data, ok := payload["data"].(map[string]interface{}); ok {
+		return data
+	}
+	return payload
+}
+
+func databaseOpenFailureCode(err error) storage.FailureCode {
+	var skewErr *schema.SchemaSkewError
+	var gateErr *schema.RemoteMigrateGateError
+	if errors.As(err, &skewErr) || errors.As(err, &gateErr) {
+		return storage.FailureSchemaMigrationRequired
+	}
+	if code, ok := storage.CodeOf(err); ok {
+		return code
+	}
+	code := storagedolt.ClassifyFailureCode(err)
+	if code == storage.FailureOperationFailedUnknown {
+		return storage.FailureDatabaseOpenFailed
+	}
+	return code
+}
+
+func reportDatabaseOpenFailure(err error) {
+	jsonStderrClassifiedError(
+		fmt.Sprintf("failed to open database: %v", err),
+		"",
+		databaseOpenFailureCode(err),
+		map[string]interface{}{"operation": "database_open"},
+	)
 }
 
 func jsonStderrError(message, hint string) {

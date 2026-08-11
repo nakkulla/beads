@@ -34,11 +34,12 @@ func RunServerHealthChecks(path string) ServerHealthResult {
 	cfg, err := configfile.Load(beadsDir)
 	if err != nil {
 		result.Checks = append(result.Checks, DoctorCheck{
-			Name:     "Server Config",
-			Status:   StatusError,
-			Message:  "Failed to load config",
-			Detail:   err.Error(),
-			Category: CategoryFederation,
+			Name:      "Server Config",
+			CheckCode: "server_config",
+			Status:    StatusError,
+			Message:   "Failed to load config",
+			Detail:    err.Error(),
+			Category:  CategoryFederation,
 		})
 		result.OverallOK = false
 		return result
@@ -46,11 +47,12 @@ func RunServerHealthChecks(path string) ServerHealthResult {
 
 	if cfg == nil {
 		result.Checks = append(result.Checks, DoctorCheck{
-			Name:     "Server Config",
-			Status:   StatusError,
-			Message:  "No metadata.json found",
-			Fix:      "Run 'bd init' to initialize beads",
-			Category: CategoryFederation,
+			Name:      "Server Config",
+			CheckCode: "server_config",
+			Status:    StatusError,
+			Message:   "No metadata.json found",
+			Fix:       "Run 'bd init' to initialize beads",
+			Category:  CategoryFederation,
 		})
 		result.OverallOK = false
 		return result
@@ -59,12 +61,13 @@ func RunServerHealthChecks(path string) ServerHealthResult {
 	// Check if Dolt backend is configured
 	if cfg.GetBackend() != configfile.BackendDolt {
 		result.Checks = append(result.Checks, DoctorCheck{
-			Name:     "Server Config",
-			Status:   StatusWarning,
-			Message:  fmt.Sprintf("Backend is '%s', not Dolt", cfg.GetBackend()),
-			Detail:   "Server mode health checks are only relevant for Dolt backend",
-			Fix:      "Set backend: dolt in metadata.json to use Dolt server mode",
-			Category: CategoryFederation,
+			Name:      "Server Config",
+			CheckCode: "server_config",
+			Status:    StatusWarning,
+			Message:   fmt.Sprintf("Backend is '%s', not Dolt", cfg.GetBackend()),
+			Detail:    "Server mode health checks are only relevant for Dolt backend",
+			Fix:       "Set backend: dolt in metadata.json to use Dolt server mode",
+			Category:  CategoryFederation,
 		})
 		result.OverallOK = false
 		return result
@@ -73,11 +76,12 @@ func RunServerHealthChecks(path string) ServerHealthResult {
 	// Check if server mode is configured
 	if !cfg.IsDoltServerMode() {
 		result.Checks = append(result.Checks, DoctorCheck{
-			Name:     "Server Config",
-			Status:   StatusOK,
-			Message:  fmt.Sprintf("Dolt mode is '%s' (embedded is the default)", cfg.GetDoltMode()),
-			Detail:   "Server health checks only apply when dolt_mode is explicitly set to 'server'",
-			Category: CategoryFederation,
+			Name:      "Server Config",
+			CheckCode: "server_config",
+			Status:    StatusOK,
+			Message:   fmt.Sprintf("Dolt mode is '%s' (embedded is the default)", cfg.GetDoltMode()),
+			Detail:    "Server health checks only apply when dolt_mode is explicitly set to 'server'",
+			Category:  CategoryFederation,
 		})
 		return result
 	}
@@ -89,16 +93,18 @@ func RunServerHealthChecks(path string) ServerHealthResult {
 	port := doltserver.DefaultConfig(beadsDir).Port
 	if port == 0 {
 		result.Checks = append(result.Checks, DoctorCheck{
-			Name:     "Server port",
-			Status:   StatusWarning,
-			Message:  "No Dolt server port configured and no server running. Run any bd command to auto-start.",
-			Category: CategoryFederation,
+			Name:      "Server port",
+			CheckCode: "server_port",
+			Status:    StatusWarning,
+			Message:   "No Dolt server port configured and no server running. Run any bd command to auto-start.",
+			Category:  CategoryFederation,
 		})
 		return result
 	}
 
 	// Check 1: Server reachability (TCP connect)
 	reachCheck := checkServerReachable(host, port)
+	reachCheck.CheckCode = "server_reachable"
 	result.Checks = append(result.Checks, reachCheck)
 	if reachCheck.Status == StatusError {
 		result.OverallOK = false
@@ -108,6 +114,7 @@ func RunServerHealthChecks(path string) ServerHealthResult {
 
 	// Check 2: Connect and verify it's Dolt (get version)
 	versionCheck, db := checkDoltVersion(cfg, beadsDir)
+	versionCheck.CheckCode = "dolt_version"
 	result.Checks = append(result.Checks, versionCheck)
 	if versionCheck.Status == StatusError {
 		result.OverallOK = false
@@ -127,6 +134,7 @@ func RunServerHealthChecks(path string) ServerHealthResult {
 
 	// Check 3: Database exists and is queryable
 	dbExistsCheck := checkDatabaseExists(db, database)
+	dbExistsCheck.CheckCode = "database_exists"
 	result.Checks = append(result.Checks, dbExistsCheck)
 	if dbExistsCheck.Status == StatusError {
 		result.OverallOK = false
@@ -134,6 +142,7 @@ func RunServerHealthChecks(path string) ServerHealthResult {
 
 	// Check 4: Schema compatible (can query beads tables)
 	schemaCheck := checkSchemaCompatible(db, database)
+	schemaCheck.CheckCode = "schema_compatible"
 	result.Checks = append(result.Checks, schemaCheck)
 	if schemaCheck.Status == StatusError {
 		result.OverallOK = false
@@ -141,6 +150,7 @@ func RunServerHealthChecks(path string) ServerHealthResult {
 
 	// Check 5: Connection pool health
 	poolCheck := checkConnectionPool(db)
+	poolCheck.CheckCode = "connection_pool"
 	result.Checks = append(result.Checks, poolCheck)
 	if poolCheck.Status == StatusError {
 		result.OverallOK = false
@@ -148,6 +158,7 @@ func RunServerHealthChecks(path string) ServerHealthResult {
 
 	// Check 6: Stale databases (test/polecat leftovers)
 	staleCheck := checkStaleDatabases(db)
+	staleCheck.CheckCode = "stale_databases"
 	result.Checks = append(result.Checks, staleCheck)
 	if staleCheck.Status == StatusError {
 		result.OverallOK = false

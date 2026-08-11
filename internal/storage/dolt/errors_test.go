@@ -41,6 +41,18 @@ func TestWrapDBError(t *testing.T) {
 	})
 }
 
+func TestDatabaseNotFoundErrorCarriesTypedFailureCode(t *testing.T) {
+	cfg := Config{Database: "missing", ServerHost: "127.0.0.1", ServerPort: 3307, BeadsDir: t.TempDir()}
+	err := databaseNotFoundError(&cfg)
+	code, ok := storage.CodeOf(err)
+	if !ok || code != storage.FailureDatabaseNotFound {
+		t.Fatalf("CodeOf(databaseNotFoundError) = (%q, %t)", code, ok)
+	}
+	if !strings.Contains(err.Error(), "database \"missing\" not found") {
+		t.Fatalf("human message changed: %q", err)
+	}
+}
+
 func TestWrapTransactionError(t *testing.T) {
 	t.Run("nil error returns nil", func(t *testing.T) {
 		if err := wrapTransactionError("begin", nil); err != nil {

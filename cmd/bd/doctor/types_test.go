@@ -2,6 +2,8 @@ package doctor
 
 import (
 	"testing"
+
+	"github.com/steveyegge/beads/internal/storage"
 )
 
 func TestStatusConstants(t *testing.T) {
@@ -14,6 +16,17 @@ func TestStatusConstants(t *testing.T) {
 	}
 	if StatusError != "error" {
 		t.Errorf("StatusError = %q, want %q", StatusError, "error")
+	}
+}
+
+func TestDoctorCheckCarriesStableMachineFacts(t *testing.T) {
+	check := DoctorCheck{
+		CheckCode:   "local_store_health",
+		FailureCode: storage.FailureLocalStoreCorrupt,
+		Evidence:    map[string]interface{}{"operation": "database_open"},
+	}
+	if check.CheckCode != "local_store_health" || check.FailureCode != storage.FailureLocalStoreCorrupt {
+		t.Fatalf("doctor check lost stable facts: %#v", check)
 	}
 }
 

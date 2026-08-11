@@ -1165,6 +1165,10 @@ var rootCmd = &cobra.Command{
 				metrics.CloseAndFlush()
 				os.Exit(1)
 			}
+			if jsonOutput {
+				reportDatabaseOpenFailure(err)
+				return SilentExit()
+			}
 			return HandleError("failed to open database: %v", err)
 		}
 

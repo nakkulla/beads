@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/steveyegge/beads/cmd/bd/doctor/fix"
+	"github.com/steveyegge/beads/internal/storage"
 )
 
 // LocalStoreHealthCheckName is the check name for the local store-open
@@ -33,10 +34,11 @@ func CheckLocalStoreHealth(path string, ss *SharedStore) DoctorCheck {
 
 	if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
 		return DoctorCheck{
-			Name:     LocalStoreHealthCheckName,
-			Status:   StatusOK,
-			Message:  "N/A (no .beads directory)",
-			Category: CategoryCore,
+			Name:      LocalStoreHealthCheckName,
+			CheckCode: LocalStoreHealthCheckCode,
+			Status:    StatusOK,
+			Message:   "N/A (no .beads directory)",
+			Category:  CategoryCore,
 		}
 	}
 
@@ -48,21 +50,25 @@ func localStoreHealthCheck(plan fix.LocalStoreRecoveryPlan) DoctorCheck {
 
 	if report.Class == fix.StoreOpenClassNone {
 		return DoctorCheck{
-			Name:     LocalStoreHealthCheckName,
-			Status:   StatusOK,
-			Message:  "No store open failure recorded",
-			Category: CategoryCore,
+			Name:      LocalStoreHealthCheckName,
+			CheckCode: LocalStoreHealthCheckCode,
+			Status:    StatusOK,
+			Message:   "No store open failure recorded",
+			Category:  CategoryCore,
 		}
 	}
 
 	check := DoctorCheck{
-		Name:     LocalStoreHealthCheckName,
-		Category: CategoryCore,
+		Name:      LocalStoreHealthCheckName,
+		CheckCode: LocalStoreHealthCheckCode,
+		Category:  CategoryCore,
 	}
 
 	var details []string
 
 	if report.Class == fix.StoreOpenClassCorrupt {
+		check.FailureCode = storage.FailureLocalStoreCorrupt
+		check.Evidence = map[string]interface{}{"operation": "database_open"}
 		check.Status = StatusError
 		check.Message = "Dolt store failed to open with a corruption signature; " + remoteClause(plan)
 		details = append(details, fmt.Sprintf("Corruption signature: %q.", report.Signature))
@@ -70,6 +76,8 @@ func localStoreHealthCheck(plan fix.LocalStoreRecoveryPlan) DoctorCheck {
 			details = append(details, "Damaged store directories:\n  "+strings.Join(report.DamagedDirs, "\n  "))
 		}
 	} else {
+		check.FailureCode = storage.FailureDatabaseOpenFailed
+		check.Evidence = map[string]interface{}{"operation": "database_open"}
 		check.Status = StatusWarning
 		check.Message = "Dolt store did not open (transient failure); " + remoteClause(plan)
 		details = append(details, "No corruption signature in the open error — this reads as a server, connectivity, "+

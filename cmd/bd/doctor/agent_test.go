@@ -5,6 +5,18 @@ import (
 	"testing"
 )
 
+func TestEnrichForAgentJoinsByCheckCodeNotDisplayName(t *testing.T) {
+	diagnostic := EnrichForAgent(DoctorCheck{
+		Name:      "Renamed Display Label",
+		CheckCode: "fresh_clone",
+		Status:    StatusWarning,
+		Message:   "fresh clone",
+	})
+	if diagnostic.CheckCode != "fresh_clone" || !strings.Contains(strings.Join(diagnostic.Commands, " "), "bd bootstrap") {
+		t.Fatalf("diagnostic did not use check_code enricher: %#v", diagnostic)
+	}
+}
+
 func TestEnrichFreshClone_UsesBootstrapFirstGuidance(t *testing.T) {
 	dc := DoctorCheck{Name: "Fresh Clone", Message: "database not found on configured server"}
 	enrichment := enrichFreshClone(dc)
