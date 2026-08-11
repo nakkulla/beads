@@ -1,0 +1,63 @@
+# CI 검증 단일 소유권과 artifact DAG 단축 구현 계획
+
+## Context
+
+- 실행 권한은 Bead beads-am7, 승인된 spec docs/superpowers/specs/2026-08-11-ci-validation-artifact-dag-design.md, spec commit f0e29395bf104f988e6d547603e0639066cb5331에 있다. route는 full_plan, workflow mode는 standard이며 plan_path는 docs/superpowers/plans/2026-08-11-ci-validation-artifact-dag.md로 이미 고정되어 있다.
+- 현재 PR workflow의 Build Artifacts가 policy와 lint를 먼저 반복 실행해 artifact consumer의 시작을 지연시킨다. PR #10 기준 중복 block은 233초였고 PR workflow는 23.68 runner-minutes, 10.43분 critical span을 사용했다. 이번 구현은 artifact producer를 build, checksum, manifest, upload 전용으로 만들고 policy와 lint를 각각 canonical wrapper 한 곳으로 모은다.
+- 변경 범위는 .github/workflows/pr.yml, .github/workflows/main.yml, scripts/ci/lib/timing.sh, scripts/ci/pr-policy.sh, scripts/ci/pr-lint.sh, 새 scripts/ci_workflow_test.go, docs/CI_REQUIRED_CHECK_TOPOLOGY.md와 이들이 직접 요구하는 test fixture에 한정한다. cache ownership, regression gating, embedded storage sharding, package job-level skip, Main workflow 재활성화, branch protection 변경은 별도 Bead 범위이며 이 계획에서 구현하지 않는다.
+- 실행 세션은 첫 편집 전에 target base를 action time에 다시 해석한다. 대상 repo의 docs/agents/repo-ops.toml top-level base가 없으므로 현재 기대값은 main이지만 이를 상수로 가정하지 않는다. 선언값을 git check-ref-format으로 검증하고 remote 이름 prefix를 거부한 뒤, target branch의 configured upstream remote 또는 remote가 정확히 하나일 때 base 검증용 BASE_REMOTE를 선택한다. git fetch --no-tags BASE_REMOTE BASE 후 refs/remotes/BASE_REMOTE/BASE^{commit}을 40-hex로 고정한다. 선언 parse, remote 선택, fetch, ref 존재 검증 중 하나라도 실패하면 source-of-truth hard stop으로 종료한다.
+- PR branch 게시용 DELIVERY_REMOTE와 GitHub target repo는 base 검증 remote와 별도로 git remote get-url --push origin에서 고정한다. origin push URL이 없거나 owner/repo로 안전하게 해석되지 않으면 hard stop하며 BASE_REMOTE를 게시 remote로 대체하지 않는다. BASE_REMOTE가 origin이 아니면 origin의 같은 target base도 fetch하고 두 base tip이 일치하는지 첫 편집 전과 PR 게시 전에 확인한다. feature branch git push와 gh pr create --repo는 반드시 같은 origin writable repo를 사용한다.
+- CONTRIBUTING.md와 PR_MAINTAINER_GUIDELINES.md를 읽고 scripts/pr-preflight.sh --search로 upstream gastownhall/beads의 CI validation, artifact, policy, lint 관련 contributor work를 첫 편집 전에 확인한다. 현재 범위와 충돌하는 외부 기여가 발견되면 재구현하지 않고 ownership 판단을 hard stop으로 올린다.
+- fetched base tip에서 .worktrees/beads-am7 worktree와 beads-am7 branch를 만들고 basename과 branch가 일치하는지 확인한 뒤에만 parent를 in_progress로 claim한다. 기존 child를 먼저 조회하고, 저장된 plan의 각 Phase section bytes SHA-256 앞 12자와 plan_task_anchor를 사용해 phase마다 정확히 한 child를 bd create --parent로 만든다. Phase 2는 Phase 1, Phase 3은 Phase 2, Phase 4는 Phase 3에 bd dep add later earlier --type blocks로 의존시키고 각 write 뒤 bd show 및 bd ready로 readback한다. digest mismatch나 duplicate anchor는 phase_children_mismatch hard stop이다.
+- implementation selector는 기존 attempt의 controller=codex, requested=inherit, resolved=codex, model=auto, effort=auto를 유지한다. Phase 1과 Phase 3은 각각 fresh gpt-5.6-luna/max leaf, Phase 2는 fresh gpt-5.6-terra/high leaf에 맡긴다. 모든 spawn은 fork_turns=none, leaf-only packet, 동일 worktree, 해당 phase 범위만 사용한다. Phase 4는 전체 diff, review gate, Beads lifecycle, publish safety가 결합된 controller 책임이므로 root가 main 사유를 기록하고 수행한다.
+- delegate는 파일 후보만 만들며 Beads write, commit, push, PR 생성, review 재위임을 하지 않는다. 각 phase에서 root는 전체 git status와 full diff, focused verification을 직접 확인한다. commit 직전 branch check를 반복하고 owned paths만 stage하며, 한국어 commit message에 beads-am7과 Agent-Signature trailer를 넣는다. 그 commit SHA, verification, execution receipt를 child notes에 기록하고 child를 resolved로 전환한 뒤 readback해야 다음 phase를 시작한다.
+
+## Phase 1: 실패하는 CI 계약 테스트 고정
+
+1. scripts/ci_workflow_test.go에 이미 go.mod에 있는 gopkg.in/yaml.v3를 사용해 workflow topology RED seam을 만든다. PR/Main Build Artifacts에서 golangci-lint 설치와 make ci-pr-policy, make ci-pr-lint를 금지하고, policy/lint/core wrapper command가 각 workflow의 지정 job에 정확히 한 번만 존재하는지 검사한다. 승인된 standalone job ID 제거, PR aggregate name과 always 조건, 정확한 11개 owner의 needs, result env, required token 1:1 mapping, baseline skipped allowlist 부재를 함께 고정한다.
+2. 같은 test package에 event/base와 diagnostic 보존 계약을 추가한다. PR policy wrapper의 pull_request.base.sha 또는 merge_group.base_sha 사용, docs와 .beads base의 동일성, DOC_DRIFT_PATCH_OUT과 실패 artifact upload를 검사한다. Main policy wrapper의 github.event.before 사용을 검사하며, PR과 Main의 check-migration-hygiene job이 모두 존재하고 각각 PR/merge-group base 표현과 github.event.before를 BASE_SHA로 전달하는지 별도 assertion으로 고정한다.
+3. 실제 scripts를 temp layout에 복사하고 fake external commands를 PATH에 두는 behavioral fixture를 만든다. 첫 independent command는 실패시키고 뒤 command는 sentinel과 docs patch를 생성하게 하여 현재 first-failure exit를 재현한다. helper 자체의 status 누적, policy의 docs-binary producer 실패 시 binary-dependent doc flags만 blocked되는 동작, independent doc freshness와 후속 policy check 계속 실행, lint의 fmt 실패 뒤 golangci-lint 실행, 최종 aggregate nonzero를 요구한다. compile error, fixture path 오류, fake command 누락은 유효한 RED로 인정하지 않는다.
+
+검증: go test ./scripts에서 새 targeted tests가 현재 구현의 ownership 중복과 first-failure 동작 때문에 예상대로 실패하고, 기존 test compile과 fixture bootstrap은 성공해야 한다. root가 실패 원인을 assertion별로 확인한 뒤 RED test commit과 Phase 1 execution receipt를 남긴다.
+
+## Phase 2: timing accumulator와 wrapper failure aggregation 구현
+
+1. scripts/ci/lib/timing.sh에 ci_time_accumulate STATUS_VAR LABEL -- COMMAND 형식의 최소 helper를 추가한다. 기존 ci_time의 console 및 GITHUB_STEP_SUMMARY timing 출력을 그대로 사용하고, command exit를 caller가 지정한 aggregate variable에 보존하되 helper 자체는 set -e를 다시 발동시키지 않고 성공을 반환한다. 첫 nonzero를 유지해 마지막 wrapper exit가 안정적으로 실패하도록 한다.
+2. scripts/ci/pr-policy.sh를 aggregate status 방식으로 바꾼다. build-tag policy, go install guidance, version consistency, docs binary build, doc flags/drift, doc freshness, testing.Short, .beads guard를 끝까지 실행한다. docs binary build 결과를 별도로 보존하고 실패 시 그 binary가 필요한 doc flags/drift만 clear blocked message와 함께 건너뛰며, doc freshness와 나머지 independent checks는 계속 실행한다. cleanup trap과 기존 base-resolution 실패 규칙은 유지하고 마지막에 aggregate status를 반환한다.
+3. scripts/ci/pr-lint.sh도 같은 helper를 사용해 make fmt-check가 실패해도 pinned golangci-lint command를 실행하고 두 timing result를 남긴 뒤 aggregate nonzero를 반환하게 한다. lint arguments와 gms_pure_go build tag는 바꾸지 않는다.
+4. Phase 1의 behavioral fixture를 GREEN으로 만들되 workflow topology assertions는 다음 phase 전까지 RED인 상태를 명시적으로 분리한다. root는 shell diff와 error-path output을 검토하고 behavioral GREEN만 phase acceptance로 사용한다.
+
+검증: go test ./scripts -run 'TestCITimeAccumulate|TestCIPolicyAggregation|TestCILintAggregation'가 성공하고 bash -n scripts/ci/lib/timing.sh scripts/ci/pr-policy.sh scripts/ci/pr-lint.sh가 성공해야 한다. root는 full diff를 검토한 뒤 Phase 2 commit, execution receipt, child resolved readback을 완료한다.
+
+## Phase 3: workflow single-owner DAG와 gate 문서 전환
+
+1. .github/workflows/pr.yml에서 Build Artifacts의 golangci-lint 설치와 policy/lint 실행을 제거하되 binary build, executable 검증, SHA256SUMS, manifest, ci-build-artifacts upload와 consumer의 needs 및 checksum 검증은 유지한다. check-build-tags, check-version-consistency, check-doc-flags, check-no-beads-changes, fmt-check, lint jobs를 제거한다. pr-policy-wrapper에 github.event.pull_request.base.sha 또는 github.event.merge_group.base_sha를 BD_DOCS_DIFF_BASE와 CI_BEADS_DIFF_BASE로 전달하고 DOC_DRIFT_PATCH_OUT과 failure-only cli-docs-freshness-patch upload를 이동한다. pr-lint-wrapper의 golangci-lint는 v2.9.0으로 고정한다.
+2. PR ci-gate의 name: CI Gate / Required와 if: always()를 유지하고 owner를 build-artifacts, check-cmd-bd-puregeo-tests, check-migration-hygiene, detect-package-gates, package-mcp, package-npm, package-website, pr-policy-wrapper, pr-core-wrapper, pr-lint-wrapper, test-domain-uow의 정확한 11개로 재작성한다. 각 needs ID, uppercase CI_GATE_REQUIRED token, needs result env를 1:1로 맞추고 check-no-beads용 merge-group CI_GATE_SKIPPED_OK 예외를 제거한다. pure-Go, migration hygiene, package, core, domain/UOW surface는 축소하지 않는다.
+3. .github/workflows/main.yml에도 같은 artifact와 wrapper ownership을 적용한다. policy wrapper의 docs 및 .beads base는 github.event.before로 고정하고, standalone build-tag, version, docs, fmt, lint jobs와 check-migration-hygiene의 부분집합인 inline check-no-duplicate-migrations job을 제거한다. 비활성 workflow를 재활성화하거나 post-merge test, integration, embedded, Windows, Nix surface를 줄이지 않는다.
+4. docs/CI_REQUIRED_CHECK_TOPOLOGY.md를 실제 YAML과 test authority에 맞춘다. stale CHECK_NO_DUPLICATE_MIGRATIONS 예시를 CHECK_MIGRATION_HYGIENE owner로 바로잡고, wrapper single ownership, aggregate 1:1 mapping, PR/merge_group 무경로필터 계약, risk-tier skipped allowance가 pr-risk.yml에만 있다는 경계를 설명한다. Phase 1의 전체 topology tests를 GREEN으로 만들고 변경이 승인 범위를 벗어나지 않았는지 root가 확인한다.
+
+검증: go test ./scripts가 성공하고, 새 contract test가 두 workflow의 artifact ownership, wrapper count, 삭제 job 부재, PR gate 11-owner mapping, docs patch/base 전달, PR/Main migration job과 event별 BASE_SHA를 모두 확인해야 한다. root는 YAML과 문서의 full diff를 검토한 뒤 Phase 3 commit, execution receipt, child resolved readback을 완료한다.
+
+## Phase 4: 통합 검증, implementation review, PR Delivery
+
+1. root가 target base 대비 전체 commit range와 git status를 검토하고 scope 밖 변경이 없음을 확인한다. git diff --check, bash -n scripts/ci/lib/timing.sh scripts/ci/pr-policy.sh scripts/ci/pr-lint.sh, go test ./scripts, make ci-pr-policy, make ci-pr-lint를 exact branch HEAD에서 실행한다. full make test와 storage/core 전체 suite는 실행 명령이나 code가 바뀌지 않은 이번 workflow unit의 로컬 필수 gate가 아니며 실행하지 않은 사실을 보고한다.
+2. required verification이 모두 green인 pinned HEAD에 대해 standard implementation review gate를 연다. reviewer는 승인된 spec, 저장된 plan, base..HEAD 전체 diff와 command evidence를 받는다. REVISE면 findings를 한 번에 처리하고 root가 exact delta 또는 broad 변경이면 full diff를 follow-up self-review하며, 새 HEAD에서 관련 verification을 다시 실행하고 impl_review receipt를 갱신한다. blocking finding이나 required verification 실패가 남으면 push 전에 hard stop한다.
+3. 최종 commit 전에 worktree branch가 beads-am7이고 basename과 일치하는지 다시 확인한다. target base와 BASE_REMOTE를 Context의 action-time 절차로 재해석하고 fetch하여 base drift와 branch ancestry를 확인한다. DELIVERY_REMOTE와 ORIGIN_OWNER_REPO는 origin push URL에서 다시 고정하고, BASE_REMOTE가 origin과 다르면 두 target-base tip이 일치하는지 확인한다. verified commits만 git push origin beads-am7로 게시하며 다른 remote로 feature branch를 push하지 않는다.
+4. PR 생성 직전에 scripts/pr-preflight.sh --search를 다시 실행한다. GitHub body를 file로 작성해 scripts/gh-body-lint로 검사한 뒤 gh pr create --repo ORIGIN_OWNER_REPO --base RESOLVED_TARGET_BASE --head beads-am7로 DELIVERY_REMOTE와 같은 origin repo에 PR을 만든다. 생성된 PR 번호로 scripts/pr-preflight.sh PR_NUMBER --repo ORIGIN_OWNER_REPO를 즉시 실행해 target과 contributor safety를 readback한다. 본문에는 single-owner 변경, local verification, PR #10 baseline, 실제 CI/성능 수치는 pending임을 기록한다. Phase 4 child에 commit, verification, main execution receipt를 기록해 resolved로 만들고, parent에 pr_url을 쓰고 append-only completion report와 함께 resolved로 전환한 뒤 모두 readback한다. PR URL, 현재 CI status, AI-review gate eligibility, 다음 merge action을 보고하고 branch와 worktree를 보존한 채 멈춘다. 이 세션은 CI를 기다리거나 merge하지 않는다.
+
+검증: exact pushed HEAD와 PR head OID가 같고 PR baseRefName이 action-time에 해석한 target base와 같아야 하며, parent와 네 phase child의 lifecycle readback, pr_url, completion report 존재가 확인되어야 한다. CI pending은 PR Delivery에서 허용되지만 known failure, head drift, base mismatch는 hard stop이다.
+
+## PR Delivery 이후 merge 조건
+
+- 후속 사용자 요청은 plain merge가 아니라 pr-finish --review로 시작한다. 이 merge lane이 pinned head의 PR, PR Risk, Regression Tests가 모두 green이 될 때까지 기다리고 feedback 및 AI review gate를 처리한다.
+- 같은 head에서 Build Artifacts duration과 step inventory, artifact 종료부터 PR Core 시작까지의 handoff, PR workflow wall/critical span, PR runner-minutes를 수집해 PR #10의 23.68 runner-minutes, 10.43분 critical span과 중복 block 중앙값 3.94분에 비교한다. 숫자 감소는 관측 evidence이며 fixed percentage merge hard gate는 아니다.
+- merge lane은 CI red, semantic conflict, head drift, stale impl_review에서 fail closed한다. merge 뒤 resolved target base를 fetch 및 ff-only sync하고 repo-ops verify와 deploy declaration을 따르며, target-base 검증과 설치 readback이 끝난 뒤 phase children을 leaves-first로 close하고 parent를 마지막에 close한다.
+
+## Test scope
+
+- Phase 1 RED: workflow topology와 aggregate gate mapping은 현재 중복 jobs 때문에 실패하고, behavioral fixtures는 현재 set -e first-failure 때문에 sentinel, docs patch, later lint assertion에서 실패해야 한다. test compile, temp layout 생성, fake command discovery 실패는 RED acceptance가 아니다.
+- Phase 2 GREEN: ci_time_accumulate와 policy/lint failure aggregation의 behavioral tests만 green이 된다. docs binary producer 실패는 dependent doc flags/drift만 blocked시키고 independent checks가 계속되며 final status는 nonzero여야 한다.
+- Phase 3 GREEN: 전체 go test ./scripts가 green이 되고 PR/Main workflow ownership, exact gate mapping, wrapper base/patch 환경, 두 migration-hygiene job과 event별 BASE_SHA가 정적으로 고정된다.
+- Phase 4 integration: real repository에서 make ci-pr-policy와 make ci-pr-lint를 성공시키고 shell syntax, Go contract package, diff hygiene를 확인한다. production PR을 고의 실패시켜 patch upload나 merge_group failure를 검증하지 않는다.
+- 실제 GitHub runtime acceptance는 PR Delivery 이후 merge lane이 맡는다. Main workflow는 disabled_manually 상태이므로 source topology와 contract test만 주장하고 runtime 성공을 주장하지 않는다.
+- 제외: full make test, storage/core 전체 suite, cache topology, regression path gating, embedded storage sharding, package job-level skip, release/nightly/Nix 변경은 이 계획의 RED-GREEN seam과 구현 범위가 아니다.
