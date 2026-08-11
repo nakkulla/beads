@@ -24,12 +24,15 @@ const (
 )
 
 type doctorCheck struct {
-	Name     string `json:"name"`
-	Status   string `json:"status"` // statusOK, statusWarning, or statusError
-	Message  string `json:"message"`
-	Detail   string `json:"detail,omitempty"` // Additional detail like storage type
-	Fix      string `json:"fix,omitempty"`
-	Category string `json:"category,omitempty"` // category for grouping in output
+	Name        string                 `json:"name"`
+	CheckCode   string                 `json:"check_code,omitempty"`
+	Status      string                 `json:"status"` // statusOK, statusWarning, or statusError
+	Message     string                 `json:"message"`
+	Detail      string                 `json:"detail,omitempty"` // Additional detail like storage type
+	Fix         string                 `json:"fix,omitempty"`
+	Category    string                 `json:"category,omitempty"` // category for grouping in output
+	FailureCode string                 `json:"failure_code,omitempty"`
+	Evidence    map[string]interface{} `json:"evidence,omitempty"`
 }
 
 type doctorResult struct {
@@ -40,6 +43,109 @@ type doctorResult struct {
 	Timestamp       string            `json:"timestamp,omitempty"`        // ISO8601 timestamp for historical tracking
 	Platform        map[string]string `json:"platform,omitempty"`         // platform info for debugging
 	SuppressedCount int               `json:"suppressed_count,omitempty"` // GH#1095: number of suppressed warnings
+	ContractError   string            `json:"-"`
+}
+
+// standardDoctorCheckCodes is the stable, display-name-independent key order
+// for runDiagnostics. Keep additions adjacent to the matching check append.
+// The assignment validator fails closed on cardinality, duplicate, or producer
+// conflicts instead of deriving a key from DoctorCheck.Name.
+var standardDoctorCheckCodes = []string{
+	"installation",
+	"git_hooks",
+	"stale_legacy_hooks",
+	"git_hooks_dolt_compatibility",
+	"fresh_clone",
+	"metadata_config",
+	"managed_handoff_port",
+	"dolt_format",
+	"local_store_health",
+	"database",
+	"schema_compatibility",
+	"repo_fingerprint",
+	"database_integrity",
+	"id_format",
+	"cli_version",
+	"claude_plugin",
+	"database_config",
+	"config_values",
+	"project_identity",
+	"multi_repo_types",
+	"role_configuration",
+	"lock_files",
+	"stale_server_pid_state",
+	"external_lifecycle_pin",
+	"dolt_port_drift",
+	"sync_remote_shape",
+	"corrupt_manifest",
+	"circuit_breaker",
+	"migration_content_skew",
+	"dolt_connection",
+	"dolt_schema",
+	"dolt_issue_count",
+	"dolt_status",
+	"dolt_lock_health",
+	"phantom_databases",
+	"shared_server",
+	"dolt_remote_migration",
+	"federation_remotesapi",
+	"peer_connectivity",
+	"sync_staleness",
+	"federation_conflicts",
+	"dolt_mode",
+	"permissions",
+	"dependency_cycles",
+	"dependency_keys",
+	"blocked_consistency",
+	"claude_integration",
+	"claude_settings_health",
+	"claude_hook_completeness",
+	"bd_prime_output",
+	"cli_availability",
+	"prime_documentation",
+	"agent_documentation",
+	"agent_doc_divergence",
+	"legacy_commands",
+	"mcp_tool_references",
+	"gitignore",
+	"project_gitignore",
+	"redirect_tracking",
+	"redirect_target_valid",
+	"redirect_target_sync",
+	"vestigial_sync_worktrees",
+	"last_touched_tracking",
+	"tracked_runtime_files",
+	"git_working_tree",
+	"git_upstream",
+	"version_tracking",
+	"orphaned_issues",
+	"deletions_manifest",
+	"untracked_files",
+	"orphaned_dependencies",
+	"child_parent_dependencies",
+	"duplicate_issues",
+	"test_pollution",
+	"stale_closed_issues",
+	"stale_molecules",
+	"persistent_mol_issues",
+	"stale_mq_files",
+	"patrol_pollution",
+	"large_database",
+	"pending_migrations",
+	"kv_sync_status",
+	"dolt_locks",
+	"classic_artifacts",
+	"btrfs_nocow",
+}
+
+var initDoctorCheckCodes = []string{
+	"installation",
+	"dolt_format",
+	"database",
+	"schema_compatibility",
+	"permissions",
+	"dolt_connection",
+	"dolt_schema",
 }
 
 var (
@@ -195,6 +301,9 @@ Examples:
 		}()
 
 		if !usesSQLServer() {
+			if jsonOutput {
+				return outputJSON(unsupportedDoctorResult("embedded"))
+			}
 			fmt.Fprintln(os.Stderr, "Note: 'bd doctor' is not yet supported in embedded mode.")
 			fmt.Fprintln(os.Stderr, "")
 			fmt.Fprintln(os.Stderr, "For embedded mode troubleshooting:")
@@ -205,6 +314,9 @@ Examples:
 			return nil
 		}
 		if usesProxiedServer() {
+			if jsonOutput {
+				return outputJSON(unsupportedDoctorResult("proxied"))
+			}
 			fmt.Fprintln(os.Stderr, "Note: 'bd doctor' is not yet supported in proxied-server mode.")
 			return nil
 		}
@@ -269,6 +381,9 @@ Examples:
 		}
 
 		result := runDiagnostics(absPath)
+		if result.ContractError != "" {
+			return HandleError("doctor check contract: %s", result.ContractError)
+		}
 
 		if doctorDryRun {
 			previewFixes(result)
@@ -276,6 +391,9 @@ Examples:
 			applyFixes(result)
 			fmt.Println("\nVerifying fixes...")
 			result = runDiagnostics(absPath)
+			if result.ContractError != "" {
+				return HandleError("doctor check contract: %s", result.ContractError)
+			}
 		}
 
 		if doctorOutput != "" || jsonOutput {
@@ -284,14 +402,14 @@ Examples:
 		}
 
 		if doctorOutput != "" {
-			if err := exportDiagnostics(result, doctorOutput); err != nil {
+			if err := exportDiagnostics(redactDoctorResultForJSON(result), doctorOutput); err != nil {
 				return HandleError("failed to export diagnostics: %v", err)
 			}
 			fmt.Printf("✓ Diagnostics exported to %s\n", doctorOutput)
 		}
 
 		if doctorAgent {
-			agentResult := buildAgentResult(result)
+			agentResult := buildAgentResult(redactDoctorResultForJSON(result))
 			if jsonOutput {
 				if err := outputJSON(agentResult); err != nil {
 					return err
@@ -300,7 +418,7 @@ Examples:
 				printAgentDiagnostics(agentResult)
 			}
 		} else if jsonOutput {
-			if err := outputJSON(result); err != nil {
+			if err := outputJSON(redactDoctorResultForJSON(result)); err != nil {
 				return err
 			}
 		} else if doctorOutput == "" {
@@ -312,6 +430,19 @@ Examples:
 		}
 		return nil
 	},
+}
+
+func unsupportedDoctorResult(mode string) map[string]interface{} {
+	message := fmt.Sprintf("bd doctor is not supported in %s mode", mode)
+	if mode == "proxied" {
+		message = "bd doctor is not supported in proxied-server mode"
+	}
+	return map[string]interface{}{
+		"mode":       mode,
+		"check_code": "doctor_supported",
+		"supported":  false,
+		"message":    message,
+	}
 }
 
 func init() {
@@ -373,6 +504,9 @@ func runDiagnostics(path string) doctorResult {
 
 	// If no .beads/, skip remaining checks
 	if installCheck.Status != statusOK {
+		if err := assignDoctorCheckCodes(&result, standardDoctorCheckCodes[:len(result.Checks)]); err != nil {
+			result.ContractError = err.Error()
+		}
 		return result
 	}
 
@@ -887,6 +1021,13 @@ func runDiagnostics(path string) doctorResult {
 	result.Checks = append(result.Checks, btrfsNoCowCheck)
 	// Don't fail overall check for btrfs NoCOW, just warn
 
+	// Bind stable keys before filtering suppressed checks. Filtering must retain
+	// the producer-assigned key rather than changing the contract cardinality.
+	if err := assignDoctorCheckCodes(&result, standardDoctorCheckCodes); err != nil {
+		result.ContractError = err.Error()
+		return result
+	}
+
 	// GH#1095: Filter out suppressed checks (doctor.suppress.<slug> = true)
 	suppressed := doctor.GetSuppressedChecksWithStore(sharedStore)
 	if len(suppressed) > 0 {
@@ -941,6 +1082,9 @@ func runInitDiagnostics(path string) doctorResult {
 	result.Checks = append(result.Checks, installCheck)
 	if installCheck.Status != statusOK {
 		result.OverallOK = false
+		if err := assignDoctorCheckCodes(&result, initDoctorCheckCodes[:len(result.Checks)]); err != nil {
+			result.ContractError = err.Error()
+		}
 		return result
 	}
 
@@ -986,19 +1130,59 @@ func runInitDiagnostics(path string) doctorResult {
 		result.OverallOK = false
 	}
 
+	if err := assignDoctorCheckCodes(&result, initDoctorCheckCodes); err != nil {
+		result.ContractError = err.Error()
+	}
 	return result
 }
 
 // convertDoctorCheck converts doctor package check to main package check
 func convertDoctorCheck(dc doctor.DoctorCheck) doctorCheck {
 	return doctorCheck{
-		Name:     dc.Name,
-		Status:   dc.Status,
-		Message:  dc.Message,
-		Detail:   dc.Detail,
-		Fix:      dc.Fix,
-		Category: dc.Category,
+		Name:        dc.Name,
+		CheckCode:   dc.CheckCode,
+		Status:      dc.Status,
+		Message:     dc.Message,
+		Detail:      dc.Detail,
+		Fix:         dc.Fix,
+		Category:    dc.Category,
+		FailureCode: string(dc.FailureCode),
+		Evidence:    dc.Evidence,
 	}
+}
+
+// assignDoctorCheckCodes binds explicit contract keys to a completed result.
+// It never derives a key from display text and never repairs a mismatch.
+func assignDoctorCheckCodes(result *doctorResult, codes []string) error {
+	if len(result.Checks) != len(codes) {
+		return fmt.Errorf("check/code cardinality mismatch: checks=%d codes=%d", len(result.Checks), len(codes))
+	}
+	seen := make(map[string]struct{}, len(codes))
+	for i, code := range codes {
+		if code == "" {
+			return fmt.Errorf("empty check_code at index %d", i)
+		}
+		if _, duplicate := seen[code]; duplicate {
+			return fmt.Errorf("duplicate check_code %q", code)
+		}
+		seen[code] = struct{}{}
+		if existing := result.Checks[i].CheckCode; existing != "" && existing != code {
+			return fmt.Errorf("check_code conflict at index %d: producer=%q contract=%q", i, existing, code)
+		}
+		result.Checks[i].CheckCode = code
+	}
+	return nil
+}
+
+func redactDoctorResultForJSON(result doctorResult) doctorResult {
+	copyResult := result
+	copyResult.Checks = append([]doctorCheck(nil), result.Checks...)
+	for i := range copyResult.Checks {
+		copyResult.Checks[i].Message = redactURLCredentials(copyResult.Checks[i].Message)
+		copyResult.Checks[i].Detail = redactURLCredentials(copyResult.Checks[i].Detail)
+		copyResult.Checks[i].Fix = redactURLCredentials(copyResult.Checks[i].Fix)
+	}
+	return copyResult
 }
 
 // convertWithCategory converts a doctor check and sets its category
@@ -1246,10 +1430,12 @@ func runMigrationValidation(path string, phase string) error {
 	case "pre":
 		dc, mr := doctor.CheckMigrationReadiness(path)
 		check = convertDoctorCheck(dc)
+		check.CheckCode = "migration_readiness"
 		result = mr
 	case "post":
 		dc, mr := doctor.CheckMigrationCompletion(path)
 		check = convertDoctorCheck(dc)
+		check.CheckCode = "migration_completion"
 		result = mr
 	default:
 		return HandleError("invalid migration phase %q (use 'pre' or 'post')", phase)

@@ -136,6 +136,16 @@ func TestServerHealthResult_Structure(t *testing.T) {
 	}
 }
 
+func TestRunServerHealthChecksUsesStableCodeOnEarlyReturn(t *testing.T) {
+	result := RunServerHealthChecks(t.TempDir())
+	if len(result.Checks) != 1 {
+		t.Fatalf("checks = %d, want 1", len(result.Checks))
+	}
+	if got := result.Checks[0].CheckCode; got != "server_config" {
+		t.Fatalf("check_code = %q", got)
+	}
+}
+
 // TestCheckDatabaseExists_InvalidIdentifier verifies error for invalid database names.
 func TestCheckDatabaseExists_InvalidIdentifier(t *testing.T) {
 	// We can't call checkDatabaseExists without a real *sql.DB,

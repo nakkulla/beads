@@ -38,6 +38,19 @@ func handleFreshCloneError(err error) bool {
 	return true
 }
 
+// handleFreshCloneDatabaseOpenError preserves the existing human guidance but
+// keeps JSON database-open failures on the shared structured stderr path.
+func handleFreshCloneDatabaseOpenError(err error) (bool, error) {
+	if !isFreshCloneError(err) {
+		return false, nil
+	}
+	if jsonOutput {
+		reportDatabaseOpenFailure(err)
+		return true, SilentExit()
+	}
+	return handleFreshCloneError(err), nil
+}
+
 // isWispOperation returns true if the command operates on ephemeral wisps.
 // Wisp operations use direct store access (local-only).
 // Detects:

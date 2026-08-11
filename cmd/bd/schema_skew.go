@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"os"
 
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/schema"
 )
 
 func handleSchemaSkewJSON(e *schema.SchemaSkewError) {
-	outer := buildJSONError(e.Error(), e.EscapeHint())
-	if m, ok := outer.(map[string]interface{}); ok {
+	outer := buildJSONClassifiedError(e.Error(), e.EscapeHint(), storage.FailureSchemaMigrationRequired, map[string]interface{}{"operation": "database_open"})
+	if m := jsonErrorPayload(outer); m != nil {
 		m["schema_skew"] = map[string]interface{}{
 			"current_version":  e.DBVersion,
 			"required_version": e.BinaryVersion,

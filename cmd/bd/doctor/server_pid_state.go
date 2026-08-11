@@ -27,10 +27,11 @@ func CheckStaleServerPIDState(path string) DoctorCheck {
 
 	if _, err := os.Stat(beadsDir); os.IsNotExist(err) {
 		return DoctorCheck{
-			Name:     StaleServerPIDStateCheckName,
-			Status:   StatusOK,
-			Message:  "N/A (no .beads directory)",
-			Category: CategoryRuntime,
+			Name:      StaleServerPIDStateCheckName,
+			CheckCode: StaleServerPIDStateCheckCode,
+			Status:    StatusOK,
+			Message:   "N/A (no .beads directory)",
+			Category:  CategoryRuntime,
 		}
 	}
 
@@ -45,11 +46,13 @@ func CheckStaleServerPIDState(path string) DoctorCheck {
 			}
 		}
 		return DoctorCheck{
-			Name:     StaleServerPIDStateCheckName,
-			Status:   StatusOK,
-			Message:  message,
-			Detail:   state.Reason,
-			Category: CategoryRuntime,
+			Name:      StaleServerPIDStateCheckName,
+			CheckCode: StaleServerPIDStateCheckCode,
+			Status:    StatusOK,
+			Message:   message,
+			Detail:    state.Reason,
+			Category:  CategoryRuntime,
+			Evidence:  pidStateEvidence(state),
 		}
 	}
 
@@ -69,11 +72,26 @@ func CheckStaleServerPIDState(path string) DoctorCheck {
 	}
 
 	return DoctorCheck{
-		Name:     StaleServerPIDStateCheckName,
-		Status:   StatusWarning,
-		Message:  message,
-		Detail:   detail,
-		Fix:      staleServerPIDStateFixHint,
-		Category: CategoryRuntime,
+		Name:      StaleServerPIDStateCheckName,
+		CheckCode: StaleServerPIDStateCheckCode,
+		Status:    StatusWarning,
+		Message:   message,
+		Detail:    detail,
+		Fix:       staleServerPIDStateFixHint,
+		Category:  CategoryRuntime,
+		Evidence:  pidStateEvidence(state),
 	}
+}
+
+func pidStateEvidence(state doltserver.PIDState) map[string]interface{} {
+	lock := map[string]interface{}{"kind": "database", "pid_state": string(state.Status)}
+	if state.RecordedPID > 0 {
+		lock["recorded_pid"] = state.RecordedPID
+		lock["process_alive"] = state.ProcessAlive
+		lock["is_dolt_server"] = state.IsDoltServer
+	}
+	if state.Stale {
+		lock["stale"] = true
+	}
+	return map[string]interface{}{"lock": lock}
 }

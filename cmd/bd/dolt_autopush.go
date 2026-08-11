@@ -165,20 +165,7 @@ func maybeAutoPush(ctx context.Context) {
 
 	debug.Logf("dolt auto-push: pushing to origin (timeout %s)...\n", pushTimeout)
 	if err := pushWithContext(pushCtx, st); err != nil {
-		if !isQuiet() && !jsonOutput {
-			if pushCtx.Err() == context.DeadlineExceeded {
-				fmt.Fprintf(os.Stderr, "Warning: dolt auto-push timed out after %s (remote may be unreachable)\n", pushTimeout)
-			} else {
-				fmt.Fprintf(os.Stderr, "Warning: dolt auto-push failed: %v\n", err)
-			}
-			if isAncestorPKMismatchErr(err) {
-				printAncestorPKMismatchGuidance(err)
-			} else if isDivergedHistoryErr(err) {
-				printDivergedHistoryGuidance("push")
-			} else if isDanglingChunkReferenceErr(err) {
-				printDanglingChunkReferenceGuidance()
-			}
-		}
+		reportAutoPushFailure(pushCtx, st, pushTimeout, err)
 		debug.Logf("dolt auto-push: push error: %v\n", err)
 		// Throttle retries after failure so a hanging remote doesn't make every
 		// subsequent bd command pay the push timeout. We record the attempt
@@ -201,4 +188,27 @@ func maybeAutoPush(ctx context.Context) {
 	}
 
 	debug.Logf("dolt auto-push: pushed successfully\n")
+}
+
+func reportAutoPushFailure(ctx context.Context, st remoteLister, pushTimeout time.Duration, err error) {
+	if isQuiet() {
+		return
+	}
+	if jsonOutput {
+		failureCode, evidence := doltOperationFailureDetails(ctx, st, "auto_push", "origin", err)
+		jsonStderrWarning("dolt auto-push failed", failureCode, evidence)
+		return
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		fmt.Fprintf(os.Stderr, "Warning: dolt auto-push timed out after %s (remote may be unreachable)\n", pushTimeout)
+	} else {
+		fmt.Fprintf(os.Stderr, "Warning: dolt auto-push failed: %v\n", err)
+	}
+	if isAncestorPKMismatchErr(err) {
+		printAncestorPKMismatchGuidance(err)
+	} else if isDivergedHistoryErr(err) {
+		printDivergedHistoryGuidance("push")
+	} else if isDanglingChunkReferenceErr(err) {
+		printDanglingChunkReferenceGuidance()
+	}
 }

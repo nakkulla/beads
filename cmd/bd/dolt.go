@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -276,6 +277,65 @@ func printDanglingChunkReferenceGuidance() {
 	fmt.Fprint(os.Stderr, danglingChunkReferenceGuidance())
 }
 
+// reportDoltOperationFailure preserves the existing human diagnostics while
+// adding the scoped machine-readable recovery fact on stderr for JSON callers.
+func reportDoltOperationFailure(ctx context.Context, st remoteLister, operation, remote string, err error) {
+	if jsonOutput {
+		failureCode, evidence := doltOperationFailureDetails(ctx, st, operation, remote, err)
+		jsonStderrClassifiedError(err.Error(), "", failureCode, evidence)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+}
+
+func doltOperationFailureDetails(ctx context.Context, st remoteLister, operation, remote string, err error) (storage.FailureCode, map[string]interface{}) {
+	failureCode := storagedolt.ClassifyFailureCode(err)
+	evidence := map[string]interface{}{"operation": operation}
+	if remote == "" {
+		return failureCode, evidence
+	}
+
+	remoteEvidence := map[string]string{"name": remote}
+	if st != nil {
+		remotes, listErr := st.ListRemotes(ctx)
+		if listErr == nil {
+			configured := false
+			for _, configuredRemote := range remotes {
+				if configuredRemote.Name != remote {
+					continue
+				}
+				configured = true
+				if transport := doltRemoteTransport(configuredRemote.URL); transport != "" {
+					remoteEvidence["transport"] = transport
+				}
+				break
+			}
+			if !configured && isRemoteNotFoundErr(err) {
+				failureCode = storage.FailureRemoteNotConfigured
+			}
+		}
+	}
+	evidence["remote"] = remoteEvidence
+	return failureCode, evidence
+}
+
+func doltRemoteTransport(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "git@") || strings.HasPrefix(lower, "ssh://") || strings.HasPrefix(lower, "git+ssh://") {
+		return "ssh"
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil || u.Scheme == "" {
+		return ""
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme == "git+ssh" {
+		return "ssh"
+	}
+	return scheme
+}
+
 // printNoRemoteGuidance prints an informational message (to stdout) when
 // push or pull is attempted but no Dolt remote is configured. Exits 0 because
 // the absence of a remote is a valid configuration — not an error.
@@ -362,42 +422,44 @@ uncommitted changes in its working set).
 
 Use --remote to push to a specific named remote instead of the default.
 The remote must already exist (see 'bd dolt remote add').`,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if config.GetBool("no-push") {
 			fmt.Println("skipping push: rig is local-only (no-push: true)")
-			return
+			return nil
 		}
 		ctx := context.Background()
 		st := getStore()
 		if st == nil {
-			fmt.Fprintf(os.Stderr, "Error: no store available\n")
-			os.Exit(1)
+			reportDoltOperationFailure(ctx, nil, "dolt_push", "", errors.New("no store available"))
+			return SilentExit()
 		}
 		force, _ := cmd.Flags().GetBool("force")
 		remote, _ := cmd.Flags().GetString("remote")
 		if remote != "" {
 			fmt.Printf("Pushing to Dolt remote %q...\n", remote)
 			if err := st.PushRemote(ctx, remote, force); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				if isRemoteNotFoundErr(err) {
-					fmt.Fprintf(os.Stderr, "\nRemote %q is not configured.\n", remote)
-					fmt.Fprintln(os.Stderr, "Use 'bd dolt remote add <name> <url>' to add it.")
-					fmt.Fprintln(os.Stderr, "Use 'bd dolt remote list' to see configured remotes.")
-				} else if isAncestorPKMismatchErr(err) {
-					printAncestorPKMismatchGuidance(err)
-				} else if isDivergedHistoryErr(err) {
-					printDivergedHistoryGuidance("push --force")
-				} else if isDanglingChunkReferenceErr(err) {
-					printDanglingChunkReferenceGuidance()
+				reportDoltOperationFailure(ctx, st, "dolt_push", remote, err)
+				if !jsonOutput {
+					if isRemoteNotFoundErr(err) {
+						fmt.Fprintf(os.Stderr, "\nRemote %q is not configured.\n", remote)
+						fmt.Fprintln(os.Stderr, "Use 'bd dolt remote add <name> <url>' to add it.")
+						fmt.Fprintln(os.Stderr, "Use 'bd dolt remote list' to see configured remotes.")
+					} else if isAncestorPKMismatchErr(err) {
+						printAncestorPKMismatchGuidance(err)
+					} else if isDivergedHistoryErr(err) {
+						printDivergedHistoryGuidance("push --force")
+					} else if isDanglingChunkReferenceErr(err) {
+						printDanglingChunkReferenceGuidance()
+					}
 				}
-				os.Exit(1)
+				return SilentExit()
 			}
 			fmt.Println("Push complete.")
-			return
+			return nil
 		}
 		if adopted, err := adoptGitOriginRemoteForPush(ctx, st); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: failed to adopt git origin as Dolt remote: %v\n", err)
-			os.Exit(1)
+			reportDoltOperationFailure(ctx, st, "dolt_push", "origin", fmt.Errorf("failed to adopt git origin as Dolt remote: %w", err))
+			return SilentExit()
 		} else if adopted {
 			fmt.Println("Configured Dolt remote origin from git origin.")
 		}
@@ -412,23 +474,26 @@ The remote must already exist (see 'bd dolt remote add').`,
 		if pushErr != nil {
 			if isConfirmedNoRemote(ctx, st, pushErr) {
 				printNoRemoteGuidance()
-				return
+				return nil
 			}
-			fmt.Fprintf(os.Stderr, "Error: %v\n", pushErr)
-			if isAncestorPKMismatchErr(pushErr) {
-				printAncestorPKMismatchGuidance(pushErr)
-			} else if isDivergedHistoryErr(pushErr) {
-				op := "push"
-				if force {
-					op = "push --force"
+			reportDoltOperationFailure(ctx, st, "dolt_push", "origin", pushErr)
+			if !jsonOutput {
+				if isAncestorPKMismatchErr(pushErr) {
+					printAncestorPKMismatchGuidance(pushErr)
+				} else if isDivergedHistoryErr(pushErr) {
+					op := "push"
+					if force {
+						op = "push --force"
+					}
+					printDivergedHistoryGuidance(op)
+				} else if isDanglingChunkReferenceErr(pushErr) {
+					printDanglingChunkReferenceGuidance()
 				}
-				printDivergedHistoryGuidance(op)
-			} else if isDanglingChunkReferenceErr(pushErr) {
-				printDanglingChunkReferenceGuidance()
 			}
-			os.Exit(1)
+			return SilentExit()
 		}
 		fmt.Println("Push complete.")
+		return nil
 	},
 }
 
@@ -443,47 +508,48 @@ variables for authentication.
 
 Use --remote to pull from a specific named remote instead of the default.
 The remote must already exist (see 'bd dolt remote add').`,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
 		st := getStore()
 		if st == nil {
-			fmt.Fprintf(os.Stderr, "Error: no store available\n")
-			os.Exit(1)
+			reportDoltOperationFailure(ctx, nil, "dolt_pull", "", errors.New("no store available"))
+			return SilentExit()
 		}
 		remote, _ := cmd.Flags().GetString("remote")
 		if remote != "" {
 			fmt.Printf("Pulling from Dolt remote %q...\n", remote)
 			if err := st.PullRemote(ctx, remote); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				if isRemoteNotFoundErr(err) {
+				reportDoltOperationFailure(ctx, st, "dolt_pull", remote, err)
+				if !jsonOutput && isRemoteNotFoundErr(err) {
 					fmt.Fprintf(os.Stderr, "\nRemote %q is not configured.\n", remote)
 					fmt.Fprintln(os.Stderr, "Use 'bd dolt remote add <name> <url>' to add it.")
 					fmt.Fprintln(os.Stderr, "Use 'bd dolt remote list' to see configured remotes.")
-				} else if isAncestorPKMismatchErr(err) {
+				} else if !jsonOutput && isAncestorPKMismatchErr(err) {
 					printAncestorPKMismatchGuidance(err)
-				} else if isDivergedHistoryErr(err) {
+				} else if !jsonOutput && isDivergedHistoryErr(err) {
 					printDivergedHistoryGuidance("pull")
 				}
-				os.Exit(1)
+				return SilentExit()
 			}
 			fmt.Println("Pull complete.")
-			return
+			return nil
 		}
 		fmt.Println("Pulling from Dolt remote...")
 		if err := st.Pull(ctx); err != nil {
 			if isConfirmedNoRemote(ctx, st, err) {
 				printNoRemoteGuidance()
-				return
+				return nil
 			}
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			if isAncestorPKMismatchErr(err) {
+			reportDoltOperationFailure(ctx, st, "dolt_pull", "origin", err)
+			if !jsonOutput && isAncestorPKMismatchErr(err) {
 				printAncestorPKMismatchGuidance(err)
-			} else if isDivergedHistoryErr(err) {
+			} else if !jsonOutput && isDivergedHistoryErr(err) {
 				printDivergedHistoryGuidance("pull")
 			}
-			os.Exit(1)
+			return SilentExit()
 		}
 		fmt.Println("Pull complete.")
+		return nil
 	},
 }
 
@@ -500,12 +566,12 @@ Also useful before push operations that require a clean working set, or when
 auto-commit was off or changes were made externally.
 
 For more options (--stdin, custom messages), see: bd vc commit`,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
 		st := getStore()
 		if st == nil {
-			fmt.Fprintf(os.Stderr, "Error: no store available\n")
-			os.Exit(1)
+			reportDoltOperationFailure(ctx, nil, "dolt_commit", "", errors.New("no store available"))
+			return SilentExit()
 		}
 		msg, _ := cmd.Flags().GetString("message")
 		if msg == "" {
@@ -514,13 +580,14 @@ For more options (--stdin, custom messages), see: bd vc commit`,
 		if err := st.Commit(ctx, msg); err != nil {
 			if isDoltNothingToCommit(err) {
 				fmt.Println("Nothing to commit.")
-				return
+				return nil
 			}
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			reportDoltOperationFailure(ctx, st, "dolt_commit", "", err)
+			return SilentExit()
 		}
 		commandDidExplicitDoltCommit = true
 		fmt.Println("Committed.")
+		return nil
 	},
 }
 

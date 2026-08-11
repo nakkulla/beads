@@ -1675,8 +1675,7 @@ func TestNoPushSkipsDoltPush(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() error {
-		doltPushCmd.Run(doltPushCmd, nil)
-		return nil
+		return doltPushCmd.RunE(doltPushCmd, nil)
 	})
 
 	if fake.pushCalled {
@@ -1713,8 +1712,7 @@ func TestNoPushDoesNotSkipDoltPull(t *testing.T) {
 	}
 
 	out := captureStdout(t, func() error {
-		doltPullCmd.Run(doltPullCmd, nil)
-		return nil
+		return doltPullCmd.RunE(doltPullCmd, nil)
 	})
 
 	if !fake.pullCalled {
@@ -1725,5 +1723,238 @@ func TestNoPushDoesNotSkipDoltPull(t *testing.T) {
 	}
 	if !strings.Contains(out, "Pulling from Dolt remote") {
 		t.Errorf("expected pull attempt output, got: %q", out)
+	}
+}
+
+type structuredFailureDoltStore struct {
+	storage.DoltStorage
+	pushRemoteErr error
+	pullRemoteErr error
+	commitErr     error
+	remotes       []storage.RemoteInfo
+}
+
+func (s *structuredFailureDoltStore) PushRemote(context.Context, string, bool) error {
+	return s.pushRemoteErr
+}
+
+func (s *structuredFailureDoltStore) PullRemote(context.Context, string) error {
+	return s.pullRemoteErr
+}
+
+func (s *structuredFailureDoltStore) Commit(context.Context, string) error {
+	return s.commitErr
+}
+
+func (s *structuredFailureDoltStore) ListRemotes(context.Context) ([]storage.RemoteInfo, error) {
+	return s.remotes, nil
+}
+
+func captureStdoutAndStderr(t *testing.T, fn func() error) (string, string, error) {
+	t.Helper()
+	stdioMutex.Lock()
+	defer stdioMutex.Unlock()
+
+	oldStdout, oldStderr := os.Stdout, os.Stderr
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout, os.Stderr = stdoutW, stderrW
+
+	var stdoutBuf, stderrBuf bytes.Buffer
+	stdoutDone := make(chan struct{})
+	stderrDone := make(chan struct{})
+	go func() { _, _ = io.Copy(&stdoutBuf, stdoutR); close(stdoutDone) }()
+	go func() { _, _ = io.Copy(&stderrBuf, stderrR); close(stderrDone) }()
+	runErr := fn()
+	_ = stdoutW.Close()
+	_ = stderrW.Close()
+	os.Stdout, os.Stderr = oldStdout, oldStderr
+	<-stdoutDone
+	<-stderrDone
+	_ = stdoutR.Close()
+	_ = stderrR.Close()
+	return stdoutBuf.String(), stderrBuf.String(), runErr
+}
+
+func decodeSingleJSONPayload(t *testing.T, raw string) map[string]interface{} {
+	t.Helper()
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	var outer map[string]interface{}
+	if err := decoder.Decode(&outer); err != nil {
+		t.Fatalf("decode JSON stderr: %v\nstderr=%q", err, raw)
+	}
+	var extra interface{}
+	if err := decoder.Decode(&extra); err != io.EOF {
+		t.Fatalf("stderr contains more than one JSON value: err=%v stderr=%q", err, raw)
+	}
+	if data, ok := outer["data"].(map[string]interface{}); ok {
+		return data
+	}
+	return outer
+}
+
+func TestDoltFailureCommandsEmitStableJSONOnStderr(t *testing.T) {
+	tests := []struct {
+		name      string
+		operation string
+		wantCode  storage.FailureCode
+		run       func() error
+	}{
+		{"push", "dolt_push", storage.FailureSyncRemoteAhead, func() error { return doltPushCmd.RunE(doltPushCmd, nil) }},
+		{"pull", "dolt_pull", storage.FailureRemoteUnreachable, func() error { return doltPullCmd.RunE(doltPullCmd, nil) }},
+		{"commit", "dolt_commit", storage.FailureWorkingSetDirty, func() error { return doltCommitCmd.RunE(doltCommitCmd, nil) }},
+	}
+	for _, envelope := range []bool{false, true} {
+		for _, tt := range tests {
+			t.Run(fmt.Sprintf("%s/envelope=%t", tt.name, envelope), func(t *testing.T) {
+				saveAndRestoreGlobals(t)
+				resetCommandContext()
+				oldJSON, oldQuiet := jsonOutput, quietFlag
+				t.Cleanup(func() { jsonOutput, quietFlag = oldJSON, oldQuiet })
+				jsonOutput, quietFlag = true, false
+				if envelope {
+					t.Setenv("BD_JSON_ENVELOPE", "1")
+				} else {
+					t.Setenv("BD_JSON_ENVELOPE", "")
+				}
+
+				remoteURL := "https://alice:secret@example.test/org/repo?token=abc"
+				store = &structuredFailureDoltStore{
+					pushRemoteErr: errors.New("push https://alice:secret@example.test/org/repo?token=abc rejected: non-fast-forward"),
+					pullRemoteErr: errors.New("dial tcp: i/o timeout"),
+					commitErr:     errors.New("working set is dirty"),
+					remotes:       []storage.RemoteInfo{{Name: "origin", URL: remoteURL}},
+				}
+				if tt.name == "push" {
+					_ = doltPushCmd.Flags().Set("remote", "origin")
+					t.Cleanup(func() { _ = doltPushCmd.Flags().Set("remote", "") })
+				}
+				if tt.name == "pull" {
+					_ = doltPullCmd.Flags().Set("remote", "origin")
+					t.Cleanup(func() { _ = doltPullCmd.Flags().Set("remote", "") })
+				}
+
+				stdout, stderr, runErr := captureStdoutAndStderr(t, tt.run)
+				if code, ok := exitCodeFromError(runErr); !ok || code != 1 {
+					t.Fatalf("run error = %v, want exit code 1", runErr)
+				}
+				if stderr == "" {
+					t.Fatalf("structured error missing from stderr; stdout=%q", stdout)
+				}
+				payload := decodeSingleJSONPayload(t, stderr)
+				if got := payload["failure_code"]; got != string(tt.wantCode) {
+					t.Fatalf("failure_code = %#v, want %q; stderr=%s", got, tt.wantCode, stderr)
+				}
+				evidence := payload["evidence"].(map[string]interface{})
+				if got := evidence["operation"]; got != tt.operation {
+					t.Fatalf("operation = %#v, want %q", got, tt.operation)
+				}
+				if strings.Contains(stderr, "alice:secret") || strings.Contains(stderr, "token=abc") {
+					t.Fatalf("JSON stderr leaked credentials: %s", stderr)
+				}
+				if tt.name != "commit" {
+					remote := evidence["remote"].(map[string]interface{})
+					if remote["name"] != "origin" || remote["transport"] != "https" {
+						t.Fatalf("remote evidence = %#v", remote)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestDoltRemoteNotConfiguredRequiresConfirmedMissingName(t *testing.T) {
+	err := errors.New("remote not found")
+	missing := &structuredFailureDoltStore{remotes: []storage.RemoteInfo{{Name: "backup", URL: "ssh://example.test/repo"}}}
+	code, _ := doltOperationFailureDetails(context.Background(), missing, "dolt_pull", "origin", err)
+	if code != storage.FailureRemoteNotConfigured {
+		t.Fatalf("missing remote code = %q", code)
+	}
+
+	configured := &structuredFailureDoltStore{remotes: []storage.RemoteInfo{{Name: "origin", URL: "ssh://example.test/repo"}}}
+	code, _ = doltOperationFailureDetails(context.Background(), configured, "dolt_pull", "origin", err)
+	if code != storage.FailureOperationFailedUnknown {
+		t.Fatalf("configured remote code = %q, want conservative unknown", code)
+	}
+}
+
+func TestDoltPushFailureHumanOutputAndExitStayUnchanged(t *testing.T) {
+	saveAndRestoreGlobals(t)
+	resetCommandContext()
+	oldJSON := jsonOutput
+	t.Cleanup(func() { jsonOutput = oldJSON })
+	jsonOutput = false
+	store = &structuredFailureDoltStore{
+		pushRemoteErr: errors.New("permission denied"),
+		remotes:       []storage.RemoteInfo{{Name: "origin", URL: "ssh://example.test/repo"}},
+	}
+	_ = doltPushCmd.Flags().Set("remote", "origin")
+	t.Cleanup(func() { _ = doltPushCmd.Flags().Set("remote", "") })
+
+	_, stderr, runErr := captureStdoutAndStderr(t, func() error { return doltPushCmd.RunE(doltPushCmd, nil) })
+	if code, ok := exitCodeFromError(runErr); !ok || code != 1 {
+		t.Fatalf("run error = %v, want exit code 1", runErr)
+	}
+	if stderr != "Error: permission denied\n" {
+		t.Fatalf("human stderr changed: %q", stderr)
+	}
+}
+
+func TestAutoPushFailureJSONWarningPreservesStdoutAndQuiet(t *testing.T) {
+	for _, envelope := range []bool{false, true} {
+		t.Run(fmt.Sprintf("envelope=%t", envelope), func(t *testing.T) {
+			resetCommandContext()
+			oldJSON, oldQuiet := jsonOutput, quietFlag
+			t.Cleanup(func() { jsonOutput, quietFlag = oldJSON, oldQuiet })
+			jsonOutput, quietFlag = true, false
+			if envelope {
+				t.Setenv("BD_JSON_ENVELOPE", "1")
+			} else {
+				t.Setenv("BD_JSON_ENVELOPE", "")
+			}
+			fake := &structuredFailureDoltStore{remotes: []storage.RemoteInfo{{Name: "origin", URL: "git+ssh://git@example.test/repo"}}}
+			stdout, stderr, runErr := captureStdoutAndStderr(t, func() error {
+				reportAutoPushFailure(context.Background(), fake, time.Second, errors.New("dial tcp: connection refused"))
+				return nil
+			})
+			if runErr != nil || stdout != "" {
+				t.Fatalf("auto-push warning changed primary result: err=%v stdout=%q", runErr, stdout)
+			}
+			payload := decodeSingleJSONPayload(t, stderr)
+			if payload["warning"] != "dolt auto-push failed" || payload["failure_code"] != string(storage.FailureRemoteUnreachable) {
+				t.Fatalf("warning payload = %#v", payload)
+			}
+			remote := payload["evidence"].(map[string]interface{})["remote"].(map[string]interface{})
+			if remote["transport"] != "ssh" {
+				t.Fatalf("remote evidence = %#v", remote)
+			}
+		})
+	}
+
+	resetCommandContext()
+	oldJSON, oldQuiet := jsonOutput, quietFlag
+	t.Cleanup(func() { jsonOutput, quietFlag = oldJSON, oldQuiet })
+	jsonOutput, quietFlag = true, true
+	_, stderr, _ := captureStdoutAndStderr(t, func() error {
+		reportAutoPushFailure(context.Background(), nil, time.Second, errors.New("dial tcp: connection refused"))
+		return nil
+	})
+	if stderr != "" {
+		t.Fatalf("quiet auto-push emitted stderr: %q", stderr)
+	}
+
+	jsonOutput, quietFlag = false, false
+	stdout, stderr, runErr := captureStdoutAndStderr(t, func() error {
+		reportAutoPushFailure(context.Background(), nil, time.Second, errors.New("dial tcp: connection refused"))
+		return nil
+	})
+	if runErr != nil || stdout != "" || stderr != "Warning: dolt auto-push failed: dial tcp: connection refused\n" {
+		t.Fatalf("human auto-push contract changed: err=%v stdout=%q stderr=%q", runErr, stdout, stderr)
 	}
 }

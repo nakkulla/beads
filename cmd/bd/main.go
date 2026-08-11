@@ -1138,7 +1138,10 @@ var rootCmd = &cobra.Command{
 
 		if err != nil {
 			// Check for fresh clone scenario
-			if handleFreshCloneError(err) {
+			if handled, handledErr := handleFreshCloneDatabaseOpenError(err); handled {
+				if handledErr != nil {
+					return handledErr
+				}
 				metrics.CloseAndFlush()
 				os.Exit(1)
 			}
@@ -1164,6 +1167,10 @@ var rootCmd = &cobra.Command{
 				}
 				metrics.CloseAndFlush()
 				os.Exit(1)
+			}
+			if jsonOutput {
+				reportDatabaseOpenFailure(err)
+				return SilentExit()
 			}
 			return HandleError("failed to open database: %v", err)
 		}

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/storage"
 )
 
 // Real store-open error texts (see cmd/bd/doctor/fix/local_store_health_test.go
@@ -194,6 +195,9 @@ func TestCheckLocalStoreHealth_CorruptWithRemote(t *testing.T) {
 	if check.Status != StatusError {
 		t.Errorf("Status = %q, want %q (%s)", check.Status, StatusError, check.Message)
 	}
+	if check.CheckCode != LocalStoreHealthCheckCode || check.FailureCode != storage.FailureLocalStoreCorrupt {
+		t.Fatalf("stable facts = check_code %q failure_code %q", check.CheckCode, check.FailureCode)
+	}
 	// A corrupt local rig with a remote is the one shape that is repairable, so
 	// it carries a Fix and joins the doctor --fix worklist. (Phase 5 asserted
 	// an empty Fix here; Phase 6 wires the quarantine+re-clone fixer.)
@@ -268,6 +272,9 @@ func TestCheckLocalStoreHealth_TransientIsWarningNotError(t *testing.T) {
 
 	if check.Status != StatusWarning {
 		t.Errorf("Status = %q, want %q (%s)", check.Status, StatusWarning, check.Message)
+	}
+	if check.CheckCode != LocalStoreHealthCheckCode || check.FailureCode != storage.FailureDatabaseOpenFailed {
+		t.Fatalf("stable facts = check_code %q failure_code %q", check.CheckCode, check.FailureCode)
 	}
 	if check.Fix != "" {
 		t.Errorf("Fix = %q, want empty (diagnostic only)", check.Fix)

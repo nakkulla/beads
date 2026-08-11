@@ -154,7 +154,7 @@ func databaseNotFoundError(cfg *Config) error {
 		b.WriteString("Use bd init only when creating a brand-new project with no existing .beads data.")
 	}
 
-	return errors.New(b.String())
+	return &storage.ClassifiedError{Code: storage.FailureDatabaseNotFound, Cause: errors.New(b.String())}
 }
 
 // HasBackupFiles checks whether .beads/backup/ contains any JSONL files,

@@ -129,6 +129,36 @@ func TestCheckStaleServerPIDState(t *testing.T) {
 	})
 }
 
+func TestPIDStateEvidenceUsesStableStatesAndTypedFields(t *testing.T) {
+	for _, status := range []doltserver.PIDStateStatus{
+		doltserver.PIDStateAbsent,
+		doltserver.PIDStateLive,
+		doltserver.PIDStateCorrupt,
+		doltserver.PIDStateDead,
+		doltserver.PIDStateReused,
+	} {
+		t.Run(string(status), func(t *testing.T) {
+			evidence := pidStateEvidence(doltserver.PIDState{
+				Status:       status,
+				RecordedPID:  1234,
+				ProcessAlive: status == doltserver.PIDStateLive || status == doltserver.PIDStateReused,
+				IsDoltServer: status == doltserver.PIDStateLive,
+				Stale:        status == doltserver.PIDStateCorrupt || status == doltserver.PIDStateDead || status == doltserver.PIDStateReused,
+			})
+			lock := evidence["lock"].(map[string]interface{})
+			if lock["kind"] != "database" || lock["pid_state"] != string(status) || lock["recorded_pid"] != 1234 {
+				t.Fatalf("lock evidence = %#v", lock)
+			}
+			if _, ok := lock["process_alive"].(bool); !ok {
+				t.Fatalf("process_alive missing from %#v", lock)
+			}
+			if _, ok := lock["is_dolt_server"].(bool); !ok {
+				t.Fatalf("is_dolt_server missing from %#v", lock)
+			}
+		})
+	}
+}
+
 // hostDoltPID returns a dolt sql-server PID running on this host, or 0.
 func hostDoltPID(t *testing.T) int {
 	t.Helper()
