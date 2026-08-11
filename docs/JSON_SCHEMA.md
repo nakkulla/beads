@@ -1,13 +1,14 @@
 # JSON Output Schema Contract
 
-Last reviewed: 2026-05-08
+Last reviewed: 2026-08-11
 
 Freshness source: `cmd/bd/output.go`, `cmd/bd/errors.go`, and
 `cmd/bd/protocol/json_contract_test.go`.
 
-All `bd` commands that support `--json` output can wrap their response in
-a uniform envelope by setting `BD_JSON_ENVELOPE=1`. This will become the
-default format in v2.0.
+Commands that use the shared `outputJSON` path can wrap their response in a
+uniform envelope by setting `BD_JSON_ENVELOPE=1`. Commands that intentionally
+stream or write raw JSON/JSONL bypass that wrapper. The envelope will become
+the default format in v2.0.
 
 ## Migration Guide
 
@@ -33,11 +34,11 @@ no field injection. Works identically for objects, arrays, and maps.
 ```bash
 # Before (legacy):
 bd list --json | jq '.[0].id'
-bd show beads-abc --json | jq '.title'
+bd show beads-abc --json | jq '.[0].title'
 
 # After (envelope):
 bd list --json | jq '.data[0].id'
-bd show beads-abc --json | jq '.data.title'
+bd show beads-abc --json | jq '.data[0].title'
 
 # Version check:
 bd show beads-abc --json | jq '.schema_version'
@@ -46,7 +47,8 @@ bd show beads-abc --json | jq '.schema_version'
 ### Timeline
 
 - **Current release**: Legacy format is default. Set `BD_JSON_ENVELOPE=1` to opt in.
-  A deprecation notice is printed to stderr when `--json` is used without the env var.
+  When stderr is a terminal, a deprecation notice is printed once per process
+  when the shared JSON output path is used without the env var.
 - **v2.0**: Envelope becomes the default. `BD_JSON_ENVELOPE=0` available as
   temporary escape hatch for one release cycle.
 
@@ -65,7 +67,7 @@ Additive changes (new optional fields) do NOT bump the version.
 
 ### Envelope mode (BD_JSON_ENVELOPE=1)
 
-All commands emit a uniform envelope:
+Commands using the shared JSON output path emit a uniform envelope:
 
 ```json
 {
@@ -92,7 +94,7 @@ Arrays are wrapped the same way:
 
 ### Legacy mode (default, until v2.0)
 
-### Object commands (show, create, close, update, etc.)
+### Object commands (create, config get, summaries, etc.)
 
 Commands that return a single issue or result emit a JSON object with
 `schema_version` as a top-level field alongside the data:
@@ -109,7 +111,7 @@ Commands that return a single issue or result emit a JSON object with
 }
 ```
 
-### List commands (list, ready, search, stale, etc.)
+### List commands (show, list, ready, search, stale, etc.)
 
 Commands that return multiple items emit a raw JSON array:
 
@@ -120,15 +122,18 @@ Commands that return multiple items emit a raw JSON array:
 ]
 ```
 
-### Error output (stderr)
+### Error output
 
-Errors with `--json` active emit JSON to stderr:
+Most JSON error helpers emit JSON to stderr. Paths using the
+`RespectJSON` helpers intentionally emit JSON to stdout so callers that consume
+stdout remain compatible. The common payload contains `error` and may contain
+`hint`; `code` is present only when a caller supplies one explicitly.
 
 ```json
 {
   "schema_version": 1,
   "error": "issue not found: beads-xyz",
-  "code": "not_found"
+  "hint": "run 'bd where' to inspect the resolved workspace"
 }
 ```
 
@@ -166,8 +171,8 @@ Each item includes all standard issue fields plus:
 
 ### bd show --json
 
-Returns a single object (not wrapped in `items`). Same required fields as list
-items, plus:
+Returns an array, including when a single ID is requested. The first item has
+the same required fields as list items, plus:
 - `description` (string)
 - `acceptance_criteria` (string)
 - `dependencies` (object[]): Full dependency records
@@ -187,16 +192,17 @@ Returns a summary object when `--json` is active:
 ### bd export --json
 
 Outputs JSONL (one JSON object per line), not wrapped in an envelope.
-Each line is a self-contained issue or memory record. `schema_version`
-is included per line.
+Each line is a self-contained record identified by its `_type` field. Export
+records do not add `schema_version`.
 
 ## Consumer Guidelines
 
-1. **Check `schema_version`** on object output. If the version is
+1. **Check `schema_version`** on shared-path object output. If the version is
    higher than expected, log a warning but attempt to parse anyway
    (additive changes are backward-compatible).
 
-2. **For list commands**, parse the output as a JSON array directly.
+2. **For list commands, including `bd show`**, parse legacy output as a JSON
+   array directly. In envelope mode, parse the array under `.data`.
 
 3. **Ignore unknown fields**. New fields may be added without bumping
    the schema version.

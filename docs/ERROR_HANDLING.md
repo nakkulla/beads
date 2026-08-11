@@ -1,377 +1,162 @@
 # Error Handling Guidelines
 
-Last reviewed: 2026-05-08
+Last reviewed: 2026-08-11
 
-Freshness source: `cmd/bd/*.go`, especially command error exits and JSON error
-helpers in `cmd/bd/errors.go`.
+Freshness source: `cmd/bd/*.go`, `cmd/bd/errors.go`, and `cmd/bd/main.go`.
 
-This document describes the error handling patterns used throughout the beads codebase and provides guidelines for when each pattern should be applied.
+This document describes the current CLI error boundary and the conventions for
+new command code. The central rule is simple: normal Cobra command paths return
+errors; the process boundary owns the final exit.
 
-## Overview
+## Normal Command Errors
 
-The beads codebase currently uses **three distinct error handling patterns** across different scenarios. Understanding when to use each pattern is critical for maintaining consistent behavior and a good user experience.
+Commands implemented with `RunE` should return an error to their caller. The
+helpers in `cmd/bd/errors.go` format a user-facing message and return an
+`*exitError` with exit code 1:
 
-## The Three Patterns
+- `HandleError(format, args...)` writes plain text to stderr.
+- `HandleErrorWithHint(message, hint)` writes an error and actionable hint.
+- `HandleErrorRespectJSON(format, args...)` emits JSON to stdout when `--json`
+  is active; otherwise it behaves like `HandleError`.
+- `HandleErrorWithHintRespectJSON(message, hint)` applies the same stdout JSON
+  contract while retaining the hint.
+- `SilentExit()` returns exit code 1 without printing another message. Use it
+  only after the command has already rendered the complete failure result.
 
-### Pattern A: Exit Immediately (`os.Exit(1)`)
+Example:
 
-**When to use:**
-- **Fatal errors** that prevent the command from completing its core function
-- **User input validation failures** (invalid flags, malformed arguments)
-- **Critical preconditions** not met (missing database, corrupted state)
-- **Unrecoverable system errors** (filesystem failures, permission denied)
-
-**Example:**
 ```go
-if err := store.CreateIssue(ctx, issue, actor); err != nil {
-    fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-    os.Exit(1)
+RunE: func(cmd *cobra.Command, args []string) error {
+    if len(args) == 0 {
+        return HandleErrorWithHintRespectJSON(
+            "issue ID is required",
+            "run 'bd list' to find an issue ID",
+        )
+    }
+
+    issue, err := store.GetIssue(cmd.Context(), args[0])
+    if err != nil {
+        return HandleErrorRespectJSON("loading issue %s: %v", args[0], err)
+    }
+    // ...
+    return nil
 }
 ```
 
-**Characteristics:**
-- Writes `Error:` prefix to stderr
-- Returns exit code 1 immediately
-- Command makes no further progress
-- Database/JSONL may be left in partial state (should be transactional)
+Returning the error preserves Cobra control flow and lets the root execution
+path in `cmd/bd/main.go` select the process exit code after deferred command
+cleanup and telemetry have run.
 
-**Files using this pattern:**
-- `cmd/bd/create.go` (lines 31-32, 46-49, 57-58, 74-75, 107-108, etc.)
-- `cmd/bd/init.go` (lines 77-78, 96-97, 104-105, 112-115, 209-210, 225-227)
-- `cmd/bd/sync.go` (lines 52-54, 59-60, 82-83, etc.)
+## JSON Stream Selection
 
----
+Choose the helper according to the command's established output contract:
 
-### Pattern B: Warn and Continue (`fmt.Fprintf` + continue)
+| Helper family | Plain-text destination | `--json` destination |
+|---|---|---|
+| `HandleError*` | stderr | stderr |
+| `HandleError*RespectJSON` | stderr | stdout |
+| `FatalError*` | stderr | stderr |
+| `FatalError*RespectJSON` | stderr | stdout |
 
-**When to use:**
-- **Optional operations** that enhance functionality but aren't required
-- **Metadata operations** (config updates, analytics, logging)
-- **Cleanup operations** (removing temp files, closing resources)
-- **Auxiliary features** (git hooks installation, merge driver setup)
+JSON errors contain `schema_version` and an `error` field, plus `hint` when the
+hint helper is used. Envelope mode places that payload under `data`; see
+[JSON_SCHEMA.md](JSON_SCHEMA.md).
 
-**Example:**
+Do not switch an existing command between stdout and stderr casually. Scripts
+may depend on its established stream contract.
+
+## Warnings and Best-Effort Work
+
+Use `WarnError` or an explicit stderr warning only when the primary operation
+can still be considered successful. Typical examples are optional cleanup,
+advisory metadata, or a background convenience step whose failure is already
+reported.
+
 ```go
-if err := createConfigYaml(beadsDir, false); err != nil {
-    fmt.Fprintf(os.Stderr, "Warning: failed to create config.yaml: %v\n", err)
-    // Non-fatal - continue anyway
+if err := refreshOptionalCache(); err != nil {
+    WarnError("refreshing cache: %v", err)
 }
 ```
 
-**Characteristics:**
-- Writes `Warning:` prefix to stderr
-- Includes context about what failed
-- Command continues execution
-- Core functionality still works
+A warning is not appropriate when the requested state change failed, a
+transaction did not commit, output is incomplete, or continuing could hide
+data loss. Return an error in those cases.
 
-**Files using this pattern:**
-- `cmd/bd/init.go` (lines 155-157, 161-163, 167-169, 188-190, 236-238, 272-274, etc.)
-- `cmd/bd/sync.go` (lines 156, 257, 281, 329, 335, 720-722, 740, 743, 752, 762)
-- `cmd/bd/create.go` (lines 333-334, 340-341)
-- `cmd/bd/sync.go` *(handles Dolt sync operations)*
+## Cleanup Errors
 
----
+Deferred cleanup often cannot change the command result. Ignoring an error is
+acceptable only when all of these are true:
 
-### Pattern C: Silent Ignore (`_ = operation()`)
+1. The cleanup is best-effort and does not affect correctness or durability.
+2. The primary operation has already established its result.
+3. There is no useful recovery action for the caller.
 
-**When to use:**
-- **Resource cleanup** where failure doesn't matter (closing files, removing temps)
-- **Idempotent operations** in error paths (already logging primary error)
-- **Best-effort operations** with no user-visible impact
-
-**Example:**
-```go
-_ = store.Close()
-_ = os.Remove(tempPath)
-```
-
-**Characteristics:**
-- No output to user
-- Typically in `defer` statements or error paths
-- Operation failure has no material impact
-- Primary error already reported
-
-**Files using this pattern:**
-- `cmd/bd/init.go` (line 209, 326-327)
-- `cmd/bd/sync.go` (lines 696-698)
-- `cmd/bd/sync.go` *(sync cleanup)*
-- Dozens of other locations throughout the codebase
-
----
-
-## Decision Tree
-
-Use this flowchart to choose the appropriate error handling pattern:
-
-```
-┌─────────────────────────────────────┐
-│ Did an error occur?                 │
-└─────────────┬───────────────────────┘
-              │
-              ├─ NO  → Continue normally
-              │
-              └─ YES → Ask:
-                       │
-                       ├─ Is this a fatal error that prevents
-                       │  the command's core purpose?
-                       │
-                       │  YES → Pattern A: Exit with os.Exit(1)
-                       │        • Write "Error: ..." to stderr
-                       │        • Provide actionable hint if possible
-                       │        • Exit code 1
-                       │
-                       ├─ Is this an optional/auxiliary operation
-                       │  where the command can still succeed?
-                       │
-                       │  YES → Pattern B: Warn and continue
-                       │        • Write "Warning: ..." to stderr
-                       │        • Explain what failed
-                       │        • Continue execution
-                       │
-                       └─ Is this a cleanup/best-effort operation
-                          where failure doesn't matter?
-
-                          YES → Pattern C: Silent ignore
-                                • Use _ = operation()
-                                • No user output
-                                • Typically in defer/error paths
-```
-
-## Examples by Scenario
-
-### User Input Validation → Pattern A (Exit)
-
-```go
-priority, err := validation.ValidatePriority(priorityStr)
-if err != nil {
-    fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-    os.Exit(1)
-}
-```
-
-### Creating Auxiliary Config Files → Pattern B (Warn)
-
-```go
-if err := createConfigYaml(localBeadsDir, false); err != nil {
-    fmt.Fprintf(os.Stderr, "Warning: failed to create config.yaml: %v\n", err)
-    // Non-fatal - continue anyway
-}
-```
-
-### Cleanup Operations → Pattern C (Ignore)
+Make the intent visible at the call site:
 
 ```go
 defer func() {
-    _ = tempFile.Close()
-    if writeErr != nil {
-        _ = os.Remove(tempPath)
-    }
+    _ = rows.Close() // best-effort cleanup; query result is already decided
 }()
 ```
 
-### Optional Metadata Updates → Pattern B (Warn)
+Never discard transaction commit/rollback failures, database writes, export
+serialization failures, or errors that determine whether the requested result
+is complete.
 
-```go
-if err := store.SetMetadata(ctx, "last_import_hash", currentHash); err != nil {
-    fmt.Fprintf(os.Stderr, "Warning: failed to update last_import_hash: %v\n", err)
-}
-```
+## Exceptional Immediate-Exit Paths
 
-### Database Transaction Failures → Pattern A (Exit)
+The `FatalError*` helpers call `os.Exit(1)`. They are retained only for
+proxied-server handlers that run outside the normal `RunE` error-return path.
+That mode is currently not enterable because `bd init --proxied-server` is
+rejected as not implemented. New and converted `RunE` code must use the
+returning helpers instead.
 
-```go
-if err := store.CreateIssue(ctx, issue, actor); err != nil {
-    fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-    os.Exit(1)
-}
-```
+Immediate exit bypasses deferred per-command cleanup and telemetry. When the
+proxied-server path becomes active, convert its fatal helpers to returned
+errors before relying on it in production.
 
-## Anti-Patterns to Avoid
+`CheckReadonly(operation)` is another deliberate process boundary. When
+read-only mode blocks a mutation, it prints the violation, flushes queued
+metrics, and exits. Call it before performing any write. It is not a general
+validation helper.
 
-### ❌ Don't mix patterns inconsistently
+## Decision Guide
 
-```go
-// BAD: Same type of operation handled differently
-if err := createConfigYaml(dir, false); err != nil {
-    fmt.Fprintf(os.Stderr, "Warning: %v\n", err) // Warns
-}
-if err := createReadme(dir); err != nil {
-    fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-    os.Exit(1) // Exits - inconsistent!
-}
-```
+| Situation | Required handling |
+|---|---|
+| Invalid input or missing required state in `RunE` | Return `HandleError*` |
+| Existing JSON command whose errors belong on stdout | Return a `RespectJSON` helper |
+| Failure after the command already printed a complete diagnostic/result | Return `SilentExit()` |
+| Requested database or filesystem mutation failed | Return an error; do not warn and continue |
+| Optional advisory/cleanup operation failed | Warn or explicitly ignore with a reason |
+| Mutation attempted in read-only mode | Call `CheckReadonly` before the write |
+| Proxied-server-only handler outside `RunE` | Existing `FatalError*` path only; do not expand it |
 
-```go
-// GOOD: Consistent pattern for similar operations
-if err := createConfigYaml(dir, false); err != nil {
-    fmt.Fprintf(os.Stderr, "Warning: failed to create config.yaml: %v\n", err)
-}
-if err := createReadme(dir); err != nil {
-    fmt.Fprintf(os.Stderr, "Warning: failed to create README.md: %v\n", err)
-}
-```
+## Review Checklist
 
-### ❌ Don't silently ignore critical errors
+- Does normal command code return instead of calling `os.Exit`?
+- Does the helper preserve the command's JSON stdout/stderr contract?
+- Can every warning truly leave the requested operation successful?
+- Are transaction, persistence, and serialization errors propagated?
+- Is every ignored error limited to non-critical cleanup with clear intent?
+- Does a read-only guard run before the first mutation?
+- Do tests assert the exit code and the correct output stream where relevant?
 
-```go
-// BAD: Critical operation ignored
-_ = store.CreateIssue(ctx, issue, actor)
-```
+## Testing
 
-```go
-// GOOD: Exit on critical errors
-if err := store.CreateIssue(ctx, issue, actor); err != nil {
-    fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-    os.Exit(1)
-}
-```
+Prefer command-level tests that invoke the Cobra path and capture stdout,
+stderr, and the returned exit code. For JSON commands, test both legacy and
+envelope payloads where the shared JSON helper is used. Subprocess tests are
+appropriate only for the intentional `os.Exit` boundaries such as
+`CheckReadonly`.
 
-### ❌ Don't exit on auxiliary operations
-
-```go
-// BAD: Exiting when git hooks fail is too aggressive
-if err := installGitHooks(); err != nil {
-    fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-    os.Exit(1)
-}
-```
-
-```go
-// GOOD: Warn and suggest fix
-if err := installGitHooks(); err != nil {
-    yellow := color.New(color.FgYellow).SprintFunc()
-    fmt.Fprintf(os.Stderr, "\n%s Failed to install git hooks: %v\n", yellow("⚠"), err)
-    fmt.Fprintf(os.Stderr, "You can try again with: %s\n\n", cyan("bd doctor --fix"))
-}
-```
-
-## Testing Considerations
-
-When writing tests for error handling:
-
-1. **Pattern A (Exit)** - Test with subprocess or mock `os.Exit`
-2. **Pattern B (Warn)** - Capture stderr and verify warning message
-3. **Pattern C (Ignore)** - Verify operation was attempted, no error propagates
-
-## Common Pitfalls
-
-### Metadata Operations
-
-**IMPORTANT:** Not all metadata is created equal. There are two distinct categories with different error handling requirements:
-
-#### Configuration Metadata (Pattern A: Fatal)
-
-Configuration metadata defines **fundamental system behavior** and must succeed:
-
-```go
-// Pattern A: Exit on failure
-if err := store.SetConfig(ctx, "issue_prefix", prefix); err != nil {
-    fmt.Fprintf(os.Stderr, "Error: failed to set issue prefix: %v\n", err)
-    _ = store.Close()
-    os.Exit(1)
-}
-
-if err := syncbranch.Set(ctx, store, branch); err != nil {
-    fmt.Fprintf(os.Stderr, "Error: failed to set sync branch: %v\n", err)
-    _ = store.Close()
-    os.Exit(1)
-}
-```
-
-**Examples:**
-- `issue_prefix` - Defines how all issue IDs are generated
-- `sync.branch` - Critical for git synchronization workflow
-
-**Rationale:** These settings are prerequisites for basic operation. Without them, the system cannot function correctly. A failure here indicates a serious problem (e.g., filesystem issues, database corruption).
-
-#### Tracking Metadata (Pattern B: Warn and Continue)
-
-Tracking metadata **enhances functionality** but the system works without it:
-
-```go
-// Pattern B: Warn and continue
-if err := store.SetMetadata(ctx, "bd_version", Version); err != nil {
-    fmt.Fprintf(os.Stderr, "Warning: failed to store version metadata: %v\n", err)
-    // Non-fatal - continue anyway
-}
-
-if err := store.SetMetadata(ctx, "repo_id", repoID); err != nil {
-    fmt.Fprintf(os.Stderr, "Warning: failed to set repo_id: %v\n", err)
-}
-
-if err := store.SetMetadata(ctx, "last_import_hash", hash); err != nil {
-    fmt.Fprintf(os.Stderr, "Warning: failed to update last_import_hash: %v\n", err)
-}
-```
-
-**Examples:**
-- `bd_version` - Enables version mismatch warnings on upgrades
-- `repo_id` / `clone_id` - Helps with collision detection across clones
-- `last_import_hash` - Optimizes staleness detection (falls back to mtime if unavailable)
-
-**Rationale:** System degrades gracefully if tracking metadata is unavailable. Core functionality (creating issues, importing data) still works. Failures here might indicate temporary issues (e.g., read-only filesystem) that shouldn't block the entire operation.
-
-**See also:** `cmd/bd/init.go` lines 206-272 for detailed inline documentation of this distinction.
-
-### File Permission Errors
-
-Setting file permissions is typically **Pattern B** because the file was already written:
-
-```go
-if err := os.Chmod(jsonlPath, 0600); err != nil {
-    fmt.Fprintf(os.Stderr, "Warning: failed to set file permissions: %v\n", err)
-}
-```
-
-### Resource Cleanup
-
-Always use **Pattern C** for cleanup in error paths:
-
-```go
-defer func() {
-    _ = tempFile.Close()      // Pattern C: already handling primary error
-    if writeErr != nil {
-        _ = os.Remove(tempPath) // Pattern C: best effort cleanup
-    }
-}()
-```
-
-## Enforcement Strategy
-
-### Code Review Checklist
-
-- [ ] Fatal errors use Pattern A with descriptive error message
-- [ ] Optional operations use Pattern B with "Warning:" prefix
-- [ ] Cleanup operations use Pattern C (silent)
-- [ ] Similar operations use consistent patterns
-- [ ] Error messages provide actionable hints when possible
-
-### Suggested Helper Functions
-
-Consider creating helper functions to enforce consistency:
-
-```go
-// FatalError writes error to stderr and exits
-func FatalError(format string, args ...interface{}) {
-    fmt.Fprintf(os.Stderr, "Error: "+format+"\n", args...)
-    os.Exit(1)
-}
-
-// WarnError writes warning to stderr and continues
-func WarnError(format string, args ...interface{}) {
-    fmt.Fprintf(os.Stderr, "Warning: "+format+"\n", args...)
-}
-```
-
-## Related Issues
-
-- **bd-9lwr** - Document inconsistent error handling strategy across codebase (this document)
-- **bd-bwk2** - Centralize error handling patterns in storage layer
-- Future work: Audit all error handling to ensure pattern consistency
+Relevant regression coverage includes `cmd/bd/errors_test.go`,
+`cmd/bd/main_errors_test.go`, `cmd/bd/readonly_test.go`, and the JSON contract
+tests under `cmd/bd/protocol/`.
 
 ## References
 
-- `cmd/bd/create.go` - Examples of Pattern A for user input validation
-- `cmd/bd/init.go` - Examples of all three patterns
-- `cmd/bd/sync.go` - Examples of Pattern B for metadata operations
-- `cmd/bd/sync.go` - Examples of Pattern C for cleanup operations
+- `cmd/bd/errors.go` — formatting helpers and exit boundaries
+- `cmd/bd/main.go` — root execution, exit-code handling, and final cleanup
+- `cmd/bd/init.go` — proxied-server rejection that keeps fatal paths latent
+- `cmd/bd/*_test.go` — command and output-stream regression tests

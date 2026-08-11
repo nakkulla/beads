@@ -1,8 +1,9 @@
 # Configuration System
 
-Last reviewed: 2026-05-08
+Last reviewed: 2026-08-11
 
-Freshness source: `cmd/bd/main.go`, `cmd/bd/config.go`, and
+Freshness source: `cmd/bd/main.go`, `cmd/bd/config.go`, `cmd/bd/config*.go`,
+`cmd/bd/backup_*.go`, `cmd/bd/dolt_autopush.go`, `internal/config/`, and
 `internal/configfile/`.
 
 bd has two complementary configuration systems:
@@ -44,7 +45,7 @@ Common tool-level settings you can configure:
 | `no-push` | `--no-push` | `BD_NO_PUSH` | `false` | Skip pushing to remote in `bd dolt push` |
 | `federation.remote` | - | `BD_FEDERATION_REMOTE` | (none) | Dolt remote URL for federation |
 | `federation.sovereignty` | - | `BD_FEDERATION_SOVEREIGNTY` | (none) | Data sovereignty tier: `T1`, `T2`, `T3`, `T4` |
-| `dolt.auto-commit` | `--dolt-auto-commit` | `BD_DOLT_AUTO_COMMIT` | `on` | (Dolt backend) Automatically create a Dolt commit after successful write commands |
+| `dolt.auto-commit` | `--dolt-auto-commit` | `BD_DOLT_AUTO_COMMIT` | mode-dependent | (Dolt backend) Automatically create a Dolt commit after successful write commands; defaults on in embedded mode and off in server mode |
 | `create.require-description` | - | `BD_CREATE_REQUIRE_DESCRIPTION` | `false` | Require description when creating issues |
 | `validation.on-create` | - | `BD_VALIDATION_ON_CREATE` | `none` | Template validation on create: `none`, `warn`, `error` |
 | `validation.on-sync` | - | `BD_VALIDATION_ON_SYNC` | `none` | Template validation before sync: `none`, `warn`, `error` |
@@ -52,7 +53,7 @@ Common tool-level settings you can configure:
 | `git.no-gpg-sign` | - | `BD_GIT_NO_GPG_SIGN` | `false` | Disable GPG signing for beads commits |
 | `directory.labels` | - | - | (none) | Map directories to labels for automatic filtering |
 | `external_projects` | - | - | (none) | Map project names to paths for cross-project deps |
-| `backup.enabled` | - | `BD_BACKUP_ENABLED` | `false` | Enable periodic Dolt-native backup to `.beads/backup/` |
+| `backup.enabled` | - | `BD_BACKUP_ENABLED` | auto | Enable periodic Dolt-native backup; absent an explicit value, enable when a git remote exists |
 | `backup.interval` | - | `BD_BACKUP_INTERVAL` | `15m` | Minimum time between auto-backups |
 | `dolt.auto-push` | - | `BD_DOLT_AUTO_PUSH` | `false` | Auto-push to Dolt remote after writes (explicit opt-in) |
 | `dolt.auto-push-interval` | - | `BD_DOLT_AUTO_PUSH_INTERVAL` | `5m` | Minimum time between auto-pushes |
@@ -70,9 +71,11 @@ When using the **Dolt backend**, there are two different kinds of “commit”:
 - **SQL transaction commit**: what happens when a `bd` command updates tables successfully (durable in the Dolt *working set*).
 - **Dolt version-control commit**: what records those changes into Dolt’s *history* (visible in `bd vc log`, push/pull/merge workflows).
 
-By default, `bd` is configured to **auto-commit Dolt history after each successful write command**:
+Unless explicitly configured, `bd` chooses the auto-commit default by runtime
+mode:
 
-- **Default**: `dolt.auto-commit: on`
+- **Embedded mode**: `dolt.auto-commit: on`
+- **Server mode**: `dolt.auto-commit: off`
 - **Disable for a single command**:
 
 ```bash
@@ -90,7 +93,11 @@ dolt:
 
 ### Auto-Backup
 
-Periodic Dolt-native backup to `.beads/backup/` provides an off-machine recovery path. Local Dolt snapshots (via `dolt.auto-commit`) remain the primary safety net; backup is a secondary layer.
+Periodic Dolt-native backup provides a secondary recovery layer. Without
+`backup.git-repo`, the default destination is local `.beads/backup/`; configure
+a remote backup repository when the backup must survive loss of the local
+machine. If `backup.enabled` is not set explicitly, auto-backup is enabled when
+the repository has a git remote and disabled otherwise.
 
 This is a full database backup, unlike `bd export` or `.beads/issues.jsonl`.
 It preserves Dolt state such as tables, branches, commit history, and
@@ -104,7 +111,7 @@ backup:
 
 **How it works:**
 - After each write command (in PersistentPostRun), `bd` checks the Dolt HEAD commit hash against the last backup state
-- If data changed and the throttle interval has passed, a Dolt-native backup is synced to `.beads/backup/`
+- If data changed and the throttle interval has passed, a Dolt-native backup is synced to the configured destination (local `.beads/backup/` by default)
 - Full database state and commit history are preserved in the backup
 - State is tracked in `.beads/backup/backup_state.json`
 
@@ -131,7 +138,7 @@ dolt:
 - Pushes are debounced: skipped if the last push was less than `dolt.auto-push-interval` ago
 - Change detection: skipped if the Dolt HEAD commit hasn't changed since last push
 - Push failures are warnings only (non-fatal)
-- Last push time and commit are tracked in the metadata table
+- Last push time and commit are tracked in `.beads/push-state.json`
 
 **Opt in:**
 ```yaml
@@ -382,6 +389,48 @@ Example:
 bd config unset jira.url
 ```
 
+### Set Multiple Values
+
+```bash
+bd config set-many <key=value>...
+```
+
+All values are validated before any write occurs, then applied in one
+operation. This avoids a separate auto-commit and auto-push cycle for every
+key.
+
+### Validate Configuration
+
+```bash
+bd config validate
+bd config validate --json
+```
+
+Validates sync-related configuration such as federation sovereignty, remote
+URLs, and routing mode.
+
+### Show Effective Configuration
+
+```bash
+bd config show
+bd config show --source config.yaml
+bd config show --json
+```
+
+Shows effective values together with their source (`env`, `config.yaml`,
+`default`, `metadata`, `database`, or `git`).
+
+### Detect and Apply Drift
+
+```bash
+bd config drift        # Read-only consistency check
+bd config apply        # Reconcile hooks, remote, and server state
+bd config apply --dry-run
+```
+
+`drift` exits non-zero when declared configuration and system state differ.
+`apply` is idempotent and supports `--dry-run` to preview changes.
+
 ## Namespace Convention
 
 Configuration keys use dot-notation namespaces to organize settings:
@@ -400,12 +449,6 @@ Configuration keys use dot-notation namespaces to organize settings:
 - `export.path` - Output filename relative to `.beads/` (default: `issues.jsonl`)
 - `export.interval` - Minimum time between auto-exports (default: `60s`)
 - `export.git-add` - Run `git add` on the export file after writing (default: `false`)
-- `export.error_policy` - Error handling strategy for exports (default: `strict`)
-- `export.retry_attempts` - Number of retry attempts for transient errors (default: 3)
-- `export.retry_backoff_ms` - Initial backoff in milliseconds for retries (default: 100)
-- `export.skip_encoding_errors` - Skip issues that fail JSON encoding (default: false)
-- `export.write_manifest` - Write .manifest.json with export metadata (default: false)
-- `auto_export.error_policy` - Override error policy for auto-exports (default: `best-effort`)
 - `import.auto` - Legacy hook fallback that imports JSONL after git merge/checkout only when no Dolt remote is configured (default: `true`)
 - `sync.branch` - Name of the dedicated sync branch for beads data (see docs/PROTECTED_BRANCHES.md)
 - `sync.require_confirmation_on_mass_delete` - Require interactive confirmation before pushing when >50% of issues vanish during a merge AND more than 5 issues existed before (default: `false`)
@@ -557,74 +600,6 @@ bd config set min_hash_length "5"
 ```
 
 See [ADAPTIVE_IDS.md](ADAPTIVE_IDS.md) for detailed documentation.
-
-### Example: Export Error Handling
-
-Controls how export operations handle errors when fetching issue data (labels, comments, dependencies).
-
-```bash
-# Strict: Fail fast on any error (default for user-initiated exports)
-bd config set export.error_policy "strict"
-
-# Best-effort: Skip failed operations with warnings (good for auto-export)
-bd config set export.error_policy "best-effort"
-
-# Partial: Retry transient failures, skip persistent ones with manifest
-bd config set export.error_policy "partial"
-bd config set export.write_manifest "true"
-
-# Required-core: Fail on core data (issues/deps), skip enrichments (labels/comments)
-bd config set export.error_policy "required-core"
-
-# Customize retry behavior
-bd config set export.retry_attempts "5"
-bd config set export.retry_backoff_ms "200"
-
-# Skip individual issues that fail JSON encoding
-bd config set export.skip_encoding_errors "true"
-
-# Auto-export uses different policy (background operation)
-bd config set auto_export.error_policy "best-effort"
-```
-
-**Policy details:**
-
-- **`strict`** (default) - Fail immediately on any error. Ensures complete exports but may block on transient issues like database locks. Best for critical exports and migrations.
-
-- **`best-effort`** - Skip failed batches with warnings. Continues export even if labels or comments fail to load. Best for auto-exports and background sync where availability matters more than completeness.
-
-- **`partial`** - Retry transient failures (3x by default), then skip with manifest file. Creates `.manifest.json` alongside JSONL documenting what succeeded/failed. Best for large databases with occasional corruption.
-
-- **`required-core`** - Fail on core data (issues, dependencies), skip enrichments (labels, comments) with warnings. Best when metadata is secondary to issue tracking.
-
-**When to use each mode:**
-
-- Use `strict` (default) for production backups and critical exports
-- Use `best-effort` for auto-exports (default via `auto_export.error_policy`)
-- Use `partial` when you need visibility into export completeness
-- Use `required-core` when labels/comments are optional
-
-**Context-specific behavior:**
-
-User-initiated exports (`bd dolt push`, manual export commands) use `export.error_policy` (default: `strict`).
-
-Auto-exports (git hook sync) use `auto_export.error_policy` (default: `best-effort`), falling back to `export.error_policy` if not set.
-
-**Example: Different policies for different contexts:**
-
-```bash
-# Critical project: strict everywhere
-bd config set export.error_policy "strict"
-
-# Development project: strict user exports, permissive auto-exports
-bd config set export.error_policy "strict"
-bd config set auto_export.error_policy "best-effort"
-
-# Large database with occasional corruption
-bd config set export.error_policy "partial"
-bd config set export.write_manifest "true"
-bd config set export.retry_attempts "5"
-```
 
 ### Example: Import Orphan Handling
 
