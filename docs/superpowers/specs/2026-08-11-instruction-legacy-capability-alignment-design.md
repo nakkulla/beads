@@ -87,14 +87,16 @@ workflow parser/helper도 core에 추가하지 않는다.
 
 git/commit/push/Dolt sync 권한은 다음 한 방향으로 해석한다.
 
-1. 현재 user turn이 exact operation을 승인한 경우
-2. 현재 repo가 active profile을 exact `team-maintainer`로 opt-in한 경우
-3. 선택된 `conservative|minimal` setup profile과 managed Beads block의 default
-4. 일반 예시, inherited prose, historical documentation
+1. 현재 user turn이 exact target/action을 승인한 경우
+2. 현재 workflow/orchestrator의 active runtime packet이 exact target/action을 승인한 경우
+3. 현재 repo가 active profile을 exact `team-maintainer`로 opt-in한 경우
+4. 선택된 `conservative|minimal` setup profile과 managed Beads block의 default
+5. 일반 예시, inherited prose, historical documentation
 
 remote가 존재하거나 Beads repo라는 사실만으로 team-maintainer authority를 추론하지 않는다.
-`Landing the Plane`은 사용자가 그 exact workflow를 요청했거나 active repo instruction이
-exact `team-maintainer` profile을 명시한 경우에만 적용한다. 단순히 “session을 끝낸다”,
+runtime packet authority는 그 packet의 exact operation보다 넓은 commit/push/sync 권한을
+만들지 않는다. `Landing the Plane`은 사용자나 active orchestrator가 그 exact workflow를
+요청했거나 active repo instruction이 exact `team-maintainer` profile을 명시한 경우에만 적용한다. 단순히 “session을 끝낸다”,
 “작업을 완료한다”, `MUST/NEVER push` 같은 inherited/legacy 문구는 opt-in이 아니다.
 모순이 있으면 conservative/minimal이 그 legacy prose보다 우선한다. 해당 profile에서는
 changed files, verification, proposed commands를 보고하고 commit/push/Dolt sync를 수행하지
@@ -109,8 +111,10 @@ changed files, verification, proposed commands를 보고하고 commit/push/Dolt 
 - root `AGENTS.md`의 managed marker/hash block은 renderer 결과로만 갱신한다.
 - full/minimal output의 `BEGIN/END BEADS INTEGRATION` marker와 project/global Codex setup의
   `BEGIN/END BEADS CODEX SETUP` marker를 모두 generated consumer로 검증한다.
-- root local preamble, `AGENT_INSTRUCTIONS.md`, `cmd/bd/AGENTS.md`는 owner 문서를 가리키고
-  push procedure를 복제하지 않는다.
+- root local preamble, `AGENT_INSTRUCTIONS.md`, `cmd/bd/AGENTS.md`,
+  `.github/copilot-instructions.md`, `plugins/beads/skills/beads/SKILL.md`는 owner 문서를
+  가리키고 push/pull procedure를 복제하지 않는다. 특히 Copilot/skill의 unconditional
+  `bd dolt push|pull`은 exact authority를 확인하는 conditional owner link로 교체한다.
 - `cmd/bd/AGENTS.md`는 package-specific architecture, focused test command, non-interactive
   guard만 소유한다.
 - setup의 remote/no-push 감지와 marker replacement behavior는 유지한다.
@@ -137,6 +141,11 @@ root/nested instruction은 다음 outcome을 보장해야 한다.
   `bd agents`, `bd reserve|reservations`, `bd lock|unlock` 예시. 문서 전체를 삭제할 필요는
   없지만 현재 존재하는 assignment/dependency primitive로 다시 쓰거나 unsupported pattern으로
   명시한다.
+- `website/docs/workflows/index.md`, `website/docs/workflows/molecules.md`의 존재하지 않는
+  `bd pin`, `bd hook` workflow 예시
+- `scripts/release.sh`의 존재하지 않는 `bd hook`, `bd sling`, `bd activity` 안내. release
+  script 자체의 supported 동작과 주석/help를 current primitive 또는 명시적 unsupported
+  설명으로 정합한다.
 - `cmd/bd/doctor.go` help의 `Agent bead integrity`와 그 생성물인
   `docs/CLI_REFERENCE.md`, `website/docs/cli-reference/doctor.md`의 동일 claim
 - 그 밖의 active docs에 남은 존재하지 않는 `bd agent`/`bd slot` command 예시
@@ -190,7 +199,7 @@ surface로 registry에 기록한 뒤 실제 caller/hit evidence가 있는 별도
 - malformed token, duplicate name(같은 category 반복과 category mismatch 모두), reserved
   built-in collision(`open`, `in_progress`, `blocked`, `deferred`, `closed`, `pinned`,
   `hooked`)은 기존
-  canonical validator의 typed error로 보고한다.
+  canonical parser의 parse result/error로 보고한다. 별도 typed error를 발명하지 않는다.
 - doctor는 invalid config를 자동 rewrite하지 않는다.
 - `bd statuses --json`, init seed, list filter, doctor가 같은 registry meaning을 공유한다.
 
@@ -304,10 +313,11 @@ func ResolveMetadataSlotStore(store CoreStorage) (MetadataSlotStore, error)
   `*CapabilityUnsupportedError`를 반환한다. caller는 `errors.Is(err,
   ErrUnsupportedCapability)`와 `errors.As` 둘 다 사용할 수 있고 message parsing으로
   capability를 복원하지 않는다.
-- known decorator는 direct type assertion보다 먼저 `StorageUnwrapper`로 leaf까지 unwrap한다.
-  따라서 forwarding method가 있는 wrapper가 unsupported inner를 supported로 보이게 하지
-  않는다.
-- leaf가 capability를 구현하면 그 exact value를 반환한다.
+- resolver는 cycle을 검사하며 inner를 먼저 재귀 resolve한다. inner가 unsupported이면 outer가
+  forwarding method를 노출해도 같은 typed unsupported를 반환해 fake support를 만들지 않는다.
+- inner가 supported이고 outer도 requested capability를 구현하면 outer를 반환해
+  `InstrumentedStorage`의 telemetry/decorator behavior를 보존한다. outer가 구현하지 않으면
+  resolved inner capability를 반환한다. plain leaf가 capability를 구현하면 그 leaf를 반환한다.
 - `CommandContext.Store storage.DoltStorage`와 legacy global `store`는 이 compatibility PR에서
   type을 바꾸지 않는다. 대신 `cmd/bd/merge_slot.go`의 Cobra wrapper 아래에
   `runMergeSlot*WithStore(ctx, store storage.CoreStorage, ...)` command-core seam을 두고, 각
@@ -319,8 +329,9 @@ func ResolveMetadataSlotStore(store CoreStorage) (MetadataSlotStore, error)
   command test가 계속 소유한다.
 - metadata-slot caller도 resolver result만 사용하되 별도 command가 없으므로 storage/use-case
   unit test에서 unsupported path를 고정한다.
-- `InstrumentedStorage`와 다른 decorator는 `UnwrapStorage()`를 제공하고, capability operation
-  telemetry는 resolved leaf를 감싼 narrow decorator가 기록한다.
+- `InstrumentedStorage`와 다른 decorator는 `UnwrapStorage()`를 제공한다. supported inner와
+  forwarding outer 조합은 outer가 반환되어 capability operation telemetry가 기록되고,
+  unsupported inner 조합은 outer method 존재와 무관하게 typed unsupported다.
 - `DoltStorage`는 compatibility window 동안 기존 full composition을 유지하되 generic
   helper/conformance는 `CoreStorage`와 optional capability를 별도로 검증한다.
 - embedded/Dolt leaf는 두 capability를 지원한다. test fake/proxy 하나는 `CoreStorage`만
@@ -368,7 +379,9 @@ heartbeat, workflow lease, hook state의 의미를 소유한다. 기존 reader/w
 
 `active_readers`는 broad glob이 아니라 exact path를 기록한다. 최초 registry에는 최소
 `plugins/beads/skills/beads/{SKILL.md,README.md,resources/AGENTS.md}`,
-`docs/MOLECULES.md`, `website/docs/multi-agent/{index.md,coordination.md}`,
+`.github/copilot-instructions.md`, `docs/MOLECULES.md`,
+`website/docs/multi-agent/{index.md,coordination.md}`,
+`website/docs/workflows/{index.md,molecules.md}`, `scripts/release.sh`,
 `cmd/bd/doctor.go`, generated `docs/CLI_REFERENCE.md`와
 `website/docs/cli-reference/{doctor.md,create.md,index.md}`가 들어간다. generated CLI docs는
 live Cobra help를 source로 하고 `scripts/generate-cli-docs.sh`와
@@ -398,8 +411,10 @@ dead command처럼 구현 자체가 없으면 runtime hit는 `not_applicable`로
 
 - authority/profile 문구와 source locality 정합
 - root/cmd detailed instruction 중복 제거
+- Copilot와 plugin skill의 unconditional Dolt push/pull을 exact-authority owner link로 교체
 - plugin agent/slot resource/index 퇴역
-- active docs scan과 negative CLI/help contract
+- multi-agent/workflow docs와 release script의 retired command 정리
+- active docs/script scan과 negative CLI/help contract
 - local legacy registry의 dead entries
 
 이 phase는 Go storage/status 코드를 수정하지 않는다.
@@ -442,12 +457,13 @@ Bead/PR가 소유한다.
 
 ## 12. Test scope
 
-이 절의 seam만 `beads-zha` 구현의 TDD authority다. production Beads DB, 실제 remote network,
+이 절의 다섯 seam만 `beads-zha` 구현의 TDD authority다. production Beads DB, 실제 remote network,
 실제 사용자 git hook/slot state를 사용하지 않는다.
 
 ### Seam 1 — instruction authority/render
 
-대상: root `AGENTS.md`, `AGENT_INSTRUCTIONS.md`, `cmd/bd/AGENTS.md`, agent template
+대상: root `AGENTS.md`, `AGENT_INSTRUCTIONS.md`, `cmd/bd/AGENTS.md`,
+`.github/copilot-instructions.md`, `plugins/beads/skills/beads/SKILL.md`, agent template
 renderer/marker tests.
 
 - conservative/minimal profile은 explicit authority 없이 commit/push/Dolt sync를 지시하지
@@ -458,8 +474,11 @@ renderer/marker tests.
   통과한다.
 - nested `cmd/bd/AGENTS.md`는 owner pointer와 package-specific tests만 가진다.
 - active instruction에 unconditional `NEVER stop before pushing` 정의가 재유입되면 실패한다.
-- current-user exact authority 또는 explicit `team-maintainer` opt-in 외의 legacy/inherited
-  prose가 commit/push 권한을 만들지 않는다.
+- current-user exact authority, active orchestrator packet의 exact operation, explicit
+  `team-maintainer` opt-in 외의 legacy/inherited prose가 commit/push 권한을 만들지 않는다.
+- orchestrator packet의 exact target/action은 다른 target이나 일반 Dolt sync 권한으로
+  확장되지 않는다.
+- Copilot/skill source가 unconditional `bd dolt push|pull`을 재도입하면 실패한다.
 
 RED 소재: 현재 root/detailed/cmd instruction이 conservative block과 충돌한다.
 
@@ -479,6 +498,8 @@ RED 소재: 현재 root/detailed/cmd instruction이 conservative block과 충돌
   live Cobra 결과를 갖는다.
 - `website/docs/multi-agent/{index.md,coordination.md}`에는 current CLI에 없는
   `pin|hook|agents|reserve|reservations|lock|unlock`을 supported command로 제시하지 않는다.
+- `website/docs/workflows/{index.md,molecules.md}`와 `scripts/release.sh`에는 current CLI에 없는
+  `pin|hook|sling|activity`를 supported command로 제시하지 않는다.
 - `website/static/llms-full.txt`와 `website/versioned_docs/**`는 이 PR에서 hand edit하지 않고,
   registry의 다음 stable snapshot gate를 보존한다.
 
@@ -497,22 +518,7 @@ RED 소재: plugin index/resource와 active docs에 nonexistent command가 있�
 
 RED 소재: doctor validator가 `resolved:done`을 flat token regex로 오판한다.
 
-### Seam 4 — generic data compatibility
-
-대상: type/storage/CLI/protocol fixtures.
-
-- `SpecID`와 metadata가 create/update/import/export/hash에서 보존된다.
-- normal comment UUID/string ID, legacy numeric import, ordering과 exact import duplicate behavior가
-  유지된다.
-- dependency metadata와 cross-prefix closed-only satisfaction이 유지된다.
-- qxg baseline 이후 `schema_version=2`에서 legacy bare와 v2 envelope가 같은 semantic data를
-  내고 v2 field/arity가 변하지 않는다.
-- structured recovery code/evidence가 추가 field와 함께 보존된다.
-
-RED 소재: 이 seam은 cleanup이 compatibility를 깨뜨리지 못하게 하는 characterization
-boundary다. 새 behavior를 만드는 RED가 아니라 phase 2/3 candidate의 regression gate다.
-
-### Seam 5 — optional capability discovery
+### Seam 4 — optional capability discovery
 
 대상: storage interface/resolver, embedded/Dolt/decorator/telemetry/fakes.
 
@@ -529,10 +535,13 @@ boundary다. 새 behavior를 만드는 RED가 아니라 phase 2/3 candidate의 r
   unsupported가 반환되고 panic/silent no-op/문자열 parsing이 없다. supported binary-level
   CLI output은 기존 merge-slot command fixture가 그대로 검증한다.
 - deprecated `Storage` composite를 이번 phase에서 축소/삭제하는 mutation은 실패한다.
+- supported inner + telemetry outer는 outer capability를 반환하고 operation telemetry를
+  기록한다. unsupported inner + forwarding outer는 typed unsupported이며 outer method로
+  위장되지 않는다. plain supported leaf, nil, cycle도 각각 exact result/reason을 가진다.
 
 RED 소재: optional Interface/resolver가 없고 internal caller가 base method를 직접 사용한다.
 
-### Seam 6 — local legacy registry/removal gate
+### Seam 5 — local legacy registry/removal gate
 
 대상: `docs/legacy-surfaces.yaml` parser/contract test.
 
@@ -545,7 +554,21 @@ RED 소재: optional Interface/resolver가 없고 internal caller가 base method
 
 RED 소재: 현재 local taxonomy/removal gate가 없다.
 
-## 13. Verification
+## 13. Compatibility regression verification
+
+다음은 이미 통과하는 generic data 계약의 characterization/regression boundary이며 새 behavior를
+만드는 TDD seam이 아니다. 각 phase candidate와 integrated diff에서 실행해 cleanup이 기존
+wire/storage 의미를 바꾸지 않았음을 확인한다.
+
+- `SpecID`와 metadata가 create/update/import/export/hash에서 보존된다.
+- normal comment UUID/string ID, legacy numeric import, ordering과 exact import duplicate behavior가
+  유지된다.
+- dependency metadata와 cross-prefix closed-only satisfaction이 유지된다.
+- qxg baseline 이후 `schema_version=2`에서 legacy bare와 v2 envelope가 같은 semantic data를
+  내고 v2 field/arity가 변하지 않는다.
+- structured recovery code/evidence가 additive field와 함께 보존된다.
+
+## 14. Verification
 
 phase focused test 뒤 repo canonical bundle을 실행한다.
 
@@ -562,7 +585,7 @@ instruction/plugin contract checker와 `docs/legacy-surfaces.yaml` focused test�
 HOME/DB를 격리한다. baseline failure는 pinned base에서 byte/normalized failure set이 같음을
 증명한 경우에만 별도로 기록하며 새 failure를 pass로 세지 않는다.
 
-## 14. Publish·deploy·readback
+## 15. Publish·deploy·readback
 
 1. phase commit을 하나의 `beads-zha` branch/PR에 통합하고 `main`을 target으로 한다.
 2. PR lane은 self-merge하지 않고 PR Delivery에서 멈춘다.
@@ -572,10 +595,7 @@ HOME/DB를 격리한다. baseline failure는 pinned base에서 byte/normalized f
 5. `bd --help`, `bd agent --help`, `bd slot --help`, `bd merge-slot --help`,
    `bd statuses --json`으로 supported/dead/custom status 경계를 확인한다.
 6. generated AGENTS marker/hash와 conservative/minimal output을 fixture/readback한다.
-7. PR에 포함된 exact version commit이 merged main인지 확인하고
-   `scripts/check-versions.sh`/`scripts/check-docs-version.sh`를 다시 통과시킨 뒤
-   `v<base>-fork.<N>` tag를 게시한다. `.github/workflows/fork-release.yml`의 fork-only release와
-   linux amd64/arm64, darwin amd64/arm64 네 asset이 exact tag/version을 가리키는지 readback한다.
+7. §15.1의 checkpoint protocol로 exact tag, workflow run, release와 네 asset을 게시·readback한다.
    plugin/marketplace/MCP/npm은 fork suffix가 아니라 base version을 유지한다.
 8. local legacy registry에서 dead removal과 slot compatibility gate가 정확히 반영됐는지
    확인한 뒤 completion report를 남긴다.
@@ -585,9 +605,30 @@ HOME/DB를 격리한다. baseline failure는 pinned base에서 byte/normalized f
 authority가 필요한 interactive-only work다. 설치, release, asset readback 중 하나라도
 실패하면 `beads-zha`를 closed로 추정하지 않는다.
 
-### 14.1 Spec-gate disposition
+### 15.1 Fork release resume protocol
 
-- seam soundness는 §12의 여섯 RED/characterization seam이 소유한다.
+release endpoint는 다음 durable checkpoint 순서로 실행한다.
+
+1. expected remote가 `nakkulla/beads`인지, merged main SHA가 version commit을 포함하는지,
+   installed version과 latest fork version/tag가 무엇인지 read-only preflight한다.
+2. target `v<base>-fork.<N>` tag를 local 추측이 아니라 exact remote ref에서 조회한다.
+3. remote tag가 없으면 exact merged SHA에 annotated tag를 만들고 그 ref 하나만 push한다.
+4. remote tag가 이미 exact merged SHA를 가리키면 재사용한다. 다른 object를 가리키면 hard
+   stop하고 force/delete/retag하지 않는다.
+5. exact tag를 입력으로 시작된 `.github/workflows/fork-release.yml` run을 관측한다. pending은
+   정상 대기하고, failed/cancelled는 동일 tag/run의 documented rerun 또는 resume만 사용하며
+   tag나 release를 중복 생성하지 않는다.
+6. terminal success 뒤 GitHub release의 tag/target/version과 linux amd64/arm64, darwin
+   amd64/arm64 네 asset의 이름·존재를 exact readback한다.
+
+중단 뒤에는 항상 remote/tag/workflow/release preflight부터 다시 시작해 이미 완료된 checkpoint를
+관측으로 재사용한다. local tag 존재나 이전 command 성공 문구만으로 다음 단계로 건너뛰지
+않는다.
+
+### 15.2 Spec-gate disposition
+
+- seam soundness는 §12의 다섯 RED seam이 소유하고 §13은 기존 compatibility regression을
+  별도로 검증한다.
 - live apply order는 merged main verify -> `make install-force` -> installed CLI boundary
   readback -> exact version tag/release -> asset/version readback 순서로 고정한다.
 - target local deploy는 `docs/agents/repo-ops.toml [deploy]`가 소유한다.
@@ -597,7 +638,7 @@ authority가 필요한 interactive-only work다. 설치, release, asset readback
   exact label/readback을 확인한다. release endpoint를 dependency-backed Bead로 분리하는
   후속 spec revision이 생길 때만 label을 제거할 수 있다.
 
-## 15. 비범위
+## 16. 비범위
 
 - dotfiles workflow artifact import
 - route/review/runtime/completion report/PR semantics의 core schema 추가
@@ -611,7 +652,7 @@ authority가 필요한 interactive-only work다. 설치, release, asset readback
 - exported `Storage` compatibility composite의 이번 PR 축소/삭제
 - historical specs/ADRs/versioned docs 수정
 
-## 16. 완료 조건
+## 17. 완료 조건
 
 1. active instruction의 git authority가 conservative default와 명시적 opt-in으로 한 방향
    정합되고 중복 push procedure가 없다.
