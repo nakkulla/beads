@@ -16,6 +16,7 @@ import (
 func showIssueChildren(ctx context.Context, args []string, jsonOut bool, shortMode bool) error {
 	// Collect all children for all issues
 	allChildren := make(map[string][]*types.IssueWithDependencyMetadata)
+	resolvedIDs := make([]string, 0, len(args))
 
 	// Process each issue to get its children
 	processIssue := func(issueID string, issueStore storage.DoltStorage) error {
@@ -52,6 +53,7 @@ func showIssueChildren(ctx context.Context, args []string, jsonOut bool, shortMo
 			fmt.Fprintf(os.Stderr, "Issue %s not found\n", id)
 			continue
 		}
+		resolvedIDs = append(resolvedIDs, result.ResolvedID)
 		if err := processIssue(result.ResolvedID, result.Store); err != nil {
 			fmt.Fprintf(os.Stderr, "Error getting children for %s: %v\n", id, err)
 		}
@@ -60,7 +62,7 @@ func showIssueChildren(ctx context.Context, args []string, jsonOut bool, shortMo
 
 	// Output results
 	if jsonOut {
-		return outputJSON(allChildren)
+		return outputJSON(flattenChildrenByResolvedIDOrder(resolvedIDs, allChildren))
 	}
 
 	// Display children
@@ -81,6 +83,17 @@ func showIssueChildren(ctx context.Context, args []string, jsonOut bool, shortMo
 		fmt.Println()
 	}
 	return nil
+}
+
+func flattenChildrenByResolvedIDOrder(
+	resolvedIDs []string,
+	allChildren map[string][]*types.IssueWithDependencyMetadata,
+) []*types.IssueWithDependencyMetadata {
+	children := make([]*types.IssueWithDependencyMetadata, 0)
+	for _, id := range resolvedIDs {
+		children = append(children, allChildren[id]...)
+	}
+	return children
 }
 
 // showIssueAsOf displays issues as they existed at a specific commit or branch ref.
@@ -123,7 +136,7 @@ func showIssueAsOf(ctx context.Context, args []string, ref string, shortMode boo
 	}
 
 	if jsonOutput && len(allIssues) > 0 {
-		return outputJSON(allIssues)
+		return outputJSONForRequest(len(args), allIssues)
 	}
 	return nil
 }

@@ -214,6 +214,18 @@ type VersionChange struct {
 // versionChanges contains agent-actionable changes for recent versions
 var versionChanges = []VersionChange{
 	{
+		Version: "1.2.0-fork.1",
+		Date:    "2026-08-10",
+		Changes: []string{
+			"BREAKING: single-ID show/update/close/reopen JSON output is now an object; multi-ID output remains an array; JSON schema version is 2.",
+			"BREAKING: close auxiliary flags always return a keyed envelope, including empty requested results.",
+			"BREAKING: dep list defaults to issue records; use --format=edges for edge records.",
+			"BREAKING: --set-metadata always stores strings; use --set-metadata-json for typed JSON.",
+			"NEW: show --fields projects requested JSON fields in requested order.",
+			"SAFETY: edit rejects non-interactive terminals and points to bd update --body-file.",
+		},
+	},
+	{
 		Version: "1.1.0",
 		Date:    "2026-07-04",
 		Changes: []string{

@@ -520,9 +520,23 @@ var showOnlyFields = []string{
 }
 
 var versionSpecificFields = []string{
-	"_type", "deleted_at", "deleted_by", "delete_reason", "original_type",
+	"_type", "schema_version", "deleted_at", "deleted_by", "delete_reason", "original_type",
 	"comment_count", "dependency_count", "dependent_count",
 	"epic_total_children", "epic_closed_children", "epic_closeable",
+}
+
+func TestNormalizeJSONLStripsSchemaVersion(t *testing.T) {
+	baseline, err := normalizeJSONL(`{"id":"bd-1","title":"Example"}`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := normalizeJSONL(`{"id":"bd-1","schema_version":2,"title":"Example"}`, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidate != baseline {
+		t.Fatalf("schema version changed normalized snapshot:\nbaseline:  %s\ncandidate: %s", baseline, candidate)
+	}
 }
 
 // normalizeJSONL parses JSONL, normalizes each issue, applies ID canonicalization,

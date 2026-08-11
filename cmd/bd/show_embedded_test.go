@@ -255,6 +255,28 @@ func TestEmbeddedShow(t *testing.T) {
 		}
 	})
 
+	t.Run("show_children_json_partial_id", func(t *testing.T) {
+		parent := bdCreate(t, bd, dir, "Partial children parent", "--type", "epic")
+		child := bdCreate(t, bd, dir, "Partial children child", "--type", "task")
+		bdDepAdd(t, bd, dir, child.ID, parent.ID, "--type", "parent-child")
+
+		parts := strings.Split(parent.ID, "-")
+		partialID := parts[len(parts)-1]
+		if len(partialID) > 4 {
+			partialID = partialID[:4]
+		}
+		out := bdShowRaw(t, bd, dir, partialID, "--children", "--json")
+		var children []struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(out), &children); err != nil {
+			t.Fatalf("unmarshal --children JSON: %v\n%s", err, out)
+		}
+		if len(children) != 1 || children[0].ID != child.ID {
+			t.Fatalf("children = %#v, want only %s", children, child.ID)
+		}
+	})
+
 	t.Run("show_children_empty", func(t *testing.T) {
 		issue := bdCreate(t, bd, dir, "No children", "--type", "task")
 		// Should not error even with no children

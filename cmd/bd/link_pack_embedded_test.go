@@ -54,14 +54,10 @@ func TestEmbeddedWorktreeIssueLinkAndShowLinks(t *testing.T) {
 	shown := bdShowDetails(t, bd, dir, issue.ID)
 	_ = shown // retain the established default-shape helper as a regression check.
 	linksOut := bdShowRaw(t, bd, dir, issue.ID, "--json", "--links")
-	var linkItems []map[string]any
-	if err := json.Unmarshal([]byte(linksOut), &linkItems); err != nil {
+	var links map[string]any
+	if err := json.Unmarshal([]byte(linksOut), &links); err != nil {
 		t.Fatalf("parse show --links JSON: %v\n%s", err, linksOut)
 	}
-	if len(linkItems) != 1 {
-		t.Fatalf("show --links item count = %d", len(linkItems))
-	}
-	links := linkItems[0]
 	linkData, ok := links["links"].(map[string]any)
 	if !ok || linkData["branch"] != issue.ID || linkData["pr_url"] != prURL {
 		t.Fatalf("show links = %v", links)
@@ -92,11 +88,11 @@ func TestEmbeddedWorktreeIssueLinkAndShowLinks(t *testing.T) {
 
 	unmatched := bdCreate(t, bd, dir, "unmatched issue")
 	unmatchedOut := bdShowRaw(t, bd, dir, unmatched.ID, "--json", "--links")
-	var unmatchedItems []map[string]any
-	if err := json.Unmarshal([]byte(unmatchedOut), &unmatchedItems); err != nil {
+	var unmatchedItem map[string]any
+	if err := json.Unmarshal([]byte(unmatchedOut), &unmatchedItem); err != nil {
 		t.Fatalf("parse unmatched links JSON: %v\n%s", err, unmatchedOut)
 	}
-	unmatchedLinks, _ := unmatchedItems[0]["links"].(map[string]any)
+	unmatchedLinks, _ := unmatchedItem["links"].(map[string]any)
 	if unmatchedLinks["worktree"] != nil {
 		t.Fatalf("unmatched worktree = %v, want null", unmatchedLinks["worktree"])
 	}
@@ -106,11 +102,11 @@ func TestEmbeddedWorktreeIssueLinkAndShowLinks(t *testing.T) {
 		t.Fatalf("create fallback worktree: %v\n%s", err, out)
 	}
 	fallbackOut := bdShowRaw(t, bd, dir, fallback.ID, "--json", "--links")
-	var fallbackItems []map[string]any
-	if err := json.Unmarshal([]byte(fallbackOut), &fallbackItems); err != nil {
+	var fallbackItem map[string]any
+	if err := json.Unmarshal([]byte(fallbackOut), &fallbackItem); err != nil {
 		t.Fatalf("parse fallback links JSON: %v\n%s", err, fallbackOut)
 	}
-	fallbackLinks, _ := fallbackItems[0]["links"].(map[string]any)
+	fallbackLinks, _ := fallbackItem["links"].(map[string]any)
 	if _, ok := fallbackLinks["worktree"].(map[string]any); !ok {
 		t.Fatalf("branch-name fallback did not find worktree: %v", fallbackLinks)
 	}
@@ -120,16 +116,12 @@ func TestEmbeddedWorktreeIssueLinkAndShowLinks(t *testing.T) {
 	}
 	child := bdCreate(t, bd, dir, "child", "--parent", issue.ID)
 	childrenOut := bdShowRaw(t, bd, dir, issue.ID, "--children", "--json")
-	var childrenEnvelope map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(childrenOut), &childrenEnvelope); err != nil {
-		t.Fatalf("parse children-only envelope: %v\n%s", err, childrenOut)
-	}
 	var children []map[string]any
-	if err := json.Unmarshal(childrenEnvelope[issue.ID], &children); err != nil {
+	if err := json.Unmarshal([]byte(childrenOut), &children); err != nil {
 		t.Fatalf("parse children-only JSON: %v\n%s", err, childrenOut)
 	}
 	if len(children) != 1 || children[0]["id"] != child.ID {
-		t.Fatalf("children-only shape changed: %v", childrenEnvelope)
+		t.Fatalf("children-only shape changed: %v", children)
 	}
 
 	occupied := filepath.Join(dir, "occupied")

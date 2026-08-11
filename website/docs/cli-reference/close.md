@@ -20,6 +20,10 @@ When closing multiple issues, provide one --reason for all IDs or repeat
 to the first ID, the second --reason to the second ID, regardless of where
 the flags appear in the command line.
 
+With --json, one requested issue (including last-touched) returns an object;
+multiple requested issues always return an array. --suggest-next, --continue,
+or --claim-next instead returns one keyed envelope, including empty result keys.
+
 ```
 bd close [id...] [flags]
 ```

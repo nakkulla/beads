@@ -27,6 +27,7 @@ type updateInput struct {
 	appendNotes      string
 	hasAppendNotes   bool
 	setMetadata      []string
+	setMetadataJSON  []string
 	unsetMetadata    []string
 	unsetMetaPrefix  []string
 	mergeMetadataIn  json.RawMessage
@@ -229,15 +230,17 @@ func gatherUpdateInput(ctx context.Context, cmd *cobra.Command) *updateInput {
 		in.mergeMetadataIn = json.RawMessage(metadataJSON)
 	}
 	setMetadataFlags, _ := cmd.Flags().GetStringArray("set-metadata")
+	setMetadataJSONFlags, _ := cmd.Flags().GetStringArray("set-metadata-json")
 	unsetMetadataFlags, _ := cmd.Flags().GetStringArray("unset-metadata")
 	unsetMetadataPrefixFlags, _ := cmd.Flags().GetStringArray("unset-metadata-prefix")
 	if cmd.Flags().Changed("unset-metadata-prefix") && len(unsetMetadataPrefixFlags) == 0 {
 		unsetMetadataPrefixFlags = []string{""}
 	}
-	if (len(setMetadataFlags) > 0 || len(unsetMetadataFlags) > 0 || len(unsetMetadataPrefixFlags) > 0) && cmd.Flags().Changed("metadata") {
-		FatalErrorRespectJSON("cannot combine --metadata with --set-metadata, --unset-metadata, or --unset-metadata-prefix")
+	if (len(setMetadataFlags) > 0 || len(setMetadataJSONFlags) > 0 || len(unsetMetadataFlags) > 0 || len(unsetMetadataPrefixFlags) > 0) && cmd.Flags().Changed("metadata") {
+		FatalErrorRespectJSON("cannot combine --metadata with --set-metadata, --set-metadata-json, --unset-metadata, or --unset-metadata-prefix")
 	}
 	in.setMetadata = setMetadataFlags
+	in.setMetadataJSON = setMetadataJSONFlags
 	in.unsetMetadata = unsetMetadataFlags
 	in.unsetMetaPrefix = unsetMetadataPrefixFlags
 
@@ -276,7 +279,7 @@ func isUpdateInputNoop(in *updateInput) bool {
 	if len(in.addLabels) > 0 || len(in.removeLabels) > 0 {
 		return false
 	}
-	if len(in.mergeMetadataIn) > 0 || len(in.setMetadata) > 0 || len(in.unsetMetadata) > 0 || len(in.unsetMetaPrefix) > 0 {
+	if len(in.mergeMetadataIn) > 0 || len(in.setMetadata) > 0 || len(in.setMetadataJSON) > 0 || len(in.unsetMetadata) > 0 || len(in.unsetMetaPrefix) > 0 {
 		return false
 	}
 	return true

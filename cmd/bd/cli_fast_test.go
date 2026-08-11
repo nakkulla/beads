@@ -539,13 +539,13 @@ func TestCLI_Close(t *testing.T) {
 	runBDInProcess(t, tmpDir, "close", id, "--reason", "Done")
 
 	out = runBDInProcess(t, tmpDir, "show", id, "--json")
-	var closed []map[string]interface{}
+	var closed map[string]interface{}
 	json.Unmarshal([]byte(out), &closed)
-	if closed[0]["status"] != "closed" {
-		t.Errorf("Expected status 'closed', got: %v", closed[0]["status"])
+	if closed["status"] != "closed" {
+		t.Errorf("Expected status 'closed', got: %v", closed["status"])
 	}
-	if closed[0]["close_reason"] != "Done" {
-		t.Errorf("Expected close_reason 'Done', got: %v", closed[0]["close_reason"])
+	if closed["close_reason"] != "Done" {
+		t.Errorf("Expected close_reason 'Done', got: %v", closed["close_reason"])
 	}
 }
 
@@ -775,11 +775,11 @@ func TestCLI_EndToEnd(t *testing.T) {
 	runBDExec(t, tmpDir, "close", id, "--reason", "Done")
 
 	out = runBDExec(t, tmpDir, "show", id, "--json")
-	var closed []map[string]interface{}
+	var closed map[string]interface{}
 	json.Unmarshal([]byte(out), &closed)
 
-	if closed[0]["status"] != "closed" {
-		t.Errorf("Expected status 'closed', got: %v", closed[0]["status"])
+	if closed["status"] != "closed" {
+		t.Errorf("Expected status 'closed', got: %v", closed["status"])
 	}
 
 	// Test export

@@ -273,7 +273,7 @@ structured metadata before using description or notes to choose execution mode,
 delegation, model, reasoning level, or parallel group:
 
 ```bash
-bd show <id> --json | jq '.[0] | {id,title,metadata,description,notes}'
+bd show <id> --json | jq '. | {id,title,metadata,description,notes}'
 ```
 
 The execution metadata keys are:

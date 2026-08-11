@@ -15,6 +15,10 @@ Update one or more issues.
 If no issue ID is provided, updates the last touched issue (from most recent
 create, update, show, or close operation).
 
+With --json, one requested issue (including last-touched) returns an object;
+multiple requested issues always return an array. --set-metadata stores strings;
+use --set-metadata-json for intentional typed JSON values.
+
 ```
 bd update [id...] [flags]
 ```
@@ -48,7 +52,8 @@ bd update [id...] [flags]
       --remove-label strings                Remove labels (repeatable)
       --session string                      Claude Code session ID for status=closed (or set CLAUDE_SESSION_ID env var)
       --set-labels strings                  Set labels, replacing all existing (repeatable)
-      --set-metadata stringArray            Set metadata key=value (repeatable, e.g., --set-metadata team=platform)
+      --set-metadata stringArray            Set string metadata key=value (repeatable, e.g., --set-metadata team=platform)
+      --set-metadata-json stringArray       Set typed metadata key=JSON (repeatable, e.g., --set-metadata-json count=42)
       --spec-id string                      Link to specification document
   -s, --status string                       New status
       --stdin                               Read description from stdin (alias for --body-file -)

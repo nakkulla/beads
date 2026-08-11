@@ -7,6 +7,7 @@ package protocol
 
 import (
 	"encoding/json"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -133,6 +134,223 @@ func TestJSONContract_CloseOutputHasStatus(t *testing.T) {
 	}
 
 	assertField(t, items[0], "status", "closed")
+}
+
+func TestJSONContract_CommandArityShapes(t *testing.T) {
+	t.Parallel()
+	w := newWorkspace(t)
+
+	first := w.create("Arity first")
+	second := w.create("Arity second")
+	assertJSONObject(t, w.run("show", first, "--json"), "show single")
+	assertJSONArray(t, w.run("show", first, second, "--json"), "show batch")
+
+	assertJSONObject(t, w.run("update", first, "--priority", "1", "--json"), "update single")
+	assertJSONArray(t, w.run("update", first, second, "--priority", "2", "--json"), "update batch")
+
+	closeSingle := w.create("Close single")
+	closeA := w.create("Close batch A")
+	closeB := w.create("Close batch B")
+	assertJSONObject(t, w.run("close", closeSingle, "--reason", "done", "--json"), "close single")
+	assertJSONArray(t, w.run("close", closeA, closeB, "--reason", "done", "--json"), "close batch")
+
+	assertJSONObject(t, w.run("reopen", closeSingle, "--json"), "reopen single")
+	assertJSONArray(t, w.run("reopen", closeA, closeB, "--json"), "reopen batch")
+
+	partial := w.run("show", first, "missing-partial-result", "--json")
+	partialJSON := partial
+	if start := strings.Index(partial, "["); start >= 0 {
+		partialJSON = partial[start:]
+	}
+	assertJSONArray(t, partialJSON, "show partial batch")
+
+	lastTouchedUpdate := w.create("Last touched update")
+	updated := w.run("update", "--title", "Updated without ID", "--json")
+	assertJSONObject(t, updated, "update last-touched")
+	if !strings.Contains(updated, lastTouchedUpdate) {
+		t.Fatalf("no-ID update did not target last-touched %s: %s", lastTouchedUpdate, updated)
+	}
+
+	lastTouchedClose := w.create("Last touched close")
+	closed := w.run("close", "--reason", "done", "--json")
+	assertJSONObject(t, closed, "close last-touched")
+	if !strings.Contains(closed, lastTouchedClose) {
+		t.Fatalf("no-ID close did not target last-touched %s: %s", lastTouchedClose, closed)
+	}
+
+	envelopeSingle := runWithJSONEnvelope(t, w, "show", first, "--json")
+	assertEnvelopeDataShape(t, envelopeSingle, false, "show envelope single")
+	envelopeBatch := runWithJSONEnvelope(t, w, "show", first, second, "--json")
+	assertEnvelopeDataShape(t, envelopeBatch, true, "show envelope batch")
+}
+
+func TestJSONContract_CloseAuxiliaryFlagsAlwaysEnvelope(t *testing.T) {
+	t.Parallel()
+	w := newWorkspace(t)
+	id := w.create("Close envelope")
+
+	out := w.run("close", id, "--reason", "done", "--suggest-next", "--continue", "--claim-next", "--json")
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &envelope); err != nil {
+		t.Fatalf("close auxiliary output is not an object: %v\n%s", err, out)
+	}
+	for _, key := range []string{"closed", "unblocked", "continue", "claimed", "schema_version"} {
+		if _, ok := envelope[key]; !ok {
+			t.Errorf("close auxiliary envelope missing %q: %s", key, out)
+		}
+	}
+}
+
+func TestJSONContract_ShowFieldsProjection(t *testing.T) {
+	t.Parallel()
+	w := newWorkspace(t)
+	id := w.create("Projected issue")
+	w.run("update", id, "--set-metadata", "team=cli")
+
+	out := w.run("show", id, "--json", "--fields", "status,id,metadata")
+	statusAt := strings.Index(out, `"status"`)
+	idAt := strings.Index(out, `"id"`)
+	metadataAt := strings.Index(out, `"metadata"`)
+	if statusAt < 0 || idAt < 0 || metadataAt < 0 || !(statusAt < idAt && idAt < metadataAt) {
+		t.Fatalf("show --fields did not preserve order: %s", out)
+	}
+	var projected map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &projected); err != nil {
+		t.Fatal(err)
+	}
+	if len(projected) != 4 { // requested fields + legacy schema_version
+		t.Fatalf("show --fields returned unexpected keys: %s", out)
+	}
+
+	unloaded := w.run("show", id, "--json", "--fields", "comments")
+	var unloadedObject map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(unloaded), &unloadedObject); err != nil {
+		t.Fatal(err)
+	}
+	if string(unloadedObject["comments"]) != "null" {
+		t.Fatalf("unloaded comments = %s, want null", unloadedObject["comments"])
+	}
+
+	w.run("comments", "add", id, "projection comment")
+	loaded := w.run("show", id, "--json", "--include-comments", "--fields", "comments")
+	var loadedObject struct {
+		Comments []map[string]any `json:"comments"`
+	}
+	if err := json.Unmarshal([]byte(loaded), &loadedObject); err != nil {
+		t.Fatal(err)
+	}
+	if len(loadedObject.Comments) != 1 {
+		t.Fatalf("included comments count = %d, want 1", len(loadedObject.Comments))
+	}
+
+	dependent := w.create("Projection dependent", "--deps", "blocked-by:"+id)
+	dependents := w.run("show", id, "--json", "--include-dependents", "--fields", "dependents")
+	var dependentObject struct {
+		Dependents []map[string]any `json:"dependents"`
+	}
+	if err := json.Unmarshal([]byte(dependents), &dependentObject); err != nil {
+		t.Fatal(err)
+	}
+	if len(dependentObject.Dependents) != 1 || dependentObject.Dependents[0]["id"] != dependent {
+		t.Fatalf("projected dependents = %#v, want %s", dependentObject.Dependents, dependent)
+	}
+
+	second := w.create("Second projected issue")
+	assertJSONArray(t, w.run("show", id, second, "--json", "--fields", "id,status"), "show fields batch")
+
+	errOut, _ := w.runExpectError("show", id, "--json", "--fields", "bogus")
+	if !strings.Contains(errOut, "unknown field") || !strings.Contains(errOut, "valid fields") {
+		t.Fatalf("unknown --fields error lacks field guidance: %s", errOut)
+	}
+}
+
+func TestJSONContract_MetadataStringAndTypedFlags(t *testing.T) {
+	t.Parallel()
+	w := newWorkspace(t)
+	id := w.create("Metadata flags")
+	w.run("update", id,
+		"--set-metadata", "leading=0123",
+		"--set-metadata", "large=12345678901234567890",
+		"--set-metadata", "exponent=1e5",
+		"--set-metadata", "truth=true",
+		"--set-metadata", "nothing=null",
+		"--set-metadata-json", "count=42",
+		"--set-metadata-json", "enabled=true",
+	)
+
+	issue := w.showJSON(id)
+	metadata, ok := issue["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata = %T, want object", issue["metadata"])
+	}
+	for key, want := range map[string]string{
+		"leading": "0123", "large": "12345678901234567890", "exponent": "1e5", "truth": "true", "nothing": "null",
+	} {
+		if metadata[key] != want {
+			t.Errorf("metadata[%s] = %#v, want string %q", key, metadata[key], want)
+		}
+	}
+	if metadata["count"] != float64(42) || metadata["enabled"] != true {
+		t.Errorf("typed metadata lost types: %#v", metadata)
+	}
+
+	invalid, _ := w.runExpectError("update", id, "--set-metadata-json", "bad=0123")
+	if !strings.Contains(invalid, "invalid JSON") {
+		t.Fatalf("invalid typed metadata error = %s", invalid)
+	}
+	duplicate, _ := w.runExpectError("update", id, "--set-metadata", "same=x", "--set-metadata-json", "same=1")
+	if !strings.Contains(duplicate, "both --set-metadata and --set-metadata-json") {
+		t.Fatalf("duplicate metadata error = %s", duplicate)
+	}
+}
+
+func assertJSONObject(t *testing.T, output, context string) {
+	t.Helper()
+	var object map[string]any
+	if err := json.Unmarshal([]byte(output), &object); err != nil {
+		t.Fatalf("%s output is not object: %v\n%s", context, err, output)
+	}
+}
+
+func assertJSONArray(t *testing.T, output, context string) {
+	t.Helper()
+	var array []map[string]any
+	if err := json.Unmarshal([]byte(output), &array); err != nil {
+		t.Fatalf("%s output is not array: %v\n%s", context, err, output)
+	}
+}
+
+func runWithJSONEnvelope(t *testing.T, w *workspace, args ...string) string {
+	t.Helper()
+	cmd := exec.Command(w.bd, args...)
+	cmd.Dir = w.dir
+	cmd.Env = append(w.env(), "BD_JSON_ENVELOPE=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bd %s with envelope: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return string(out)
+}
+
+func assertEnvelopeDataShape(t *testing.T, output string, wantArray bool, context string) {
+	t.Helper()
+	var envelope struct {
+		SchemaVersion int             `json:"schema_version"`
+		Data          json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(output), &envelope); err != nil {
+		t.Fatalf("%s is not an envelope: %v\n%s", context, err, output)
+	}
+	if envelope.SchemaVersion != 2 {
+		t.Fatalf("%s schema_version = %d, want 2", context, envelope.SchemaVersion)
+	}
+	trimmed := strings.TrimSpace(string(envelope.Data))
+	if wantArray && !strings.HasPrefix(trimmed, "[") {
+		t.Fatalf("%s data = %s, want array", context, trimmed)
+	}
+	if !wantArray && !strings.HasPrefix(trimmed, "{") {
+		t.Fatalf("%s data = %s, want object", context, trimmed)
+	}
 }
 
 // TestJSONContract_ReadyOutputHasFullObjects verifies bd ready --json returns

@@ -161,19 +161,33 @@ func bdProxiedUpdate(t *testing.T, bd, dir string, args ...string) []*types.Issu
 	if err != nil {
 		t.Fatalf("bd update %s failed: %v\n%s", strings.Join(args, " "), err, out)
 	}
-	s := string(out)
-	start := strings.Index(s, "[")
-	if start < 0 {
-		t.Fatalf("no JSON array found in update output:\n%s", s)
-	}
-	var issues []*types.Issue
-	if err := json.Unmarshal([]byte(s[start:]), &issues); err != nil {
-		t.Fatalf("failed to parse update JSON: %v\nraw: %s", err, s[start:])
-	}
+	issues := parseProxiedIssueListJSON(t, string(out), "update")
 	if len(issues) == 0 {
-		t.Fatalf("update returned empty JSON array:\n%s", s)
+		t.Fatalf("update returned empty JSON result:\n%s", out)
 	}
 	return issues
+}
+
+func parseProxiedIssueListJSON(t *testing.T, output, operation string) []*types.Issue {
+	t.Helper()
+	s := strings.TrimSpace(output)
+	start := strings.IndexAny(s, "[{")
+	if start < 0 {
+		t.Fatalf("no JSON found in %s output:\n%s", operation, output)
+	}
+	s = s[start:]
+	if strings.HasPrefix(s, "[") {
+		var issues []*types.Issue
+		if err := json.Unmarshal([]byte(s), &issues); err != nil {
+			t.Fatalf("parse %s JSON array: %v\nraw: %s", operation, err, s)
+		}
+		return issues
+	}
+	var issue types.Issue
+	if err := json.Unmarshal([]byte(s), &issue); err != nil {
+		t.Fatalf("parse %s JSON object: %v\nraw: %s", operation, err, s)
+	}
+	return []*types.Issue{&issue}
 }
 
 func bdProxiedUpdateOne(t *testing.T, bd, dir string, args ...string) *types.Issue {

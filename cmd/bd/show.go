@@ -16,10 +16,16 @@ import (
 )
 
 var showCmd = &cobra.Command{
-	Use:           "show [id...] [--id=<id>...] [--current]",
-	Aliases:       []string{"view"},
-	GroupID:       "issues",
-	Short:         "Show issue details",
+	Use:     "show [id...] [--id=<id>...] [--current]",
+	Aliases: []string{"view"},
+	GroupID: "issues",
+	Short:   "Show issue details",
+	Long: `Show issue details.
+
+With --json, one requested issue returns an object and multiple requested
+issues return an array. --current returns one object; --as-of follows the same
+one-ID object/multi-ID array rule. --children is a query and always returns an
+array. Use --fields to project IssueDetails JSON fields in the requested order.`,
 	Args:          cobra.ArbitraryArgs, // Allow zero positional args when --id is used
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -49,6 +55,20 @@ var showCmd = &cobra.Command{
 		currentMode, _ := cmd.Flags().GetBool("current")
 		includeDepends, _ := cmd.Flags().GetBool("include-dependents")
 		includeComments, _ := cmd.Flags().GetBool("include-comments")
+		fieldsRaw, _ := cmd.Flags().GetString("fields")
+		showFields, err := parseShowFields(fieldsRaw)
+		if err != nil {
+			return HandleErrorRespectJSON("%v", err)
+		}
+		if len(showFields) > 0 && !jsonOutput {
+			return HandleErrorRespectJSON("--fields requires JSON output (--json)")
+		}
+		if len(showFields) > 0 && (showThread || showRefs || showChildren || asOfRef != "") {
+			return HandleErrorRespectJSON("--fields cannot be combined with --thread, --refs, --children, or --as-of")
+		}
+		if len(showFields) > 0 && showLinks {
+			return HandleErrorRespectJSON("--fields cannot be combined with --links")
+		}
 		ctx := rootCtx
 
 		// Helper to format timestamp based on --local-time flag
@@ -227,7 +247,13 @@ var showCmd = &cobra.Command{
 						break
 					}
 				}
-				if showLinks {
+				if len(showFields) > 0 {
+					projected, err := projectIssueDetails(details, showFields)
+					if err != nil {
+						return HandleErrorRespectJSON("%v", err)
+					}
+					allDetails = append(allDetails, projected)
+				} else if showLinks {
 					allDetails = append(allDetails, issueDetailsWithLinks{IssueDetails: details, Links: buildIssueLinks(ctx, issue)})
 				} else {
 					allDetails = append(allDetails, details)
@@ -426,7 +452,7 @@ var showCmd = &cobra.Command{
 
 		if jsonOutput {
 			if len(allDetails) > 0 {
-				if jerr := outputJSON(allDetails); jerr != nil {
+				if jerr := outputJSONForRequest(len(args), allDetails); jerr != nil {
 					return jerr
 				}
 			} else {
@@ -593,6 +619,7 @@ func init() {
 	showCmd.Flags().Bool("local-time", false, "Show timestamps in local time instead of UTC")
 	showCmd.Flags().BoolP("watch", "w", false, "Watch for changes and auto-refresh display")
 	showCmd.Flags().Bool("current", false, "Show the currently active issue (in-progress, hooked, or last touched)")
+	showCmd.Flags().String("fields", "", "Select JSON fields in requested order (comma-separated)")
 	showCmd.Flags().Bool("include-dependents", false, "Stream full dependent issues in JSON output (--json only; may be slow on hub beads)")
 	showCmd.Flags().Bool("include-comments", false, "Stream full comment bodies in JSON output (--json only; may be slow on issues with many comments)")
 	showCmd.ValidArgsFunction = issueIDCompletion

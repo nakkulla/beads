@@ -232,14 +232,11 @@ func TestCoverage_ShowUpdateClose(t *testing.T) {
 	// Close and verify JSON output.
 	closeOut, _ := runBDForCoverage(t, dir, "close", id, "--reason", "Done", "--json")
 	closePayload := extractJSONPayload(closeOut)
-	var closed []map[string]interface{}
+	var closed map[string]interface{}
 	if err := json.Unmarshal([]byte(closePayload), &closed); err != nil {
 		t.Fatalf("parse close JSON: %v\n%s", err, closeOut)
 	}
-	if len(closed) != 1 {
-		t.Fatalf("expected 1 closed issue, got %d", len(closed))
-	}
-	if status, _ := closed[0]["status"].(string); status != string(types.StatusClosed) {
+	if status, _ := closed["status"].(string); status != string(types.StatusClosed) {
 		t.Fatalf("expected status closed, got %q", status)
 	}
 }
@@ -260,12 +257,9 @@ func TestCoverage_TemplateAndPinnedProtections(t *testing.T) {
 
 	forceOut, _ := runBDForCoverage(t, dir, "close", pinnedID, "--force", "--reason", "Done", "--json")
 	forcePayload := extractJSONPayload(forceOut)
-	var closed []map[string]interface{}
+	var closed map[string]interface{}
 	if err := json.Unmarshal([]byte(forcePayload), &closed); err != nil {
 		t.Fatalf("parse close JSON: %v\n%s", err, forceOut)
-	}
-	if len(closed) != 1 {
-		t.Fatalf("expected 1 closed issue, got %d", len(closed))
 	}
 
 	// Insert a template issue directly and verify update/close protect it.
@@ -299,12 +293,9 @@ func TestCoverage_TemplateAndPinnedProtections(t *testing.T) {
 
 	showOut, _ := runBDForCoverage(t, dir, "show", template.ID, "--json")
 	showPayload := extractJSONPayload(showOut)
-	var showDetails []map[string]interface{}
+	var showDetails map[string]interface{}
 	if err := json.Unmarshal([]byte(showPayload), &showDetails); err != nil {
 		t.Fatalf("parse show JSON: %v\n%s", err, showOut)
-	}
-	if len(showDetails) != 1 {
-		t.Fatalf("expected 1 issue from show, got %d", len(showDetails))
 	}
 	// Re-open the DB after running the CLI to confirm is_template persisted.
 	s2, err := dolt.New(context.Background(), &dolt.Config{Path: dbFile})
@@ -319,7 +310,7 @@ func TestCoverage_TemplateAndPinnedProtections(t *testing.T) {
 	if postShow == nil || !postShow.IsTemplate {
 		t.Fatalf("expected template to remain IsTemplate=true post-show, got %+v", postShow)
 	}
-	if v, ok := showDetails[0]["is_template"]; ok {
+	if v, ok := showDetails["is_template"]; ok {
 		if b, ok := v.(bool); !ok || !b {
 			t.Fatalf("expected show JSON is_template=true, got %v", v)
 		}

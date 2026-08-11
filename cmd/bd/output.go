@@ -9,7 +9,7 @@ import (
 	"github.com/steveyegge/beads/internal/ui"
 )
 
-const JSONSchemaVersion = 1
+const JSONSchemaVersion = 2
 
 func jsonEnvelopeEnabled() bool {
 	return os.Getenv("BD_JSON_ENVELOPE") == "1"
@@ -27,6 +27,16 @@ func outputJSON(v interface{}) error {
 		emitEnvelopeDeprecation()
 	}
 	return nil
+}
+
+func outputJSONForRequest[T any](requestedCount int, items []T) error {
+	if requestedCount == 1 && len(items) == 1 {
+		return outputJSON(items[0])
+	}
+	if items == nil {
+		items = []T{}
+	}
+	return outputJSON(items)
 }
 
 func outputJSONRaw(v interface{}) error {
@@ -48,6 +58,9 @@ func wrapWithSchemaVersion(v interface{}) interface{} {
 
 	if v == nil {
 		return map[string]interface{}{"schema_version": JSONSchemaVersion}
+	}
+	if appender, ok := v.(interface{ withSchemaVersion(int) interface{} }); ok {
+		return appender.withSchemaVersion(JSONSchemaVersion)
 	}
 
 	rv := reflect.ValueOf(v)

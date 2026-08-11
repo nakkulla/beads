@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0-fork.1] - 2026-08-10
+
+### Breaking
+
+- Single-ID `bd show`, `update`, `close`, and `reopen` JSON output is now an
+  object with `schema_version`; multi-ID output remains an array. The same
+  arity rule applies inside `BD_JSON_ENVELOPE=1` `.data` payloads.
+- `bd close --suggest-next`, `--continue`, and `--claim-next` always return a
+  keyed envelope, including empty arrays or `null` values for requested
+  auxiliary results.
+- `bd dep list --json` now returns issue records for every arity and direction.
+  Use `--format=edges` for `{issue_id, depends_on_id, type}` records.
+- `bd update --set-metadata key=value` always stores a JSON string. Use
+  `--set-metadata-json key=<json>` for explicit numbers, booleans, null, arrays,
+  or objects.
+- `bd edit` now rejects non-interactive stdin/stdout instead of launching an
+  editor that can hang a headless process.
+- JSON schema version is now `2`.
+
+### Added
+
+- `bd show --fields=id,status,metadata` selects JSON fields in requested order.
+
 ## [1.1.0] - 2026-07-04
 
 First stable release of the 1.1.0 line. It consolidates everything from

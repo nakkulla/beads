@@ -605,6 +605,11 @@ class BdCliClient(BdClientBase):
         args = ["close", params.issue_id, "--reason", params.reason]
 
         data = await self._run_command(*args)
+        if isinstance(data, dict):
+            if isinstance(data.get("closed"), list):
+                data = data["closed"]
+            elif "id" in data:
+                data = [data]
         if not isinstance(data, list):
             raise BdCommandError(f"Invalid response for close {params.issue_id}")
 
@@ -625,6 +630,8 @@ class BdCliClient(BdClientBase):
             args.extend(["--reason", params.reason])
 
         data = await self._run_command(*args)
+        if isinstance(data, dict) and "id" in data:
+            data = [data]
         if not isinstance(data, list):
             raise BdCommandError(f"Invalid response for reopen {params.issue_ids}")
 

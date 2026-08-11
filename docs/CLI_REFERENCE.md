@@ -362,6 +362,10 @@ When closing multiple issues, provide one --reason for all IDs or repeat
 to the first ID, the second --reason to the second ID, regardless of where
 the flags appear in the command line.
 
+With --json, one requested issue (including last-touched) returns an object;
+multiple requested issues always return an array. --suggest-next, --continue,
+or --claim-next instead returns one keyed envelope, including empty result keys.
+
 ```
 bd close [id...] [flags]
 ```
@@ -591,7 +595,9 @@ bd delete <issue-id> [issue-id...] [flags]
 
 Edit an issue field using your configured $EDITOR.
 
-By default, edits the description. Use flags to edit other fields.
+By default, edits the description. Use flags to edit other fields. Both stdin
+and stdout must be terminals; in headless workflows, use bd update with
+--body-file instead.
 
 Examples:
   bd edit bd-42                    # Edit description
@@ -1214,6 +1220,9 @@ bd query [expression] [flags]
 Reopen closed issues by setting status to 'open' and clearing the closed_at timestamp.
 This is more explicit than 'bd update --status open' and emits a Reopened event.
 
+With --json, one requested issue returns an object and multiple requested
+issues always return an array.
+
 ```
 bd reopen [id...] [flags]
 ```
@@ -1314,7 +1323,12 @@ bd set-state <issue-id> <dimension>=<value> [flags]
 
 ### bd show
 
-Show issue details
+Show issue details.
+
+With --json, one requested issue returns an object and multiple requested
+issues return an array. --current returns one object; --as-of follows the same
+one-ID object/multi-ID array rule. --children is a query and always returns an
+array. Use --fields to project IssueDetails JSON fields in the requested order.
 
 ```
 bd show [id...] [--id=<id>...] [--current] [flags]
@@ -1328,6 +1342,7 @@ bd show [id...] [--id=<id>...] [--current] [flags]
       --as-of string         Show issue as it existed at a specific commit hash or branch (requires Dolt)
       --children             Show only the children of this issue
       --current              Show the currently active issue (in-progress, hooked, or last touched)
+      --fields string        Select JSON fields in requested order (comma-separated)
       --id stringArray       Issue ID (use for IDs that look like flags, e.g., --id=gt--xyz)
       --include-comments     Stream full comment bodies in JSON output (--json only; may be slow on issues with many comments)
       --include-dependents   Stream full dependent issues in JSON output (--json only; may be slow on hub beads)
@@ -1457,6 +1472,10 @@ Update one or more issues.
 If no issue ID is provided, updates the last touched issue (from most recent
 create, update, show, or close operation).
 
+With --json, one requested issue (including last-touched) returns an object;
+multiple requested issues always return an array. --set-metadata stores strings;
+use --set-metadata-json for intentional typed JSON values.
+
 ```
 bd update [id...] [flags]
 ```
@@ -1490,7 +1509,8 @@ bd update [id...] [flags]
       --remove-label strings                Remove labels (repeatable)
       --session string                      Claude Code session ID for status=closed (or set CLAUDE_SESSION_ID env var)
       --set-labels strings                  Set labels, replacing all existing (repeatable)
-      --set-metadata stringArray            Set metadata key=value (repeatable, e.g., --set-metadata team=platform)
+      --set-metadata stringArray            Set string metadata key=value (repeatable, e.g., --set-metadata team=platform)
+      --set-metadata-json stringArray       Set typed metadata key=JSON (repeatable, e.g., --set-metadata-json count=42)
       --spec-id string                      Link to specification document
   -s, --status string                       New status
       --stdin                               Read description from stdin (alias for --body-file -)
@@ -1864,8 +1884,9 @@ By default shows dependencies (what issues depend on). Use --direction to contro
   - down: Show dependencies (what this issue depends on) - default
   - up:   Show dependents (what depends on this issue)
 
-Multiple IDs can be provided for batch dep listing. With --json, the output
-is a flat array of dependency records across all requested issues.
+Multiple IDs can be provided for batch dep listing. With --json, the output is
+always an array of issue records across all requested issues. Use
+--format=edges for explicit &#123;issue_id, depends_on_id, type&#125; dependency records.
 
 Use --type to filter by dependency type (e.g., tracks, blocks, parent-child).
 
@@ -1883,6 +1904,7 @@ bd dep list [issue-id...] [flags]
 
 ```
       --direction string   Direction: 'down' (dependencies), 'up' (dependents) (default "down")
+      --format string      JSON record format: 'issues' (default) or 'edges' (default "issues")
   -t, --type string        Filter by dependency type (e.g., tracks, blocks, parent-child)
 ```
 

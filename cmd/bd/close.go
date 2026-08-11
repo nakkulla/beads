@@ -30,7 +30,11 @@ create, update, show, or close operation).
 When closing multiple issues, provide one --reason for all IDs or repeat
 --reason once per ID. Reasons map positionally: the first --reason applies
 to the first ID, the second --reason to the second ID, regardless of where
-the flags appear in the command line.`,
+the flags appear in the command line.
+
+With --json, one requested issue (including last-touched) returns an object;
+multiple requested issues always return an array. --suggest-next, --continue,
+or --claim-next instead returns one keyed envelope, including empty result keys.`,
 	Args:          cobra.MinimumNArgs(0),
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -189,15 +193,13 @@ the flags appear in the command line.`,
 			postCloseStore = results[0].Store
 		}
 
+		unblocked := make([]*types.Issue, 0)
 		if suggestNext && len(resolvedIDs) == 1 && closedCount > 0 {
-			unblocked, err := postCloseStore.GetNewlyUnblockedByClose(ctx, resolvedIDs[0])
-			if err == nil && len(unblocked) > 0 {
-				if jsonOutput {
-					return outputJSON(map[string]interface{}{
-						"closed":    closedIssues,
-						"unblocked": unblocked,
-					})
-				}
+			newlyUnblocked, err := postCloseStore.GetNewlyUnblockedByClose(ctx, resolvedIDs[0])
+			if err == nil {
+				unblocked = newlyUnblocked
+			}
+			if !jsonOutput && len(unblocked) > 0 {
 				fmt.Printf("\nNewly unblocked:\n")
 				for _, issue := range unblocked {
 					fmt.Printf("  • %s (P%d)\n", formatFeedbackID(issue.ID, issue.Title), issue.Priority)
@@ -205,19 +207,17 @@ the flags appear in the command line.`,
 			}
 		}
 
+		var continueResult *ContinueResult
 		if continueFlag && len(resolvedIDs) == 1 && closedCount > 0 {
 			autoClaim := !noAuto
 			result, err := AdvanceToNextStep(ctx, postCloseStore, resolvedIDs[0], autoClaim, actor)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: could not advance to next step: %v\n", err)
 			} else if result != nil {
-				if jsonOutput {
-					return outputJSON(map[string]interface{}{
-						"closed":   closedIssues,
-						"continue": result,
-					})
+				continueResult = result
+				if !jsonOutput {
+					PrintContinueResult(result)
 				}
-				PrintContinueResult(result)
 			}
 		}
 
@@ -251,21 +251,6 @@ the flags appear in the command line.`,
 			}
 		}
 
-		if jsonOutput && len(closedIssues) > 0 {
-			if claimedNextIssue != nil {
-				if err := outputJSON(map[string]interface{}{
-					"closed":  closedIssues,
-					"claimed": claimedNextIssue,
-				}); err != nil {
-					return err
-				}
-			} else {
-				if err := outputJSON(closedIssues); err != nil {
-					return err
-				}
-			}
-		}
-
 		if closedCount > 0 {
 			for s, ids := range mutatedStores {
 				if s == nil {
@@ -280,12 +265,51 @@ the flags appear in the command line.`,
 			}
 		}
 
+		if jsonOutput {
+			if suggestNext || continueFlag || claimNext {
+				envelope := buildCloseJSONEnvelope(closedIssues, suggestNext, continueFlag, claimNext, unblocked, continueResult, claimedNextIssue)
+				if err := outputJSON(envelope); err != nil {
+					return err
+				}
+			} else if len(closedIssues) > 0 {
+				if err := outputJSONForRequest(len(args), closedIssues); err != nil {
+					return err
+				}
+			}
+		}
+
 		totalAttempted := len(resolvedIDs)
 		if totalAttempted > 0 && closedCount == 0 {
 			return SilentExit()
 		}
 		return nil
 	},
+}
+
+func buildCloseJSONEnvelope(
+	closed []*types.Issue,
+	suggestNext, continueOn, claimNext bool,
+	unblocked []*types.Issue,
+	continueResult *ContinueResult,
+	claimed *types.Issue,
+) map[string]interface{} {
+	if closed == nil {
+		closed = []*types.Issue{}
+	}
+	envelope := map[string]interface{}{"closed": closed}
+	if suggestNext {
+		if unblocked == nil {
+			unblocked = []*types.Issue{}
+		}
+		envelope["unblocked"] = unblocked
+	}
+	if continueOn {
+		envelope["continue"] = continueResult
+	}
+	if claimNext {
+		envelope["claimed"] = claimed
+	}
+	return envelope
 }
 
 func init() {

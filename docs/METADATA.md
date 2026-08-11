@@ -16,8 +16,31 @@ should read metadata first, then use description and notes for scope and
 rationale:
 
 ```bash
-bd show <id> --json | jq '.[0] | {id,title,metadata,description,notes}'
+bd show <id> --json | jq '. | {id,title,metadata,description,notes}'
 ```
+
+## Updating Metadata from the CLI
+
+`--set-metadata key=value` always stores `value` as a JSON string. This avoids
+silently converting identifiers, zero-prefixed values, large integers, and
+words such as `true` or `null` into another JSON type:
+
+```bash
+bd update beads-abc --set-metadata build_id=0123
+bd update beads-abc --set-metadata reviewed_sha=12345678901234567890
+```
+
+Use the repeatable `--set-metadata-json key=<raw JSON>` flag when a typed value
+is intentional:
+
+```bash
+bd update beads-abc \
+  --set-metadata-json retries=3 \
+  --set-metadata-json enabled=true \
+  --set-metadata-json 'labels=["release","verified"]'
+```
+
+The same key cannot appear in both flags in one update.
 
 The current convention for execution hint keys is:
 
