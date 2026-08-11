@@ -1138,7 +1138,10 @@ var rootCmd = &cobra.Command{
 
 		if err != nil {
 			// Check for fresh clone scenario
-			if handleFreshCloneError(err) {
+			if handled, handledErr := handleFreshCloneDatabaseOpenError(err); handled {
+				if handledErr != nil {
+					return handledErr
+				}
 				metrics.CloseAndFlush()
 				os.Exit(1)
 			}
