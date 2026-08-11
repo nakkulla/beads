@@ -7,6 +7,8 @@
 - 원인 incident: `beads-1nj` / PR #10 post-merge cleanup
 - protocol provider: beads-ui `UI-16ep` / PR #118 (closed·merged)
 - provider spec: beads-ui `docs/superpowers/specs/2026-08-10-one-click-deployment-reconciler-design.md`
+- provider validator pin: `nakkulla/beads-ui@957a095433489baa55695c00073f34fcc760a14f`
+  `server/worker/deployment-reconciler.js`
 
 ## 문제
 
@@ -90,6 +92,8 @@ atomic rename으로 기록한다. 필수 binding은 다음과 같다.
 - protocol version, absolute source repo, target remote/base
 - attempt ID, merged floor SHA, candidate SHA
 - verified release path/HEAD와 verify outcome
+- provider schema상 `previous_marker = null`, `deployed_marker = candidate`; 이는 receipt binding이며
+  Adapter-local marker state가 아님
 - `action_outcomes`: build, install, binary hash readback, alias readback
 - action plan digest
 - deployment source path/HEAD
@@ -102,8 +106,9 @@ stdout prose, installed binary mtime, PATH 첫 항목은 authority가 아니다.
 전진 순서는 `installed artifact mutation -> exact readback -> atomic terminal receipt ->
 Reconciler receipt validation -> provider deployment state/cleanup/Parent close`로 고정한다.
 Adapter는 provider의 marker, cleanup state, Bead lifecycle을 소유하거나 직접 변경하지 않는다.
-같은 attempt의 terminal receipt가 이미 있으면 exact binding과 live installed artifact를 다시
-검증한 뒤 동일한 성공으로 취급하고, 내용이 다르거나 검증할 수 없으면 conflict로 실패한다.
+같은 attempt의 terminal receipt가 이미 있으면 Reconciler가 exact receipt binding과 digest를
+검증해 provider 전진을 재개하며 Adapter는 다시 호출되지 않는다. 내용이 다르거나 검증할 수
+없으면 conflict로 실패한다.
 
 ## 실패와 복구
 
@@ -112,8 +117,8 @@ Adapter는 provider의 marker, cleanup state, Bead lifecycle을 소유하거나 
 - build/install/hash/alias/version failure: terminal receipt 없음, provider state·cleanup 미전진
 - receipt write/validation failure: provider가 terminal success를 인정하지 않고 state·cleanup 미전진
 - terminal receipt 전 interruption: same candidate install을 idempotent하게 재실행
-- terminal receipt 뒤 provider state 전 interruption: Reconciler가 existing receipt와 live artifact를
-  다시 검증한 뒤 provider 전진을 재개하며 Adapter-local state 복구는 만들지 않음
+- terminal receipt 뒤 provider state 전 interruption: Reconciler가 existing receipt binding과
+  digest를 검증해 provider 전진을 재개하며 Adapter 재호출이나 Adapter-local state 복구는 없음
 - shared checkout dirt/branch/HEAD: Adapter가 읽지 않으므로 outcome에 영향 없음
 - credentials/permission/global toolchain failure: 자동 code repair가 아니라 terminal evidence
 
@@ -146,7 +151,8 @@ RED-GREEN seam은 candidate-local install/readback과 protocol receipt다.
   - install/hash/version/alias failure에서 terminal receipt가 없음
   - receipt write/validation failure에서 provider terminal success가 성립하지 않음
   - terminal receipt 전 interruption의 same-candidate idempotent retry
-  - terminal receipt 뒤 provider interruption에서 existing receipt/live artifact 재검증
+  - provider validator 호환 receipt schema: `previous_marker = null`, candidate marker binding,
+    non-empty success outcomes, `JSON.stringify(action_outcomes)` SHA-256 digest, source/readback binding
   - dirty/feature/local-ahead shared checkout 불변
 - repo-ops declaration contract test
   - `adapter = "managed"`, exact relative argv, `detached` absent, timeout
