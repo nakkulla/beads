@@ -73,3 +73,35 @@ ci_time() {
     ci_timing_write_summary "$label" "$duration" "$status"
     return "$status"
 }
+
+ci_time_accumulate() {
+    if [[ $# -lt 4 || "$3" != "--" ]]; then
+        printf 'usage: ci_time_accumulate <status-var> <label> -- <command> [args...]\n' >&2
+        return 2
+    fi
+
+    local status_var="$1"
+    local label="$2"
+    local command_status=0
+    local aggregate_status
+
+    if [[ ! "$status_var" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]]; then
+        printf 'ci_time_accumulate: invalid status variable %q\n' "$status_var" >&2
+        return 2
+    fi
+
+    aggregate_status="${!status_var:-0}"
+    if [[ ! "$aggregate_status" =~ ^[0-9]+$ ]]; then
+        printf 'ci_time_accumulate: status variable %s must contain a non-negative integer\n' "$status_var" >&2
+        return 2
+    fi
+
+    shift 3
+    ci_time "$label" -- "$@" || command_status=$?
+
+    if [[ "$aggregate_status" -eq 0 && "$command_status" -ne 0 ]]; then
+        printf -v "$status_var" '%s' "$command_status"
+    fi
+
+    return 0
+}
