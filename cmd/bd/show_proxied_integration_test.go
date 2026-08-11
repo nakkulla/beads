@@ -85,6 +85,50 @@ func TestProxiedServerShow(t *testing.T) {
 		}
 	})
 
+	t.Run("show_worktree_issue_links", func(t *testing.T) {
+		p := bdProxiedInit(t, bd, "slink")
+		issue := bdProxiedCreate(t, bd, p.dir, "Linked issue", "--id", "slink-z", "--type", "task")
+		created, err := bdProxiedRun(t, bd, p.dir, "worktree", "create", "--issue", issue.ID, "--json")
+		if err != nil {
+			t.Fatalf("worktree create --issue: %v\n%s", err, created)
+		}
+		linkCommit := proxiedCurrentCommit(t, p)
+		const prURL = "https://github.com/example/beads/pull/59"
+		bdProxiedUpdateOne(t, bd, p.dir, issue.ID, "--set-metadata", "pr_url="+prURL)
+
+		wisp := bdProxiedCreate(t, bd, p.dir, "Wisp collision", "--id", "slink-a", "--ephemeral")
+		bdProxiedUpdateOne(t, bd, p.dir, wisp.ID, "--set-metadata", "branch="+issue.ID)
+		listed, err := bdProxiedRun(t, bd, p.dir, "worktree", "list", "--json")
+		if err != nil {
+			t.Fatalf("worktree list: %v\n%s", err, listed)
+		}
+		if !strings.Contains(string(listed), `"issue_id": "`+issue.ID+`"`) || strings.Contains(string(listed), `"issue_id": "`+wisp.ID+`"`) {
+			t.Fatalf("worktree list issue/wisp resolution: %s", listed)
+		}
+
+		shown := bdProxiedShowDetailsFirst(t, bd, p.dir, issue.ID, "--links")
+		links, _ := shown["links"].(map[string]interface{})
+		if links["branch"] != issue.ID || links["pr_url"] != prURL {
+			t.Fatalf("proxied show links: %v", links)
+		}
+		if _, ok := links["worktree"].(map[string]interface{}); !ok {
+			t.Fatalf("proxied show worktree: %v", links)
+		}
+
+		asOf := bdProxiedShowDetailsFirst(t, bd, p.dir, issue.ID, "--as-of", linkCommit, "--links")
+		asOfLinks, _ := asOf["links"].(map[string]interface{})
+		if asOfLinks["pr_url"] != prURL {
+			t.Fatalf("proxied --as-of links are not current: %v", asOfLinks)
+		}
+
+		unmatched := bdProxiedCreate(t, bd, p.dir, "Unmatched issue", "--type", "task")
+		unmatchedShown := bdProxiedShowDetailsFirst(t, bd, p.dir, unmatched.ID, "--links")
+		unmatchedLinks, _ := unmatchedShown["links"].(map[string]interface{})
+		if unmatchedLinks["worktree"] != nil {
+			t.Fatalf("proxied unmatched worktree = %v, want null", unmatchedLinks["worktree"])
+		}
+	})
+
 	t.Run("show_json_includes_labels", func(t *testing.T) {
 		p := bdProxiedInit(t, bd, "sjl")
 		issue := bdProxiedCreate(t, bd, p.dir, "Labeled show", "--type", "task", "-l", "bug")

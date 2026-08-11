@@ -7,7 +7,7 @@ import (
 
 func TestApplyMetadataEdits_SetNewKey(t *testing.T) {
 	t.Parallel()
-	result, err := applyMetadataEdits(nil, []string{"team=platform"}, nil)
+	result, err := applyMetadataEdits(nil, []string{"team=platform"}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -23,7 +23,7 @@ func TestApplyMetadataEdits_SetNewKey(t *testing.T) {
 func TestApplyMetadataEdits_SetOverwritesExisting(t *testing.T) {
 	t.Parallel()
 	existing := json.RawMessage(`{"team":"old","sprint":"Q1"}`)
-	result, err := applyMetadataEdits(existing, []string{"team=new"}, nil)
+	result, err := applyMetadataEdits(existing, []string{"team=new"}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestApplyMetadataEdits_SetOverwritesExisting(t *testing.T) {
 func TestApplyMetadataEdits_UnsetKey(t *testing.T) {
 	t.Parallel()
 	existing := json.RawMessage(`{"team":"platform","sprint":"Q1"}`)
-	result, err := applyMetadataEdits(existing, nil, []string{"team"})
+	result, err := applyMetadataEdits(existing, nil, []string{"team"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestApplyMetadataEdits_UnsetKey(t *testing.T) {
 func TestApplyMetadataEdits_SetAndUnset(t *testing.T) {
 	t.Parallel()
 	existing := json.RawMessage(`{"team":"platform","sprint":"Q1"}`)
-	result, err := applyMetadataEdits(existing, []string{"env=prod"}, []string{"sprint"})
+	result, err := applyMetadataEdits(existing, []string{"env=prod"}, []string{"sprint"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestApplyMetadataEdits_SetAndUnset(t *testing.T) {
 
 func TestApplyMetadataEdits_NumericValue(t *testing.T) {
 	t.Parallel()
-	result, err := applyMetadataEdits(nil, []string{"story_points=5"}, nil)
+	result, err := applyMetadataEdits(nil, []string{"story_points=5"}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestApplyMetadataEdits_NumericValue(t *testing.T) {
 
 func TestApplyMetadataEdits_BoolValue(t *testing.T) {
 	t.Parallel()
-	result, err := applyMetadataEdits(nil, []string{"urgent=true"}, nil)
+	result, err := applyMetadataEdits(nil, []string{"urgent=true"}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestApplyMetadataEdits_BoolValue(t *testing.T) {
 
 func TestApplyMetadataEdits_NullValue(t *testing.T) {
 	t.Parallel()
-	result, err := applyMetadataEdits(nil, []string{"cleared=null"}, nil)
+	result, err := applyMetadataEdits(nil, []string{"cleared=null"}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestApplyMetadataEdits_NullValue(t *testing.T) {
 func TestApplyMetadataEdits_EmptyExisting(t *testing.T) {
 	t.Parallel()
 	// Empty metadata (nil)
-	result, err := applyMetadataEdits(nil, []string{"team=platform"}, nil)
+	result, err := applyMetadataEdits(nil, []string{"team=platform"}, nil, nil)
 	if err != nil {
 		t.Fatalf("nil metadata: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestApplyMetadataEdits_EmptyExisting(t *testing.T) {
 	}
 
 	// Empty JSON object
-	result, err = applyMetadataEdits(json.RawMessage(`{}`), []string{"team=platform"}, nil)
+	result, err = applyMetadataEdits(json.RawMessage(`{}`), []string{"team=platform"}, nil, nil)
 	if err != nil {
 		t.Fatalf("empty object: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestApplyMetadataEdits_EmptyExisting(t *testing.T) {
 
 func TestApplyMetadataEdits_InvalidKey(t *testing.T) {
 	t.Parallel()
-	_, err := applyMetadataEdits(nil, []string{"bad key=val"}, nil)
+	_, err := applyMetadataEdits(nil, []string{"bad key=val"}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid key")
 	}
@@ -161,7 +161,7 @@ func TestApplyMetadataEdits_InvalidKey(t *testing.T) {
 
 func TestApplyMetadataEdits_InvalidUnsetKey(t *testing.T) {
 	t.Parallel()
-	_, err := applyMetadataEdits(nil, nil, []string{"bad key"})
+	_, err := applyMetadataEdits(nil, nil, []string{"bad key"}, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid unset key")
 	}
@@ -169,7 +169,7 @@ func TestApplyMetadataEdits_InvalidUnsetKey(t *testing.T) {
 
 func TestApplyMetadataEdits_InvalidFormat(t *testing.T) {
 	t.Parallel()
-	_, err := applyMetadataEdits(nil, []string{"noequalssign"}, nil)
+	_, err := applyMetadataEdits(nil, []string{"noequalssign"}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for missing =")
 	}
@@ -177,7 +177,7 @@ func TestApplyMetadataEdits_InvalidFormat(t *testing.T) {
 
 func TestApplyMetadataEdits_NonObjectExisting(t *testing.T) {
 	t.Parallel()
-	_, err := applyMetadataEdits(json.RawMessage(`"just a string"`), []string{"team=platform"}, nil)
+	_, err := applyMetadataEdits(json.RawMessage(`"just a string"`), []string{"team=platform"}, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for non-object metadata")
 	}
@@ -185,7 +185,7 @@ func TestApplyMetadataEdits_NonObjectExisting(t *testing.T) {
 
 func TestApplyMetadataEdits_MultipleSetFlags(t *testing.T) {
 	t.Parallel()
-	result, err := applyMetadataEdits(nil, []string{"team=platform", "sprint=Q1", "priority=2"}, nil)
+	result, err := applyMetadataEdits(nil, []string{"team=platform", "sprint=Q1", "priority=2"}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestApplyMetadataEdits_MultipleSetFlags(t *testing.T) {
 func TestApplyMetadataEdits_UnsetNonexistentKey(t *testing.T) {
 	t.Parallel()
 	existing := json.RawMessage(`{"team":"platform"}`)
-	result, err := applyMetadataEdits(existing, nil, []string{"nonexistent"})
+	result, err := applyMetadataEdits(existing, nil, []string{"nonexistent"}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -217,6 +217,36 @@ func TestApplyMetadataEdits_UnsetNonexistentKey(t *testing.T) {
 	}
 	if string(data["team"]) != `"platform"` {
 		t.Errorf("expected \"platform\", got %s", data["team"])
+	}
+}
+
+func TestApplyMetadataEdits_UnsetPrefixes(t *testing.T) {
+	t.Parallel()
+	existing := json.RawMessage(`{"spec_review":"ok","spec_handoff_sha":"keep","plan_review":"ok","team":"platform"}`)
+	result, err := applyMetadataEdits(existing, nil, nil, []string{"spec_review", "plan_review"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal(result, &data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := data["spec_review"]; ok {
+		t.Error("expected spec_review to be removed")
+	}
+	if _, ok := data["plan_review"]; ok {
+		t.Error("expected plan_review to be removed")
+	}
+	if string(data["spec_handoff_sha"]) != `"keep"` || string(data["team"]) != `"platform"` {
+		t.Errorf("non-matching metadata was modified: %s", result)
+	}
+}
+
+func TestApplyMetadataEdits_RejectsEmptyUnsetPrefix(t *testing.T) {
+	t.Parallel()
+	_, err := applyMetadataEdits(json.RawMessage(`{"team":"platform"}`), nil, nil, []string{""})
+	if err == nil {
+		t.Fatal("expected error for empty metadata prefix")
 	}
 }
 

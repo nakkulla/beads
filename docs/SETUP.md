@@ -1,8 +1,9 @@
 # Setup Command Reference
 
-Last reviewed: 2026-05-08
+Last reviewed: 2026-08-11
 
-Freshness source: `cmd/bd/setup*.go` and `internal/recipes/`.
+Freshness source: `cmd/bd/setup*.go`, `cmd/bd/setup/`, and
+`internal/recipes/`.
 
 **For:** Setting up beads integration with AI coding tools
 **Version:** current CLI behaviour; verify recipe lists against the freshness
@@ -49,13 +50,15 @@ The generated Beads block and `bd prime` default to conservative git authority. 
 | `windsurf` | `.windsurf/rules/beads.md` | Rules file |
 | `cody` | `.cody/rules/beads.md` | Rules file |
 | `kilocode` | `.kilocode/rules/beads.md` | Rules file |
-| `claude` | `~/.claude/settings.json` + `CLAUDE.md` | SessionStart/PreCompact hooks + minimal section |
+| `claude` | `.claude/settings.json` + `CLAUDE.md` | SessionStart hook + minimal section |
 | `copilot` | `.copilot-plugin/plugin.json` + `.github/copilot-instructions.md` | native Copilot plugin hooks + repository instructions |
-| `gemini` | `~/.gemini/settings.json` + `GEMINI.md` | SessionStart/PreCompress hooks + minimal section |
+| `gemini` | `~/.gemini/settings.json` + `GEMINI.md` | SessionStart hook + minimal section |
 | `factory` | `AGENTS.md` | Marked section |
 | `codex` | `.agents/skills/beads/SKILL.md` + `AGENTS.md` + `.codex/` | Beads agent skill + generated guidance + native hooks |
 | `mux` | `AGENTS.md` | Marked section |
+| `opencode` | `AGENTS.md` | Marked section |
 | `aider` | `.aider.conf.yml` + `.aider/` | Multi-file config |
+| `junie` | `.junie/guidelines.md` + `.junie/mcp/mcp.json` | Guidelines + MCP server configuration |
 
 ## Quick Start
 
@@ -73,7 +76,9 @@ bd setup gemini     # Gemini CLI
 bd setup factory    # Factory.ai Droid
 bd setup codex      # Beads agent skill + AGENTS.md guidance + native hooks
 bd setup mux        # Mux
+bd setup opencode   # OpenCode AGENTS.md guidance
 bd setup aider      # Aider
+bd setup junie      # Junie guidelines + MCP configuration
 
 # Verify installation
 bd setup cursor --check
@@ -253,16 +258,18 @@ Creates or updates `AGENTS.md` with the beads integration section (same markers 
 
 ## Claude Code
 
-Claude Code integration uses hooks to automatically inject beads workflow context at session start and before context compaction.
+Claude Code integration uses a `SessionStart` hook to inject beads workflow
+context when a session starts or resumes, including after compaction. A separate
+`PreCompact` hook is unnecessary.
 
 ### Installation
 
 ```bash
-# Global installation (recommended)
+# Project installation (default)
 bd setup claude
 
-# Project-only installation
-bd setup claude --project
+# Global installation
+bd setup claude --global
 
 # With stealth mode (flush only, no git operations)
 bd setup claude --stealth
@@ -270,11 +277,14 @@ bd setup claude --stealth
 
 ### What Gets Installed
 
-**Global installation** (`~/.claude/settings.json`):
-- `SessionStart` hook: Runs `bd prime --hook-json` when a session starts, resumes, clears, or restarts after compaction
+**Project installation** (`.claude/settings.json`, the default):
+- `SessionStart` hook: Runs `bd prime --hook-json` when a session starts,
+  resumes, clears, or restarts after compaction
+- Legacy Beads hooks in `.claude/settings.local.json` are removed during
+  migration to the canonical project settings file
 
-**Project installation** (`.claude/settings.local.json`):
-- Same hooks, but only active for this project
+**Global installation** (`~/.claude/settings.json`, with `--global`):
+- The same `SessionStart` hook, active for all projects
 
 **Instruction file** (`CLAUDE.md` in project root):
 - Minimal-profile beads section pointing to `bd prime`
@@ -286,7 +296,7 @@ bd setup claude --stealth
 |------|-------------|
 | `--check` | Check both hooks and the managed `CLAUDE.md` beads section |
 | `--remove` | Remove beads hooks and managed `CLAUDE.md` beads section |
-| `--project` | Install for this project only (not globally) |
+| `--global` | Install/remove hooks globally instead of in this project |
 | `--stealth` | Use `bd prime --stealth` (flush only, no git operations) |
 
 ### Examples
@@ -294,14 +304,14 @@ bd setup claude --stealth
 ```bash
 # Check hooks + CLAUDE.md beads section
 bd setup claude --check
-# Output: ✓ Global hooks installed: /Users/you/.claude/settings.json
+# Output: ✓ Project hooks installed: /path/to/project/.claude/settings.json
 #         ✓ Claude Code integration installed: /path/to/CLAUDE.md (current)
 
 # Remove hooks
 bd setup claude --remove
 
-# Install project-specific hooks with stealth mode
-bd setup claude --project --stealth
+# Install global hooks with stealth mode
+bd setup claude --global --stealth
 ```
 
 ### How It Works
@@ -372,15 +382,18 @@ bd setup gemini --project --stealth
 
 ### How It Works
 
-The hooks call `bd prime` which:
-1. Outputs workflow context for Gemini to read
+The hook calls `bd prime --hook-json` which:
+1. Outputs workflow context in the valid JSON envelope required by Gemini CLI
 2. Prints persistent memories near the top so hook-output previews do not hide them
 3. Starts with a truncation warning telling agents to read the full persisted hook output when the host caps previews
 4. Ensures Gemini always knows how to use beads
 
 For low-token hooks that only need durable project facts, use `bd prime --memories-only`.
 
-This works similarly to Claude Code integration, using Gemini CLI's hook system (SessionStart event). Unlike Claude Code, Gemini requires hook stdout to be valid JSON — `bd prime --hook-json` wraps the markdown in the required envelope.
+This works similarly to Claude Code integration: both hosts require valid JSON
+hook output, and `bd prime --hook-json` wraps the markdown in the shared
+`SessionStart` envelope. `PreCompress` is intentionally not registered because
+that event cannot inject additional context.
 
 ## Cursor IDE
 
@@ -482,14 +495,18 @@ This respects Aider's philosophy of keeping humans in control while still levera
 
 ## Comparison
 
-| Feature | Factory.ai | Codex | Mux | Claude Code | Gemini CLI | Cursor | Aider |
-|---------|-----------|-------|-----|-------------|------------|--------|-------|
-| Command execution | Automatic | Automatic | Automatic | Automatic | Automatic | Automatic | Manual (/run) |
-| Context injection | AGENTS.md | Skill + AGENTS.md | AGENTS.md | Hooks + CLAUDE.md | Hooks + GEMINI.md | Rules file | Config file |
-| Global install | No (per-project) | No (per-project) | No (per-project) | Yes | Yes | No (per-project) | No (per-project) |
-| Stealth mode | N/A | N/A | N/A | Yes | Yes | N/A | N/A |
-| Standard format | Yes (AGENTS.md) | Yes (AGENTS.md) | Yes (AGENTS.md) | No (proprietary) | No (proprietary) | No (proprietary) | No (proprietary) |
-| Multi-tool compatible | Yes | Yes | Yes | No | No | No | No |
+| Integration | Primary surface | Default scope | Optional global install | Hook/MCP support |
+|---|---|---|---|---|
+| Factory.ai | `AGENTS.md` | Project | No | No |
+| Codex | Skill + `AGENTS.md` + `.codex/` | Project | `--global` | Native hooks |
+| Mux | `AGENTS.md` | Project root | `--global` (also `--project` workspace layer) | No |
+| OpenCode | `AGENTS.md` | Project | No | No |
+| GitHub Copilot CLI | Plugin manifest + repository instructions | Project | No | Native plugin hooks |
+| Claude Code | Hook + `CLAUDE.md` | Project | `--global` | `SessionStart` |
+| Gemini CLI | Hook + `GEMINI.md` | Global | `--project` selects project scope | `SessionStart` |
+| Junie | Guidelines + MCP config | Project | No | Beads MCP server |
+| Cursor | Rules file | Project | No | No |
+| Aider | Config + instruction files | Project | No | No |
 
 ## Best Practices
 
@@ -534,10 +551,10 @@ If this fails, fix the underlying beads issue first.
 
 ```bash
 # Remove global hooks
-bd setup claude --remove
+bd setup claude --global --remove
 
 # Install project hooks
-bd setup claude --project
+bd setup claude
 ```
 
 ## Custom Recipes

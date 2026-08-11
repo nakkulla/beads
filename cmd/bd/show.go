@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
@@ -40,6 +41,7 @@ var showCmd = &cobra.Command{
 		longMode, _ := cmd.Flags().GetBool("long")
 		showRefs, _ := cmd.Flags().GetBool("refs")
 		showChildren, _ := cmd.Flags().GetBool("children")
+		showLinks, _ := cmd.Flags().GetBool("links")
 		asOfRef, _ := cmd.Flags().GetString("as-of")
 		idFlags, _ := cmd.Flags().GetStringArray("id")
 		localTime, _ := cmd.Flags().GetBool("local-time")
@@ -76,7 +78,13 @@ var showCmd = &cobra.Command{
 			return HandleErrorRespectJSON("at least one issue ID is required (use positional args, --id flag, or --current)")
 		}
 
+		if showChildren && showLinks {
+			return HandleErrorRespectJSON("cannot combine --children with --links")
+		}
 		if asOfRef != "" {
+			if showLinks {
+				return showIssueAsOfWithLinks(ctx, args, asOfRef, shortMode)
+			}
 			return showIssueAsOf(ctx, args, asOfRef, shortMode)
 		}
 
@@ -219,7 +227,11 @@ var showCmd = &cobra.Command{
 						break
 					}
 				}
-				allDetails = append(allDetails, details)
+				if showLinks {
+					allDetails = append(allDetails, issueDetailsWithLinks{IssueDetails: details, Links: buildIssueLinks(ctx, issue)})
+				} else {
+					allDetails = append(allDetails, details)
+				}
 				result.Close()
 				continue
 			}
@@ -232,6 +244,9 @@ var showCmd = &cobra.Command{
 
 			// Metadata: Owner · Type | Created · Updated
 			fmt.Println(formatIssueMetadata(issue))
+			if showLinks {
+				renderIssueLinks(buildIssueLinks(ctx, issue))
+			}
 
 			// Compaction info (if applicable)
 			if issue.CompactionLevel > 0 {
@@ -433,6 +448,105 @@ var showCmd = &cobra.Command{
 	},
 }
 
+type issueDetailsWithLinks struct {
+	*types.IssueDetails
+	Links issueLinks `json:"links"`
+}
+
+type issueLinks struct {
+	Branch   string          `json:"branch,omitempty"`
+	PRURL    string          `json:"pr_url,omitempty"`
+	Worktree *linkedWorktree `json:"worktree"`
+}
+
+type linkedWorktree struct {
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+	Branch string `json:"branch"`
+	Exists bool   `json:"exists"`
+}
+
+func buildIssueLinks(ctx context.Context, issue *types.Issue) issueLinks {
+	links := issueLinks{Branch: metadataValue(issue.Metadata, "branch"), PRURL: metadataValue(issue.Metadata, "pr_url")}
+	branch := issueLinkBranch(issue)
+	repoRoot := git.GetRepoRoot()
+	if repoRoot == "" {
+		fmt.Fprintln(os.Stderr, "Warning: unable to resolve git repository for worktree links")
+		return links
+	}
+	output, err := gitCmdInDir(ctx, repoRoot, "worktree", "list", "--porcelain").CombinedOutput()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: unable to list git worktrees for links: %v\n", err)
+		return links
+	}
+	for _, wt := range parseWorktreeList(string(output)) {
+		if wt.Branch == branch {
+			_, err := os.Stat(wt.Path)
+			links.Worktree = &linkedWorktree{Name: wt.Name, Path: wt.Path, Branch: wt.Branch, Exists: err == nil}
+			break
+		}
+	}
+	return links
+}
+
+func renderIssueLinks(links issueLinks) {
+	fmt.Printf("\n%s\n", ui.RenderBold("LINKS"))
+	if links.Branch != "" {
+		fmt.Printf("  Branch: %s\n", links.Branch)
+	}
+	if links.PRURL != "" {
+		fmt.Printf("  PR: %s\n", links.PRURL)
+	}
+	if links.Worktree != nil {
+		fmt.Printf("  Worktree: %s (%s)\n", links.Worktree.Path, links.Worktree.Branch)
+	}
+}
+
+func showIssueAsOfWithLinks(ctx context.Context, args []string, ref string, shortMode bool) error {
+	var allIssues []interface{}
+	for idx, id := range args {
+		issue, err := store.AsOf(ctx, id, ref)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error fetching %s as of %s: %v\n", id, ref, err)
+			continue
+		}
+		if issue == nil {
+			fmt.Fprintf(os.Stderr, "Issue %s did not exist at %s\n", id, ref)
+			continue
+		}
+		if shortMode {
+			fmt.Println(formatShortIssue(issue))
+			continue
+		}
+		current, _ := store.GetIssue(ctx, id)
+		links := issueLinks{}
+		if current != nil {
+			links = buildIssueLinks(ctx, current)
+		}
+		if jsonOutput {
+			allIssues = append(allIssues, struct {
+				*types.Issue
+				Links issueLinks `json:"links"`
+			}{issue, links})
+			continue
+		}
+		if idx > 0 {
+			fmt.Println("\n" + ui.RenderMuted(strings.Repeat("-", 60)))
+		}
+		fmt.Printf("\n%s (as of %s)\n", formatIssueHeader(issue), ui.RenderMuted(ref))
+		fmt.Println(formatIssueMetadata(issue))
+		renderIssueLinks(links)
+		if issue.Description != "" {
+			fmt.Printf("\n%s\n%s\n", ui.RenderBold("DESCRIPTION"), uimd.RenderMarkdown(issue.Description))
+		}
+		fmt.Println()
+	}
+	if jsonOutput && len(allIssues) > 0 {
+		return outputJSON(allIssues)
+	}
+	return nil
+}
+
 // shallowDependentsForJSON returns a copy of raw with each embedded Issue
 // stripped down to identity-and-shape fields (ID, Status, IssueType, Priority,
 // Title). The heavy fields (Description, Design, Notes, AcceptanceCriteria,
@@ -473,6 +587,7 @@ func init() {
 	showCmd.Flags().Bool("long", false, "Show all available fields (extended metadata, agent identity, gate fields, etc.)")
 	showCmd.Flags().Bool("refs", false, "Show issues that reference this issue (reverse lookup)")
 	showCmd.Flags().Bool("children", false, "Show only the children of this issue")
+	showCmd.Flags().Bool("links", false, "Include current branch, PR URL, and worktree links (with --as-of, links are current)")
 	showCmd.Flags().String("as-of", "", "Show issue as it existed at a specific commit hash or branch (requires Dolt)")
 	showCmd.Flags().StringArray("id", nil, "Issue ID (use for IDs that look like flags, e.g., --id=gt--xyz)")
 	showCmd.Flags().Bool("local-time", false, "Show timestamps in local time instead of UTC")

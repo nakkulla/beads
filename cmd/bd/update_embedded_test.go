@@ -639,6 +639,34 @@ func TestEmbeddedUpdate(t *testing.T) {
 		}
 	})
 
+	t.Run("update_unset_metadata_prefix", func(t *testing.T) {
+		issue := bdCreate(t, bd, dir, "Unset metadata prefix test", "--type", "task")
+		bdUpdate(t, bd, dir, issue.ID, "--metadata", `{"review_one":"drop","review_two":"drop","keep":"yes"}`)
+		bdUpdate(t, bd, dir, issue.ID, "--set-metadata", "added=yes", "--unset-metadata", "review_one", "--unset-metadata-prefix", "review_")
+		got := bdShow(t, bd, dir, issue.ID)
+		var metadata map[string]any
+		if err := json.Unmarshal(got.Metadata, &metadata); err != nil {
+			t.Fatalf("parse metadata: %v", err)
+		}
+		if _, ok := metadata["review_one"]; ok {
+			t.Errorf("exact unset did not remove review_one: %v", metadata)
+		}
+		if _, ok := metadata["review_two"]; ok {
+			t.Errorf("prefix unset did not remove review_two: %v", metadata)
+		}
+		if metadata["keep"] != "yes" || metadata["added"] != "yes" {
+			t.Errorf("set/nonmatching values lost: %v", metadata)
+		}
+		out := bdUpdateFail(t, bd, dir, issue.ID, "--metadata", `{}`, "--unset-metadata-prefix", "review_")
+		if !strings.Contains(out, "cannot combine") {
+			t.Errorf("metadata conflict: %s", out)
+		}
+		out = bdUpdateFail(t, bd, dir, issue.ID, "--unset-metadata-prefix", "")
+		if !strings.Contains(out, "prefix cannot be empty") {
+			t.Errorf("empty prefix error: %s", out)
+		}
+	})
+
 	t.Run("update_metadata_and_set_conflict", func(t *testing.T) {
 		issue := bdCreate(t, bd, dir, "Meta conflict", "--type", "task")
 		out := bdUpdateFail(t, bd, dir, issue.ID, "--metadata", `{"a":1}`, "--set-metadata", "b=2")
