@@ -46,13 +46,14 @@ Examples:
   bd worktree create ../agents/worker-1     # Create at relative path
 
 ```
-bd worktree create <name> [--branch=<branch>] [flags]
+bd worktree create [name] [--issue=<id>] [--branch=<branch>] [flags]
 ```
 
 **Flags:**
 
 ```
       --branch string   Branch name for the worktree (default: same as name)
+      --issue string    Link the worktree to an issue
 ```
 
 ### bd worktree info

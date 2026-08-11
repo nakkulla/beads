@@ -33,6 +33,7 @@ bd show [id...] [--id=<id>...] [--current] [flags]
       --id stringArray       Issue ID (use for IDs that look like flags, e.g., --id=gt--xyz)
       --include-comments     Stream full comment bodies in JSON output (--json only; may be slow on issues with many comments)
       --include-dependents   Stream full dependent issues in JSON output (--json only; may be slow on hub beads)
+      --links                Include current branch, PR URL, and worktree links (with --as-of, links are current)
       --local-time           Show timestamps in local time instead of UTC
       --long                 Show all available fields (extended metadata, agent identity, gate fields, etc.)
       --refs                 Show issues that reference this issue (reverse lookup)

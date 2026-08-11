@@ -1,13 +1,14 @@
 # JSON Output Schema Contract
 
-Last reviewed: 2026-08-10
+Last reviewed: 2026-08-11
 
 Freshness source: `cmd/bd/output.go`, `cmd/bd/errors.go`, and
 `cmd/bd/protocol/json_contract_test.go`.
 
-All `bd` commands that support `--json` output can wrap their response in a
-uniform envelope by setting `BD_JSON_ENVELOPE=1`. This will become the default
-format in v2.0.
+Commands that use the shared `outputJSON` path can wrap their response in a
+uniform envelope by setting `BD_JSON_ENVELOPE=1`. Commands that intentionally
+stream or write raw JSON/JSONL bypass that wrapper. The envelope will become
+the default format in v2.0.
 
 ## Migration Guide
 
@@ -19,7 +20,7 @@ export BD_JSON_ENVELOPE=1
 
 ### Envelope format (BD_JSON_ENVELOPE=1, default in v2.0)
 
-Every `--json` command wraps output as:
+Every command using the shared JSON output path wraps output as:
 
 ```json
 {"schema_version": 2, "data": <legacy-payload>}
@@ -47,9 +48,10 @@ bd show beads-abc --json | jq '.schema_version'
 ### Timeline
 
 - **Current release**: Legacy format is default. Set `BD_JSON_ENVELOPE=1` to opt in.
-  A deprecation notice is printed to stderr when `--json` is used without the env var.
-- **v2.0**: Envelope becomes the default. `BD_JSON_ENVELOPE=0` is available as
-  a temporary escape hatch for one release cycle.
+  When stderr is a terminal, a deprecation notice is printed once per process
+  when the shared JSON output path is used without the env var.
+- **v2.0**: Envelope becomes the default. `BD_JSON_ENVELOPE=0` available as
+  temporary escape hatch for one release cycle.
 
 ## Schema Version
 
@@ -68,7 +70,8 @@ arity-based object/array contract introduced in `1.2.0-fork.1`.
 
 ### Envelope mode (BD_JSON_ENVELOPE=1)
 
-Object and array payloads use the same outer envelope:
+Object and array payloads using the shared JSON output path use the same outer
+envelope:
 
 ```json
 {
@@ -149,15 +152,18 @@ result exists; `closed` and `unblocked` are arrays, while `continue` and
 }
 ```
 
-### Error output (stderr)
+### Error output
 
-Errors with `--json` active emit JSON to stderr:
+Most JSON error helpers emit JSON to stderr. Paths using the
+`RespectJSON` helpers intentionally emit JSON to stdout so callers that consume
+stdout remain compatible. The common payload contains `error` and may contain
+`hint`; `code` is present only when a caller supplies one explicitly.
 
 ```json
 {
   "schema_version": 2,
   "error": "issue not found: beads-xyz",
-  "code": "not_found"
+  "hint": "run 'bd where' to inspect the resolved workspace"
 }
 ```
 
@@ -208,7 +214,8 @@ explicit dependency records with exactly `issue_id`, `depends_on_id`, and
 values such as `true`, `null`, `0123`, or a large integer. Use the repeatable
 `--set-metadata-json key=<raw JSON>` flag when a JSON number, boolean, null,
 array, or object is intentional. Supplying the same key through both flags is
-an error.
+an error. `--unset-metadata-prefix prefix` removes every metadata key beginning
+with `prefix`; an empty prefix is rejected.
 
 ### `bd edit`
 
@@ -223,7 +230,7 @@ Returns one summary object with `source`, `created`, `skipped`,
 ### `bd export --json`
 
 Outputs JSONL, one self-contained issue or memory record per line, rather than
-one array or envelope. Each line includes `schema_version`.
+one array or envelope. Export records do not add `schema_version`.
 
 ## Consumer Guidelines
 

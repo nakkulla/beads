@@ -8,23 +8,28 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/git"
 	"github.com/steveyegge/beads/internal/metrics"
+	"github.com/steveyegge/beads/internal/storage/domain"
+	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 )
 
 // WorktreeInfo contains information about a git worktree
 type WorktreeInfo struct {
-	Name       string `json:"name"`
-	Path       string `json:"path"`
-	Branch     string `json:"branch"`
-	IsMain     bool   `json:"is_main"`
-	BeadsState string `json:"beads_state"` // "redirect", "shared", "none"
-	RedirectTo string `json:"redirect_to,omitempty"`
+	Name        string `json:"name"`
+	Path        string `json:"path"`
+	Branch      string `json:"branch"`
+	IsMain      bool   `json:"is_main"`
+	BeadsState  string `json:"beads_state"` // "redirect", "shared", "none"
+	RedirectTo  string `json:"redirect_to,omitempty"`
+	IssueID     string `json:"issue_id,omitempty"`
+	IssueSource string `json:"issue_source,omitempty"`
 }
 
 var worktreeCmd = &cobra.Command{
@@ -48,7 +53,7 @@ Examples:
 }
 
 var worktreeCreateCmd = &cobra.Command{
-	Use:   "create <name> [--branch=<branch>]",
+	Use:   "create [name] [--issue=<id>] [--branch=<branch>]",
 	Short: "Create a worktree",
 	Long: `Create a git worktree for parallel development.
 
@@ -63,7 +68,13 @@ Examples:
   bd worktree create feature-auth           # Create at ./feature-auth
   bd worktree create bugfix --branch fix-1  # Create with branch name
   bd worktree create ../agents/worker-1     # Create at relative path`,
-	Args:          cobra.ExactArgs(1),
+	Args: func(cmd *cobra.Command, args []string) error {
+		issue, _ := cmd.Flags().GetString("issue")
+		if len(args) > 1 || (len(args) == 0 && issue == "") {
+			return fmt.Errorf("requires a worktree name or --issue")
+		}
+		return nil
+	},
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE:          runWorktreeCreate,
@@ -132,11 +143,13 @@ Examples:
 
 var (
 	worktreeBranch string
+	worktreeIssue  string
 	worktreeForce  bool
 )
 
 func init() {
 	worktreeCreateCmd.Flags().StringVar(&worktreeBranch, "branch", "", "Branch name for the worktree (default: same as name)")
+	worktreeCreateCmd.Flags().StringVar(&worktreeIssue, "issue", "", "Link the worktree to an issue")
 	worktreeRemoveCmd.Flags().BoolVar(&worktreeForce, "force", false, "Skip safety checks")
 
 	worktreeCmd.AddCommand(worktreeCreateCmd)
@@ -158,17 +171,18 @@ func runWorktreeCreate(cmd *cobra.Command, args []string) error {
 
 	ctx := context.Background()
 
-	name := args[0]
+	issueID := worktreeIssue
+	name := ""
+	if len(args) == 1 {
+		name = args[0]
+	} else {
+		name = issueID
+	}
 
 	// Determine worktree path
 	worktreePath, err := filepath.Abs(name)
 	if err != nil {
 		return fmt.Errorf("failed to resolve path: %w", err)
-	}
-
-	// Check if path already exists
-	if _, err := os.Stat(worktreePath); err == nil {
-		return fmt.Errorf("path already exists: %s", worktreePath)
 	}
 
 	// Get repository context (validates .beads exists and resolves paths)
@@ -187,6 +201,40 @@ func runWorktreeCreate(cmd *cobra.Command, args []string) error {
 	branch := worktreeBranch
 	if branch == "" {
 		branch = filepath.Base(name)
+	}
+
+	var linkedIssue *RoutedResult
+	var proxiedLinkedIssue *types.Issue
+	if issueID != "" {
+		if usesProxiedServer() {
+			uw := proxiedOpenReadUOW(ctx)
+			proxiedLinkedIssue, err = uw.IssueUseCase().GetIssue(ctx, issueID)
+			uw.Close(ctx)
+			if err != nil || proxiedLinkedIssue == nil {
+				return fmt.Errorf("issue %s not found", issueID)
+			}
+			if existing := metadataValue(proxiedLinkedIssue.Metadata, "branch"); existing != "" && existing != branch {
+				return fmt.Errorf("issue %s is already linked to branch %q; use bd update --set-metadata branch=<branch> to change it", proxiedLinkedIssue.ID, existing)
+			}
+		} else {
+			linkedIssue, err = resolveAndGetIssueForMutation(ctx, getStore(), issueID)
+			if err != nil || linkedIssue == nil || linkedIssue.Issue == nil {
+				if linkedIssue != nil {
+					linkedIssue.Close()
+				}
+				return fmt.Errorf("issue %s not found", issueID)
+			}
+			defer linkedIssue.Close()
+			if existing := metadataValue(linkedIssue.Issue.Metadata, "branch"); existing != "" && existing != branch {
+				return fmt.Errorf("issue %s is already linked to branch %q; use bd update --set-metadata branch=<branch> to change it", linkedIssue.ResolvedID, existing)
+			}
+		}
+	}
+
+	// Validate the target only after issue/link validation. This preserves the
+	// --issue contract: a bad issue or branch conflict never creates a worktree.
+	if _, err := os.Stat(worktreePath); err == nil {
+		return fmt.Errorf("path already exists: %s", worktreePath)
 	}
 
 	// Create the worktree using secure git command
@@ -213,11 +261,34 @@ func runWorktreeCreate(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(os.Stderr, "Warning: failed to update .gitignore: %v\n", err)
 		}
 	}
+	if linkedIssue != nil && metadataValue(linkedIssue.Issue.Metadata, "branch") != branch {
+		metadata, metaErr := applyMetadataEdits(linkedIssue.Issue.Metadata, []string{"branch=" + branch}, nil, nil)
+		if metaErr == nil {
+			metaErr = linkedIssue.Store.UpdateIssue(ctx, linkedIssue.ResolvedID, map[string]interface{}{"metadata": metadata}, getActor())
+		}
+		if metaErr == nil {
+			metaErr = commitPendingIfEmbedded(ctx, linkedIssue.Store, getActor(), doltAutoCommitParams{Command: "worktree create", IssueIDs: []string{linkedIssue.ResolvedID}})
+		}
+		if metaErr != nil {
+			return fmt.Errorf("worktree was created at %s but failed to record metadata.branch: %w\nrecord it manually with: bd update %s --set-metadata branch=%s", worktreePath, metaErr, linkedIssue.ResolvedID, branch)
+		}
+	}
+	if proxiedLinkedIssue != nil && metadataValue(proxiedLinkedIssue.Metadata, "branch") != branch {
+		if err := recordProxiedWorktreeLink(ctx, proxiedLinkedIssue, branch); err != nil {
+			return fmt.Errorf("worktree was created at %s but failed to record metadata.branch: %w\nrecord it manually with: bd update %s --set-metadata branch=%s", worktreePath, err, proxiedLinkedIssue.ID, branch)
+		}
+	}
 
 	if jsonOutput {
 		result := map[string]interface{}{
 			"path":   worktreePath,
 			"branch": branch,
+		}
+		if linkedIssue != nil {
+			result["issue_id"] = linkedIssue.ResolvedID
+		}
+		if proxiedLinkedIssue != nil {
+			result["issue_id"] = proxiedLinkedIssue.ID
 		}
 		encoder := json.NewEncoder(os.Stdout)
 		encoder.SetIndent("", "  ")
@@ -227,6 +298,20 @@ func runWorktreeCreate(cmd *cobra.Command, args []string) error {
 	fmt.Printf("%s Created worktree: %s\n", ui.RenderPass("✓"), worktreePath)
 	fmt.Printf("  Branch: %s\n", branch)
 	return nil
+}
+
+func recordProxiedWorktreeLink(ctx context.Context, issue *types.Issue, branch string) error {
+	uw := proxiedOpenReadUOW(ctx)
+	defer uw.Close(ctx)
+	metadata, err := applyMetadataEdits(issue.Metadata, []string{"branch=" + branch}, nil, nil)
+	if err != nil {
+		return err
+	}
+	_, err = uw.IssueUseCase().ApplyUpdate(ctx, issue.ID, domain.UpdateSpec{Fields: map[string]any{"metadata": metadata}}, getActor())
+	if err != nil {
+		return err
+	}
+	return uw.Commit(ctx, fmt.Sprintf("bd: worktree create %s", issue.ID))
 }
 
 func runWorktreeList(cmd *cobra.Command, args []string) error {
@@ -275,6 +360,11 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 			worktrees[i].RedirectTo = getRedirectTarget(worktrees[i].Path)
 		}
 	}
+	if issues, err := worktreeLinkIssues(ctx); err == nil {
+		enrichWorktreeIssues(worktrees, issues)
+	} else {
+		fmt.Fprintf(os.Stderr, "Warning: unable to resolve issue links: %v\n", err)
+	}
 
 	if jsonOutput {
 		encoder := json.NewEncoder(os.Stdout)
@@ -288,7 +378,7 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("%-20s %-40s %-20s %s\n", "NAME", "PATH", "BRANCH", "BEADS")
+	fmt.Printf("%-20s %-40s %-20s %-12s %s\n", "NAME", "PATH", "BRANCH", "ISSUE", "BEADS")
 	for _, wt := range worktrees {
 		name := filepath.Base(wt.Path)
 		if wt.IsMain {
@@ -298,14 +388,72 @@ func runWorktreeList(cmd *cobra.Command, args []string) error {
 		if wt.RedirectTo != "" {
 			beadsInfo = fmt.Sprintf("redirect → %s", filepath.Base(filepath.Dir(wt.RedirectTo)))
 		}
-		fmt.Printf("%-20s %-40s %-20s %s\n",
+		fmt.Printf("%-20s %-40s %-20s %-12s %s\n",
 			truncate(name, 20),
 			truncate(wt.Path, 40),
 			truncate(wt.Branch, 20),
+			truncate(wt.IssueID, 12),
 			beadsInfo)
 	}
 
 	return nil
+}
+
+func worktreeLinkIssues(ctx context.Context) ([]*types.Issue, error) {
+	if usesProxiedServer() {
+		uw := proxiedOpenReadUOW(ctx)
+		defer uw.Close(ctx)
+		page, err := uw.IssueUseCase().SearchIssues(ctx, "", types.IssueFilter{SkipWisps: true})
+		if err != nil {
+			return nil, err
+		}
+		return page.Items, nil
+	}
+	return getStore().SearchIssues(ctx, "", types.IssueFilter{SkipWisps: true})
+}
+
+func metadataValue(metadata json.RawMessage, key string) string {
+	var values map[string]json.RawMessage
+	if json.Unmarshal(metadata, &values) != nil {
+		return ""
+	}
+	var value string
+	_ = json.Unmarshal(values[key], &value)
+	return value
+}
+
+// issueLinkBranch is the shared branch interpretation used by --links. An
+// explicit metadata branch wins; an issue ID is the exact-match fallback.
+func issueLinkBranch(issue *types.Issue) string {
+	if branch := metadataValue(issue.Metadata, "branch"); branch != "" {
+		return branch
+	}
+	return issue.ID
+}
+
+func enrichWorktreeIssues(worktrees []WorktreeInfo, issues []*types.Issue) {
+	for i := range worktrees {
+		var matches []string
+		for _, issue := range issues {
+			if metadataValue(issue.Metadata, "branch") == worktrees[i].Branch && worktrees[i].Branch != "" {
+				matches = append(matches, issue.ID)
+			}
+		}
+		if len(matches) > 0 {
+			sort.Strings(matches)
+			worktrees[i].IssueID, worktrees[i].IssueSource = matches[0], "metadata"
+			if len(matches) > 1 {
+				fmt.Fprintf(os.Stderr, "Warning: multiple issues link to branch %q; using %s\n", worktrees[i].Branch, matches[0])
+			}
+			continue
+		}
+		for _, issue := range issues {
+			if issue.ID == worktrees[i].Branch {
+				worktrees[i].IssueID, worktrees[i].IssueSource = issue.ID, "branch-name"
+				break
+			}
+		}
+	}
 }
 
 func runWorktreeRemove(cmd *cobra.Command, args []string) error {

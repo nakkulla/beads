@@ -26,6 +26,7 @@ type showProxiedInput struct {
 	longMode        bool
 	refs            bool
 	children        bool
+	links           bool
 	asOfRef         string
 	localTime       bool
 	watchMode       bool
@@ -42,6 +43,7 @@ func gatherShowProxiedInput(cmd *cobra.Command, args []string) *showProxiedInput
 	in.longMode, _ = cmd.Flags().GetBool("long")
 	in.refs, _ = cmd.Flags().GetBool("refs")
 	in.children, _ = cmd.Flags().GetBool("children")
+	in.links, _ = cmd.Flags().GetBool("links")
 	in.asOfRef, _ = cmd.Flags().GetString("as-of")
 	in.localTime, _ = cmd.Flags().GetBool("local-time")
 	in.watchMode, _ = cmd.Flags().GetBool("watch")
@@ -80,9 +82,15 @@ func runShowProxiedServer(cmd *cobra.Command, ctx context.Context, args []string
 	if len(in.fields) > 0 && (in.thread || in.refs || in.children || in.asOfRef != "") {
 		FatalErrorRespectJSON("--fields cannot be combined with --thread, --refs, --children, or --as-of")
 	}
+	if len(in.fields) > 0 && in.links {
+		FatalErrorRespectJSON("--fields cannot be combined with --links")
+	}
 
 	if in.watchMode {
 		FatalErrorRespectJSON("watch mode not supported in proxied-server mode")
+	}
+	if in.children && in.links {
+		FatalErrorRespectJSON("cannot combine --children with --links")
 	}
 
 	uw := proxiedOpenReadUOW(ctx)
@@ -177,7 +185,7 @@ func proxiedCountComments(ctx context.Context, uw uow.UnitOfWork, id string, isW
 }
 
 func runShowProxiedAsOf(ctx context.Context, uw uow.UnitOfWork, in *showProxiedInput) {
-	var jsonIssues []*types.Issue
+	var jsonIssues []interface{}
 	for idx, id := range in.ids {
 		issue, err := uw.IssueUseCase().AsOf(ctx, id, in.asOfRef)
 		if err != nil {
@@ -194,7 +202,19 @@ func runShowProxiedAsOf(ctx context.Context, uw uow.UnitOfWork, in *showProxiedI
 			continue
 		}
 		if jsonOutput {
-			jsonIssues = append(jsonIssues, issue)
+			if in.links {
+				current, _ := uw.IssueUseCase().GetIssue(ctx, id)
+				links := issueLinks{}
+				if current != nil {
+					links = buildIssueLinks(ctx, current)
+				}
+				jsonIssues = append(jsonIssues, struct {
+					*types.Issue
+					Links issueLinks `json:"links"`
+				}{issue, links})
+			} else {
+				jsonIssues = append(jsonIssues, issue)
+			}
 			continue
 		}
 
@@ -203,6 +223,12 @@ func runShowProxiedAsOf(ctx context.Context, uw uow.UnitOfWork, in *showProxiedI
 		}
 		fmt.Printf("\n%s (as of %s)\n", formatIssueHeader(issue), ui.RenderMuted(in.asOfRef))
 		fmt.Println(formatIssueMetadata(issue))
+		if in.links {
+			current, _ := uw.IssueUseCase().GetIssue(ctx, id)
+			if current != nil {
+				renderIssueLinks(buildIssueLinks(ctx, current))
+			}
+		}
 		if issue.Description != "" {
 			fmt.Printf("\n%s\n%s\n", ui.RenderBold("DESCRIPTION"), uimd.RenderMarkdown(issue.Description))
 		}
@@ -474,6 +500,8 @@ func runShowProxiedDefault(ctx context.Context, uw uow.UnitOfWork, in *showProxi
 					FatalErrorRespectJSON("%v", err)
 				}
 				allDetails = append(allDetails, projected)
+			} else if in.links {
+				allDetails = append(allDetails, issueDetailsWithLinks{IssueDetails: details, Links: buildIssueLinks(ctx, issue)})
 			} else {
 				allDetails = append(allDetails, details)
 			}
@@ -614,6 +642,9 @@ func proxiedRenderIssue(ctx context.Context, uw uow.UnitOfWork, issue *types.Iss
 
 	if metaStr := formatIssueCustomMetadata(issue); metaStr != "" {
 		fmt.Printf("\n%s\n", metaStr)
+	}
+	if in.links {
+		renderIssueLinks(buildIssueLinks(ctx, issue))
 	}
 
 	relatedSeen := make(map[string]*types.IssueWithDependencyMetadata)

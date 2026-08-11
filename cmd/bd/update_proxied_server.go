@@ -177,8 +177,8 @@ func buildUpdateSpecForIssue(current *types.Issue, in *updateInput) (domain.Upda
 		}
 		fields["metadata"] = merged
 	}
-	if len(in.setMetadata) > 0 || len(in.setMetadataJSON) > 0 || len(in.unsetMetadata) > 0 {
-		merged, err := applyMetadataEditsWithJSON(current.Metadata, in.setMetadata, in.setMetadataJSON, in.unsetMetadata)
+	if len(in.setMetadata) > 0 || len(in.setMetadataJSON) > 0 || len(in.unsetMetadata) > 0 || len(in.unsetMetaPrefix) > 0 {
+		merged, err := applyMetadataEditsWithJSON(current.Metadata, in.setMetadata, in.setMetadataJSON, in.unsetMetadata, in.unsetMetaPrefix)
 		if err != nil {
 			return domain.UpdateSpec{}, fmt.Errorf("metadata edit failed for %s: %w", current.ID, err)
 		}

@@ -1,6 +1,6 @@
 # Azure DevOps (ADO) Integration Configuration
 
-Last reviewed: 2026-05-08
+Last reviewed: 2026-08-11
 
 Freshness source: `cmd/bd/ado*.go` and `internal/ado/`.
 
@@ -46,7 +46,10 @@ bd ado sync --dry-run
 
 ² At least one project must be configured via `ado.project` or `ado.projects`.
 
-**Config vs env var precedence:** Config keys (set via `bd config set`) take priority over environment variables.
+**Config vs env var precedence:** Config keys (set via `bd config set`) take
+priority over environment variables. `ado.pat` is a YAML-only secret key: it is
+read from `config.yaml` before `AZURE_DEVOPS_PAT` and is not stored in the Dolt
+database or synced to a Dolt remote.
 
 ### On-Premises ADO Server
 
@@ -244,11 +247,15 @@ When the same issue has been modified both locally and in ADO:
 | `--dry-run` | Preview sync without making changes |
 | `--no-create` | Only update existing items, never create new ones |
 | `--bootstrap-match` | Enable heuristic title matching for first sync |
-| `--reconcile` | Force reconciliation scan for deleted items |
-| `--issues` | Sync specific issues by bead ID or ADO work item ID |
-| `--label` | Filter by label |
-| `--status` | Filter by beads status |
-| `--type` | Filter by beads issue type |
+| `--reconcile` | Force a reconciliation scan now instead of waiting for the configured interval |
+| `--issues` | Sync specific issues by comma-separated bead ID |
+| `--parent` | Limit push to one bead and its descendants; mutually exclusive with `--issues` |
+| `--project` | Override configured ADO project(s) for this run; may be repeated or comma-separated |
+
+Reconciliation also runs automatically every ten successful syncs by default.
+Set `ado.reconcile_interval` to a positive number to change that cadence. A
+confirmed ADO 404 closes the linked local issue; a 403 is reported as an
+access-denied warning and leaves the local issue unchanged.
 
 ## PAT Permissions
 
@@ -262,16 +269,17 @@ Generate a PAT at: `https://dev.azure.com/{org}/_usersettings/tokens`
 
 ## Metadata Preserved
 
-beads stores ADO-specific metadata for round-trip fidelity:
+beads captures ADO-specific metadata during pull. Most editable fields are
+restored on push, with the exceptions called out below:
 
-| Metadata Key | Description |
-|---|---|
-| `ado.rev` | ADO revision number |
-| `ado.area_path` | Area path |
-| `ado.iteration_path` | Iteration/sprint path |
-| `ado.story_points` | Story points estimate |
-| `ado.remaining_work` | Remaining work hours |
-| `ado.severity` | Bug severity value |
+| Metadata Key | Captured on pull | Restored on push | Description |
+|---|---|---|---|
+| `ado.rev` | Yes | No | ADO revision number used for sync bookkeeping |
+| `ado.area_path` | Yes | Yes | Area path |
+| `ado.iteration_path` | Yes | Yes | Iteration/sprint path |
+| `ado.story_points` | Yes | Yes | Story points estimate |
+| `ado.remaining_work` | Yes | No | Remaining work hours retained as local metadata |
+| `ado.severity` | Yes | Yes | Bug severity value |
 
 ## Description Conversion
 

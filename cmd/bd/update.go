@@ -299,13 +299,18 @@ use --set-metadata-json for intentional typed JSON values.`,
 		setMetadataFlags, _ := cmd.Flags().GetStringArray("set-metadata")
 		setMetadataJSONFlags, _ := cmd.Flags().GetStringArray("set-metadata-json")
 		unsetMetadataFlags, _ := cmd.Flags().GetStringArray("unset-metadata")
-		if (len(setMetadataFlags) > 0 || len(setMetadataJSONFlags) > 0 || len(unsetMetadataFlags) > 0) && cmd.Flags().Changed("metadata") {
-			return HandleErrorRespectJSON("cannot combine --metadata with --set-metadata, --set-metadata-json, or --unset-metadata")
+		unsetMetadataPrefixFlags, _ := cmd.Flags().GetStringArray("unset-metadata-prefix")
+		if cmd.Flags().Changed("unset-metadata-prefix") && len(unsetMetadataPrefixFlags) == 0 {
+			unsetMetadataPrefixFlags = []string{""}
 		}
-		if len(setMetadataFlags) > 0 || len(setMetadataJSONFlags) > 0 || len(unsetMetadataFlags) > 0 {
+		if (len(setMetadataFlags) > 0 || len(setMetadataJSONFlags) > 0 || len(unsetMetadataFlags) > 0 || len(unsetMetadataPrefixFlags) > 0) && cmd.Flags().Changed("metadata") {
+			return HandleErrorRespectJSON("cannot combine --metadata with --set-metadata, --set-metadata-json, --unset-metadata, or --unset-metadata-prefix")
+		}
+		if len(setMetadataFlags) > 0 || len(setMetadataJSONFlags) > 0 || len(unsetMetadataFlags) > 0 || len(unsetMetadataPrefixFlags) > 0 {
 			updates["_set_metadata"] = setMetadataFlags
 			updates["_set_metadata_json"] = setMetadataJSONFlags
 			updates["_unset_metadata"] = unsetMetadataFlags
+			updates["_unset_metadata_prefix"] = unsetMetadataPrefixFlags
 		}
 
 		// Get claim flag
@@ -388,7 +393,7 @@ use --set-metadata-json for intentional typed JSON values.`,
 			regularUpdates := make(map[string]interface{})
 			for k, v := range updates {
 				if k != "add_labels" && k != "remove_labels" && k != "set_labels" && k != "parent" && k != "append_notes" &&
-					k != "_set_metadata" && k != "_set_metadata_json" && k != "_unset_metadata" {
+					k != "_set_metadata" && k != "_set_metadata_json" && k != "_unset_metadata" && k != "_unset_metadata_prefix" {
 					regularUpdates[k] = v
 				}
 			}
@@ -411,7 +416,8 @@ use --set-metadata-json for intentional typed JSON values.`,
 			if setMeta, ok := updates["_set_metadata"].([]string); ok {
 				setMetaJSON, _ := updates["_set_metadata_json"].([]string)
 				unsetMeta, _ := updates["_unset_metadata"].([]string)
-				merged, err := applyMetadataEditsWithJSON(issue.Metadata, setMeta, setMetaJSON, unsetMeta)
+				unsetMetaPrefixes, _ := updates["_unset_metadata_prefix"].([]string)
+				merged, err := applyMetadataEditsWithJSON(issue.Metadata, setMeta, setMetaJSON, unsetMeta, unsetMetaPrefixes)
 				if err != nil {
 					return HandleErrorRespectJSON("metadata edit failed for %s: %v", id, err)
 				}
@@ -601,13 +607,13 @@ func mergeMetadata(existing, newMeta json.RawMessage) (json.RawMessage, error) {
 	return json.RawMessage(result), nil
 }
 
-// applyMetadataEdits applies --set-metadata and --unset-metadata edits to existing metadata.
+// applyMetadataEdits applies incremental metadata edits to existing metadata.
 // Returns the merged JSON as json.RawMessage.
-func applyMetadataEdits(existing json.RawMessage, setFlags, unsetFlags []string) (json.RawMessage, error) {
-	return applyMetadataEditsWithJSON(existing, setFlags, nil, unsetFlags)
+func applyMetadataEdits(existing json.RawMessage, setFlags, unsetFlags, unsetPrefixFlags []string) (json.RawMessage, error) {
+	return applyMetadataEditsWithJSON(existing, setFlags, nil, unsetFlags, unsetPrefixFlags)
 }
 
-func applyMetadataEditsWithJSON(existing json.RawMessage, setFlags, setJSONFlags, unsetFlags []string) (json.RawMessage, error) {
+func applyMetadataEditsWithJSON(existing json.RawMessage, setFlags, setJSONFlags, unsetFlags, unsetPrefixFlags []string) (json.RawMessage, error) {
 	// Parse existing metadata (or start with empty object)
 	data := make(map[string]json.RawMessage)
 	if len(existing) > 0 {
@@ -665,6 +671,18 @@ func applyMetadataEditsWithJSON(existing json.RawMessage, setFlags, setJSONFlags
 		delete(data, k)
 	}
 
+	// Apply --unset-metadata-prefix keys.
+	for _, prefix := range unsetPrefixFlags {
+		if prefix == "" {
+			return nil, fmt.Errorf("invalid --unset-metadata-prefix: prefix cannot be empty")
+		}
+		for k := range data {
+			if strings.HasPrefix(k, prefix) {
+				delete(data, k)
+			}
+		}
+	}
+
 	result, err := json.Marshal(data)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal metadata: %w", err)
@@ -713,6 +731,7 @@ func init() {
 	updateCmd.Flags().StringArray("set-metadata", nil, "Set string metadata key=value (repeatable, e.g., --set-metadata team=platform)")
 	updateCmd.Flags().StringArray("set-metadata-json", nil, "Set typed metadata key=JSON (repeatable, e.g., --set-metadata-json count=42)")
 	updateCmd.Flags().StringArray("unset-metadata", nil, "Remove metadata key (repeatable, e.g., --unset-metadata team)")
+	updateCmd.Flags().StringArray("unset-metadata-prefix", nil, "Remove metadata keys by prefix (repeatable, e.g., --unset-metadata-prefix spec_review)")
 	updateCmd.ValidArgsFunction = issueIDCompletion
 	rootCmd.AddCommand(updateCmd)
 }
