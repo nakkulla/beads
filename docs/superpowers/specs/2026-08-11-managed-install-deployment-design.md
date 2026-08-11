@@ -82,7 +82,7 @@ installed path는 existing Makefile contract가 선택한 `$HOME/.local/bin`을 
 install root를 발명하지 않는다. readback 실패 시 이미 copy된 partial artifact를 success로
 표시하지 않는다. 같은 candidate retry가 idempotent하게 build/copy/symlink를 다시 수렴시킨다.
 
-### Receipt와 marker
+### Receipt와 provider 전진 순서
 
 Adapter는 provider protocol v1의 terminal receipt를 worker-owned path에 temp file + fsync +
 atomic rename으로 기록한다. 필수 binding은 다음과 같다.
@@ -90,7 +90,6 @@ atomic rename으로 기록한다. 필수 binding은 다음과 같다.
 - protocol version, absolute source repo, target remote/base
 - attempt ID, merged floor SHA, candidate SHA
 - verified release path/HEAD와 verify outcome
-- previous/deployed marker
 - `action_outcomes`: build, install, binary hash readback, alias readback
 - action plan digest
 - deployment source path/HEAD
@@ -98,16 +97,23 @@ atomic rename으로 기록한다. 필수 binding은 다음과 같다.
 - terminal success timestamp
 
 stdout prose, installed binary mtime, PATH 첫 항목은 authority가 아니다. receipt는 credential,
-전체 environment, remote userinfo를 기록하지 않는다. marker는 exact readback 뒤에만 candidate로
-전진하며 receipt rename 전 crash는 same candidate readback으로 receipt만 복구한다.
+전체 environment, remote userinfo를 기록하지 않는다.
+
+전진 순서는 `installed artifact mutation -> exact readback -> atomic terminal receipt ->
+Reconciler receipt validation -> provider deployment state/cleanup/Parent close`로 고정한다.
+Adapter는 provider의 marker, cleanup state, Bead lifecycle을 소유하거나 직접 변경하지 않는다.
+같은 attempt의 terminal receipt가 이미 있으면 exact binding과 live installed artifact를 다시
+검증한 뒤 동일한 성공으로 취급하고, 내용이 다르거나 검증할 수 없으면 conflict로 실패한다.
 
 ## 실패와 복구
 
 - release materialize/fetch/spawn timeout: beads-ui Reconciler의 same-attempt bounded retry
 - floor ancestry, release identity, dirty release: fail closed; source를 자동 clean/reset하지 않음
-- build/install/hash/alias/version failure: marker·receipt 미전진, evidence 보존
-- marker 전 interruption: same candidate install 재실행
-- marker 뒤 receipt 전 interruption: exact installed artifact readback 뒤 receipt 복구
+- build/install/hash/alias/version failure: terminal receipt 없음, provider state·cleanup 미전진
+- receipt write/validation failure: provider가 terminal success를 인정하지 않고 state·cleanup 미전진
+- terminal receipt 전 interruption: same candidate install을 idempotent하게 재실행
+- terminal receipt 뒤 provider state 전 interruption: Reconciler가 existing receipt와 live artifact를
+  다시 검증한 뒤 provider 전진을 재개하며 Adapter-local state 복구는 만들지 않음
 - shared checkout dirt/branch/HEAD: Adapter가 읽지 않으므로 outcome에 영향 없음
 - credentials/permission/global toolchain failure: 자동 code repair가 아니라 terminal evidence
 
@@ -137,13 +143,23 @@ RED-GREEN seam은 candidate-local install/readback과 protocol receipt다.
   - temp source/release/HOME/XDG에서 valid protocol receipt
   - floor ancestry, release path/HEAD/status/remote binding 거부
   - release-local/installed binary SHA-256 일치와 `beads -> bd` alias
-  - install/hash/version/alias failure에서 marker·receipt 미전진
-  - marker 전/후 interruption과 same-candidate idempotent resume
+  - install/hash/version/alias failure에서 terminal receipt가 없음
+  - receipt write/validation failure에서 provider terminal success가 성립하지 않음
+  - terminal receipt 전 interruption의 same-candidate idempotent retry
+  - terminal receipt 뒤 provider interruption에서 existing receipt/live artifact 재검증
   - dirty/feature/local-ahead shared checkout 불변
 - repo-ops declaration contract test
   - `adapter = "managed"`, exact relative argv, `detached` absent, timeout
-- existing Makefile/install tests
-  - developer `make install`/`make install-force` behavior regression 없음
+
+다음은 RED-GREEN seam이 아니라 pinned base에서 먼저 통과해야 하는 baseline
+characterization/regression이다.
+
+- 새 `scripts/install_targets_test.go`
+  - `TestMakeInstallChecksForUpdates`: isolated fixture와 temp `HOME`에서 `make install`이
+    `check-up-to-date`를 거치고 `$HOME/.local/bin/bd`를 설치하며 relative `beads -> bd` alias를 만듦
+  - `TestMakeInstallForceSkipsUpdateCheck`: 같은 fixture에서 `make install-force`가 update check만
+    건너뛰고 install path와 alias 계약은 동일하게 보존함
+  - 두 test는 live `$HOME`을 건드리지 않으며 Adapter/repo-ops 변경 전 pinned base에서도 통과해야 함
 
 검증 bundle:
 
@@ -158,7 +174,8 @@ RED-GREEN seam은 candidate-local install/readback과 protocol receipt다.
 1. managed deploy가 shared checkout의 branch, dirt, HEAD를 읽거나 변경하지 않는다.
 2. verified candidate `D`에서 만든 binary와 installed `bd`의 SHA-256이 같다.
 3. installed version/build identity와 `beads -> bd` alias readback이 receipt에 bind된다.
-4. readback 전에는 marker, terminal receipt, cleanup, Parent close가 전진하지 않는다.
+4. exact readback과 terminal receipt validation 전에는 provider deployment state, cleanup,
+   Parent close가 전진하지 않는다.
 5. crash/retry에서 duplicate logical deploy나 candidate regression이 없다.
 6. Beads core issue/schema/CLI에는 orchestration-specific surface가 추가되지 않는다.
 7. first managed merge cleanup이 exact receipt로 `beads-loy`를 close한다.
