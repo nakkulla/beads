@@ -16,7 +16,8 @@ timeout_ms = 900000
 env_notes = "go test 자동감지는 ICU cgo 빌드 실패 — canonical은 make test (-tags gms_pure_go). make 내부 go 해석은 서버 PATH에 brew 경로 필요. TEST_TIMEOUT=10m: cmd/bd 실측 171초 vs 러너 기본 3m"
 
 [deploy]
-cmd = ["make", "install-force"]
+adapter = "managed"
+cmd = ["scripts/bdui-managed-deploy.sh"]
 timeout_ms = 600000
 
 env_notes = "빌드 + ~/.local/bin/bd 교체 — 멱등. bdui 서버는 요청마다 bd를 spawn하므로 바이너리 교체만으로 즉시 반영(재시작 불요)"
