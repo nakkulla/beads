@@ -70,6 +70,20 @@ base를 먼저 반영해 canonical workflow contract test와 문서 변경을 �
 Regression-specific fixture/helper는 같은 `scripts` Go package 안에서 parent test helper를
 재사용한다.
 
+## 실행 단위 disposition과 Worker eligibility
+
+detector, workflow, tests와 docs는 현재 Bead의 한 PR이 운반한다. PR event evidence와
+implementation merge가 만드는 risky main run은 해당 PR/merge lifecycle에서 얻을 수 있다. 그러나
+“의미 없는 commit을 만들지 않는다”는 제약 아래 최초의 자연스러운 docs/metadata-only main push
+evidence는 merge 뒤 별도 외부 event를 기다려야 하며 현재
+`docs/agents/repo-ops.toml`의 managed deploy command가 그 event를 생성하지 않는다.
+
+따라서 이 표본은 현재 Bead의 required no-PR interactive residue다. formal spec gate를 닫을 때
+`spec_review`와 같은 logical write로 `worker-ineligible` label을 추가한다. 자연스러운 run의 URL,
+SHA, detector reason과 앞선 risky heavy job 보존을 read back한 뒤 label을 제거하고 Bead를 완료할
+수 있다. requirement를 완화하거나 dependency-backed Bead+PR로 옮기려면 spec delta review가
+필요하다.
+
 ## 선택한 설계
 
 ### 1. detector를 repository-owned script로 분리

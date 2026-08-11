@@ -77,6 +77,19 @@ workflow가 active required topology로 승격되면 별도 measured writer/prof
 storage matrix와 gate mapping을 그대로 보존한다. 두 diff가 같은 `pr-risk.yml`에 있어도 cache
 step은 `build-embedded`, sharding은 downstream storage job이라는 semantic boundary를 유지한다.
 
+## 실행 단위 disposition과 Worker eligibility
+
+writer/consumer workflow, contract tests와 docs는 현재 Bead의 한 PR이 운반한다. merge commit은
+`go-cache.yml` change를 포함하므로 cold writer run을 자동으로 시작한다. 하지만 writer 성공 뒤
+요구하는 warm risky PR 최소 3회는 merge 후 별도 PR event를 기다려야 하며 현재
+`docs/agents/repo-ops.toml`의 managed deploy command가 그 표본을 생성하지 않는다.
+
+따라서 warm evidence 수집은 현재 Bead의 required no-PR interactive residue다. formal spec gate를
+닫을 때 `spec_review`와 같은 logical write로 `worker-ineligible` label을 추가한다. cold writer와
+세 warm consumer의 URL, matched key, size와 duration을 read back한 뒤 label을 제거하고 Bead를
+완료할 수 있다. evidence requirement를 dependency-backed Bead+PR로 옮기거나 완화하려면 spec
+delta review가 필요하다.
+
 ## 선택한 설계
 
 ### 1. explicit trusted writer workflow

@@ -86,6 +86,13 @@ p90 17.35분이다. 2026-08-06~11의 origin green `PR Risk` 6회에서도 이 jo
 그 cache steps를 그대로 보존하고 storage matrix만 바꾼다. `beads-yvf`가 먼저 landed이면
 `beads-ou6`가 이 matrix를 보존한 채 `build-embedded`에만 cache contract를 적용한다.
 
+## 실행 단위 disposition과 Worker eligibility
+
+runner, manifest, workflow, contract/docs와 runtime evidence는 모두 현재 Bead의 한 PR 안에서
+운반한다. 최소 3개 green risky sample은 그 PR의 같은 head를 `PR Risk`로 재실행해 merge 전에
+수집할 수 있다. live-state apply, post-merge generation 또는 별도 no-PR 작업은 없다. 따라서
+required residue가 없고 `worker-ineligible` label은 없어야 한다.
+
 ## 선택한 설계
 
 ### 1. binary 기반 test inventory
