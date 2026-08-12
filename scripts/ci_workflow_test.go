@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -13,10 +14,253 @@ import (
 
 const (
 	prWorkflowPath     = ".github/workflows/pr.yml"
+	prRiskWorkflowPath = ".github/workflows/pr-risk.yml"
 	mainWorkflowPath   = ".github/workflows/main.yml"
 	prBaseExpression   = "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}"
 	mainBaseExpression = "${{ github.event.before }}"
 )
+
+func TestEmbeddedStorageShardWorkflowContract(t *testing.T) {
+	document := loadWorkflow(t, prRiskWorkflowPath)
+	storage, ok := document.Jobs["test-embedded-storage"]
+	if !ok {
+		t.Fatal("test-embedded-storage job is missing")
+	}
+	if got := strings.TrimSpace(fmt.Sprint(storage["name"])); got != "Test (Embedded Dolt Storage ${{ matrix.shard }}/5)" {
+		t.Errorf("storage display name = %q, want five-shard display name", got)
+	}
+	strategy, ok := storage["strategy"].(map[string]interface{})
+	if !ok {
+		t.Fatal("test-embedded-storage has no matrix strategy")
+	}
+	if got := fmt.Sprint(strategy["fail-fast"]); got != "false" {
+		t.Errorf("storage fail-fast = %q, want false", got)
+	}
+	matrix, ok := strategy["matrix"].(map[string]interface{})
+	if !ok || !sameStrings(stringList(matrix["shard"]), []string{"1", "2", "3", "4", "5"}) {
+		t.Errorf("storage shard matrix = %v, want [1 2 3 4 5]", matrix["shard"])
+	}
+	if got := strings.TrimSpace(fmt.Sprint(storage["needs"])); got != "[detect-ci-tier build-embedded]" {
+		t.Errorf("storage needs = %q, want unchanged owners", got)
+	}
+	if got := strings.TrimSpace(fmt.Sprint(storage["if"])); got != "needs.detect-ci-tier.outputs.full_embedded == 'true'" {
+		t.Errorf("storage if = %q, want unchanged tier condition", got)
+	}
+	if _, exists := storage["timeout-minutes"]; exists {
+		t.Error("storage job timeout changed; the runner owns the existing 20m test timeout")
+	}
+	if !strings.Contains(fmt.Sprint(storage), "bash .github/scripts/embedded-storage-test-shard.sh ${{ matrix.shard }} 5") {
+		t.Error("storage job does not invoke the five-shard runner")
+	}
+	if !hasArtifactDownloadPath(storage, "embedded-test-binaries", "/tmp/") {
+		t.Error("storage binary artifact download path changed")
+	}
+	runner, err := os.ReadFile(filepath.Join(sourceRepoRoot(t), ".github/scripts/embedded-storage-test-shard.sh"))
+	if err != nil || !strings.Contains(string(runner), "-test.timeout=20m") || !strings.Contains(string(runner), "/tmp/embeddeddolt-test") {
+		t.Errorf("storage runner does not preserve the default binary and 20m test timeout: %v", err)
+	}
+	workflowRaw, err := os.ReadFile(filepath.Join(sourceRepoRoot(t), prRiskWorkflowPath))
+	if err != nil || !strings.Contains(string(workflowRaw), "if: always()") || !strings.Contains(string(workflowRaw), "retention-days: 7") {
+		t.Error("storage job does not always upload seven-day shard artifacts")
+	}
+
+	gate := document.Jobs["ci-gate"]
+	if got := strings.TrimSpace(fmt.Sprint(gate["name"])); got != "CI Gate / Required" {
+		t.Errorf("risk ci-gate name = %q, want CI Gate / Required", got)
+	}
+	if got := strings.TrimSpace(fmt.Sprint(gate["if"])); got != "${{ always() }}" {
+		t.Errorf("risk ci-gate if = %q, want always", got)
+	}
+	if !sameStrings(stringList(gate["needs"]), []string{
+		"detect-ci-tier", "build-embedded", "test-embedded-storage", "test-embedded-conformance", "test-server-storage", "test-embedded-cmd", "test-nix",
+	}) {
+		t.Errorf("risk ci-gate needs changed: %v", stringList(gate["needs"]))
+	}
+	gateEnv, ok := gateEvaluationEnv(gate)
+	if !ok || fmt.Sprint(gateEnv["TEST_EMBEDDED_STORAGE"]) != "${{ needs.test-embedded-storage.result }}" {
+		t.Errorf("risk ci-gate no longer owns the storage matrix result: %v", gateEnv)
+	}
+	if got := strings.Fields(fmt.Sprint(gateEnv["CI_GATE_REQUIRED"])); !sameStrings(got, []string{
+		"DETECT_CI_TIER", "BUILD_EMBEDDED", "TEST_EMBEDDED_STORAGE", "TEST_EMBEDDED_CONFORMANCE", "TEST_SERVER_STORAGE", "TEST_EMBEDDED_CMD", "TEST_NIX",
+	}) {
+		t.Errorf("risk CI_GATE_REQUIRED = %v, want unchanged owner tokens", got)
+	}
+	if !strings.Contains(fmt.Sprint(gate), "CI_GATE_SKIPPED_OK") {
+		t.Error("risk ci-gate skipped-owner calculation is missing")
+	}
+	for _, jobID := range []string{"test-embedded-conformance", "test-server-storage", "test-embedded-cmd", "test-nix"} {
+		if _, exists := document.Jobs[jobID]; !exists {
+			t.Errorf("required sibling job %q is missing", jobID)
+		}
+	}
+}
+
+func TestEmbeddedStorageShardRunnerContracts(t *testing.T) {
+	fixture := newEmbeddedStorageShardFixture(t)
+	assignments := make(map[string]string)
+	for shard := 1; shard <= 5; shard++ {
+		runner := filepath.Join(fixture.root, fmt.Sprintf("run-shard-%d.sh", shard))
+		ciWriteExecutable(t, runner, fmt.Sprintf("#!/usr/bin/env bash\nexec %q %d 5 \"$@\"\n", fixture.sourceRunner, shard))
+		artifactDir := filepath.Join(fixture.root, fmt.Sprintf("artifacts-%d", shard))
+		output, status := runFixtureScript(t, fixture.root, runner, map[string]string{
+			"BEADS_TEST_EMBEDDED_TEST_BINARY": fixture.binary,
+			"BEADS_TEST_SHARD_MANIFEST":       fixture.manifest,
+			"BEADS_TEST_SHARD_ARTIFACT_DIR":   artifactDir,
+			"BEADS_TEST_SHARD_LIST_ONLY":      "1",
+			"BEADS_TEST_EMBEDDED_DOLT":        "1",
+			"FIXTURE_MODE":                    "pass",
+		})
+		if status != 0 {
+			t.Fatalf("list-only shard %d status = %d\n%s", shard, status, output)
+		}
+		selected := readStorageSelected(t, filepath.Join(artifactDir, fmt.Sprintf("embedded-storage-shard-%d-of-5-selected.txt", shard)))
+		for name, source := range selected {
+			if previous, exists := assignments[name]; exists {
+				t.Errorf("%s assigned to both shard %s and %d", name, previous, shard)
+			}
+			assignments[name] = fmt.Sprintf("%d:%s", shard, source)
+		}
+	}
+	want := []string{"TestAlpha", "TestBeta", "TestDelta", "TestEpsilon", "TestGamma", "TestNew"}
+	for _, excluded := range []string{"TestConformance", "TestHelperProcess"} {
+		if _, exists := assignments[excluded]; exists {
+			t.Errorf("special-owner test %s was selected", excluded)
+		}
+	}
+	if got := sortedStorageNames(assignments); !sameStrings(got, want) {
+		t.Errorf("selected test union = %v, want %v", got, want)
+	}
+	if !strings.HasSuffix(assignments["TestNew"], ":fallback") {
+		t.Errorf("new test assignment = %q, want deterministic fallback", assignments["TestNew"])
+	}
+
+	for name, manifest := range map[string]string{
+		"duplicate":    "5 1 TestAlpha\n5 2 TestAlpha\n",
+		"stale":        "5 1 TestMissing\n",
+		"malformed":    "five 1 TestAlpha\n",
+		"zero total":   "0 1 TestAlpha\n",
+		"special":      "5 1 TestConformance\n",
+		"out of range": "5 6 TestAlpha\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			manifestPath := filepath.Join(t.TempDir(), "manifest.txt")
+			if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			output, status := runFixtureScript(t, fixture.root, fixture.runner, map[string]string{
+				"BEADS_TEST_EMBEDDED_TEST_BINARY": fixture.binary,
+				"BEADS_TEST_SHARD_MANIFEST":       manifestPath,
+				"BEADS_TEST_SHARD_ARTIFACT_DIR":   t.TempDir(),
+				"BEADS_TEST_SHARD_LIST_ONLY":      "1",
+			})
+			if status == 0 {
+				t.Fatalf("%s manifest unexpectedly succeeded\n%s", name, output)
+			}
+		})
+	}
+}
+
+func TestEmbeddedStorageShardRunnerFailureContracts(t *testing.T) {
+	fixture := newEmbeddedStorageShardFixture(t)
+	artifactDir := t.TempDir()
+	argsPath := filepath.Join(t.TempDir(), "test-binary-args")
+	output, status := runFixtureScript(t, fixture.root, fixture.runner, map[string]string{
+		"BEADS_TEST_EMBEDDED_TEST_BINARY": fixture.binary,
+		"BEADS_TEST_SHARD_MANIFEST":       fixture.manifest,
+		"BEADS_TEST_SHARD_ARTIFACT_DIR":   artifactDir,
+		"BEADS_TEST_EMBEDDED_DOLT":        "1",
+		"FIXTURE_MODE":                    "fail",
+		"FIXTURE_ARGS":                    argsPath,
+	})
+	if status != 37 {
+		t.Fatalf("failed test status = %d, want 37\n%s", status, output)
+	}
+	for _, filename := range []string{
+		"embedded-storage-shard-1-of-5-selected.txt",
+		"embedded-storage-shard-1-of-5-timing.tsv",
+		"embedded-storage-shard-1-of-5-summary.txt",
+		"embedded-storage-shard-1-of-5.log",
+	} {
+		if _, err := os.Stat(filepath.Join(artifactDir, filename)); err != nil {
+			t.Errorf("failure artifact %s is missing: %v", filename, err)
+		}
+	}
+	if summary := readCIFile(t, filepath.Join(artifactDir, "embedded-storage-shard-1-of-5-summary.txt")); !strings.Contains(summary, "process_exit_status=37") {
+		t.Errorf("failure summary does not preserve test status:\n%s", summary)
+	}
+	if args := readCIFile(t, argsPath); !strings.Contains(args, "-test.run ^(") || !strings.HasSuffix(args, ")$\n") || strings.Contains(args, "TestConformance") || strings.Contains(args, "TestHelperProcess") {
+		t.Errorf("runner test selection is not an exact top-level regex: %q", args)
+	}
+
+	parseArtifactDir := t.TempDir()
+	output, status = runFixtureScript(t, fixture.root, fixture.runner, map[string]string{
+		"BEADS_TEST_EMBEDDED_TEST_BINARY": fixture.binary,
+		"BEADS_TEST_SHARD_MANIFEST":       fixture.manifest,
+		"BEADS_TEST_SHARD_ARTIFACT_DIR":   parseArtifactDir,
+		"FIXTURE_MODE":                    "unparseable",
+	})
+	if status != 0 {
+		t.Fatalf("unparseable timing log status = %d, want test success preserved\n%s", status, output)
+	}
+	if summary := readCIFile(t, filepath.Join(parseArtifactDir, "embedded-storage-shard-1-of-5-summary.txt")); !strings.Contains(summary, "timing_parse=unavailable") {
+		t.Errorf("unparseable timing summary = %q, want unavailable", summary)
+	}
+}
+
+func TestEmbeddedStorageShardRunnerFailClosedContracts(t *testing.T) {
+	fixture := newEmbeddedStorageShardFixture(t)
+	for name, env := range map[string]map[string]string{
+		"missing binary": {
+			"BEADS_TEST_EMBEDDED_TEST_BINARY": filepath.Join(t.TempDir(), "missing-test-binary"),
+		},
+		"inventory failure": {
+			"BEADS_TEST_EMBEDDED_TEST_BINARY": fixture.binary,
+			"FIXTURE_MODE":                    "list-fail",
+		},
+		"empty inventory": {
+			"BEADS_TEST_EMBEDDED_TEST_BINARY": fixture.binary,
+			"FIXTURE_MODE":                    "empty-list",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			env["BEADS_TEST_SHARD_MANIFEST"] = fixture.manifest
+			env["BEADS_TEST_SHARD_ARTIFACT_DIR"] = t.TempDir()
+			output, status := runFixtureScript(t, fixture.root, fixture.runner, env)
+			if status == 0 {
+				t.Fatalf("%s unexpectedly succeeded\n%s", name, output)
+			}
+		})
+	}
+}
+
+func TestEmbeddedStorageShardManifestBalanceContract(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(sourceRepoRoot(t), ".github/scripts/embedded-storage-test-shards.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := make(map[string]int)
+	total := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
+			continue
+		}
+		if len(fields) != 3 || fields[0] != "5" {
+			t.Fatalf("manifest row %q, want active three-column 5-shard row", line)
+		}
+		if fields[2] == "TestConformance" || fields[2] == "TestHelperProcess" {
+			t.Fatalf("manifest assigns special-owner test %s", fields[2])
+		}
+		counts[fields[1]]++
+		total++
+	}
+	if total != 57 {
+		t.Errorf("active manifest roots = %d, want 57", total)
+	}
+	if got := []int{counts["1"], counts["2"], counts["3"], counts["4"], counts["5"]}; fmt.Sprint(got) != "[6 9 10 19 13]" {
+		t.Errorf("manifest shard counts = %v, want [6 9 10 19 13]", got)
+	}
+}
 
 type workflowDocument struct {
 	Jobs map[string]map[string]interface{} `yaml:"jobs"`
@@ -414,6 +658,24 @@ func hasFailureUpload(job map[string]interface{}, artifactName string) bool {
 	return false
 }
 
+func hasArtifactDownloadPath(job map[string]interface{}, artifactName, path string) bool {
+	steps, ok := job["steps"].([]interface{})
+	if !ok {
+		return false
+	}
+	for _, rawStep := range steps {
+		step, ok := rawStep.(map[string]interface{})
+		if !ok || !strings.Contains(fmt.Sprint(step["uses"]), "actions/download-artifact") {
+			continue
+		}
+		with, _ := step["with"].(map[string]interface{})
+		if fmt.Sprint(with["name"]) == artifactName && fmt.Sprint(with["path"]) == path {
+			return true
+		}
+	}
+	return false
+}
+
 func countScalarSubstring(value interface{}, substring string) int {
 	count := 0
 	for _, scalar := range scalarStrings(value) {
@@ -708,4 +970,71 @@ func readCIFile(t *testing.T, path string) string {
 		t.Fatalf("read fixture output %s: %v", path, err)
 	}
 	return string(data)
+}
+
+type embeddedStorageShardFixture struct {
+	root         string
+	runner       string
+	sourceRunner string
+	binary       string
+	manifest     string
+}
+
+func newEmbeddedStorageShardFixture(t *testing.T) embeddedStorageShardFixture {
+	t.Helper()
+	root := t.TempDir()
+	sourceRunner := filepath.Join(sourceRepoRoot(t), ".github", "scripts", "embedded-storage-test-shard.sh")
+	runner := filepath.Join(root, "run-shard.sh")
+	ciWriteExecutable(t, runner, fmt.Sprintf("#!/usr/bin/env bash\nexec %q 1 5 \"$@\"\n", sourceRunner))
+	binary := filepath.Join(root, "embeddeddolt-test")
+	ciWriteExecutable(t, binary, `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-test.list" ]]; then
+  case "${FIXTURE_MODE:-pass}" in
+    list-fail) exit 41 ;;
+    empty-list) exit 0 ;;
+  esac
+  printf '%s\n' TestAlpha TestBeta TestGamma TestDelta TestEpsilon TestNew TestConformance TestHelperProcess
+  exit 0
+fi
+if [[ "${FIXTURE_MODE:-pass}" == "unparseable" ]]; then
+  printf '%s\n' 'fixture produced no Go timing line'
+  exit 0
+fi
+if [[ -n "${FIXTURE_ARGS:-}" ]]; then
+  printf '%s\n' "$*" > "$FIXTURE_ARGS"
+fi
+printf '%s\n' '=== RUN   TestAlpha' '--- FAIL: TestAlpha (0.01s)'
+if [[ "${FIXTURE_MODE:-pass}" == "fail" ]]; then
+  exit 37
+fi
+exit 0
+`)
+	manifest := filepath.Join(root, "manifest.txt")
+	if err := os.WriteFile(manifest, []byte("5 1 TestAlpha\n5 2 TestBeta\n5 3 TestGamma\n5 4 TestDelta\n5 5 TestEpsilon\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return embeddedStorageShardFixture{root: root, runner: runner, sourceRunner: sourceRunner, binary: binary, manifest: manifest}
+}
+
+func readStorageSelected(t *testing.T, path string) map[string]string {
+	t.Helper()
+	selected := make(map[string]string)
+	for _, line := range strings.Split(strings.TrimSpace(readCIFile(t, path)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 {
+			t.Fatalf("selected artifact row %q, want test source shard", line)
+		}
+		selected[fields[0]] = fields[1]
+	}
+	return selected
+}
+
+func sortedStorageNames(assignments map[string]string) []string {
+	names := make([]string, 0, len(assignments))
+	for name := range assignments {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

@@ -64,6 +64,10 @@ package jobs and those jobs remain aggregate owners.
 Dolt and Nix risk checks. Risk-tier skipped allowances belong only to
 `pr-risk.yml`; they are not part of the baseline PR gate.
 
+`test-embedded-storage` remains the sole risk-gate owner for its 5-way matrix.
+Its legs are displayed as `Test (Embedded Dolt Storage N/5)`; branch protection
+continues to require only the aggregate rather than individual legs.
+
 Branch protection should require aggregate checks rather than individual
 matrix or detector jobs, and required checks must be reported for
 `merge_group`.
