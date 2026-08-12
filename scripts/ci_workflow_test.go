@@ -63,6 +63,14 @@ func TestEmbeddedStorageShardWorkflowContract(t *testing.T) {
 	if err != nil || !strings.Contains(string(workflowRaw), "if: always()") || !strings.Contains(string(workflowRaw), "retention-days: 7") {
 		t.Error("storage job does not always upload seven-day shard artifacts")
 	}
+	for _, artifactPath := range []string{
+		"artifacts/embedded-storage-shard-${{ matrix.shard }}-of-5-*",
+		"artifacts/embedded-storage-shard-${{ matrix.shard }}-of-5.log",
+	} {
+		if !strings.Contains(string(workflowRaw), artifactPath) {
+			t.Errorf("storage artifact upload does not cover %q", artifactPath)
+		}
+	}
 
 	gate := document.Jobs["ci-gate"]
 	if got := strings.TrimSpace(fmt.Sprint(gate["name"])); got != "CI Gate / Required" {
@@ -132,6 +140,31 @@ func TestEmbeddedStorageShardRunnerContracts(t *testing.T) {
 	}
 	if !strings.HasSuffix(assignments["TestNew"], ":fallback") {
 		t.Errorf("new test assignment = %q, want deterministic fallback", assignments["TestNew"])
+	}
+	repeatedFallback := ""
+	for shard := 1; shard <= 5; shard++ {
+		runner := filepath.Join(fixture.root, fmt.Sprintf("repeat-run-shard-%d.sh", shard))
+		ciWriteExecutable(t, runner, fmt.Sprintf("#!/usr/bin/env bash\nexec %q %d 5 \"$@\"\n", fixture.sourceRunner, shard))
+		artifactDir := filepath.Join(fixture.root, fmt.Sprintf("repeat-artifacts-%d", shard))
+		output, status := runFixtureScript(t, fixture.root, runner, map[string]string{
+			"BEADS_TEST_EMBEDDED_TEST_BINARY": fixture.binary,
+			"BEADS_TEST_SHARD_MANIFEST":       fixture.manifest,
+			"BEADS_TEST_SHARD_ARTIFACT_DIR":   artifactDir,
+			"BEADS_TEST_SHARD_LIST_ONLY":      "1",
+		})
+		if status != 0 {
+			t.Fatalf("repeated list-only shard %d status = %d\n%s", shard, status, output)
+		}
+		selected := readStorageSelected(t, filepath.Join(artifactDir, fmt.Sprintf("embedded-storage-shard-%d-of-5-selected.txt", shard)))
+		if source, exists := selected["TestNew"]; exists {
+			if repeatedFallback != "" {
+				t.Fatalf("repeated fallback assigned TestNew to multiple shards: %s and %d", repeatedFallback, shard)
+			}
+			repeatedFallback = fmt.Sprintf("%d:%s", shard, source)
+		}
+	}
+	if repeatedFallback != assignments["TestNew"] {
+		t.Errorf("repeated fallback assignment = %q, want %q", repeatedFallback, assignments["TestNew"])
 	}
 
 	for name, manifest := range map[string]string{
@@ -240,6 +273,7 @@ func TestEmbeddedStorageShardManifestBalanceContract(t *testing.T) {
 	}
 	counts := make(map[string]int)
 	total := 0
+	previousName := ""
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
@@ -251,6 +285,10 @@ func TestEmbeddedStorageShardManifestBalanceContract(t *testing.T) {
 		if fields[2] == "TestConformance" || fields[2] == "TestHelperProcess" {
 			t.Fatalf("manifest assigns special-owner test %s", fields[2])
 		}
+		if previousName != "" && fields[2] <= previousName {
+			t.Fatalf("manifest test names are not strictly sorted: %s before %s", previousName, fields[2])
+		}
+		previousName = fields[2]
 		counts[fields[1]]++
 		total++
 	}
