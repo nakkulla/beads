@@ -1,0 +1,69 @@
+# Embedded storage test shard manifest.
+#
+# Format: <total_shards> <shard_number> <top_level_test_name>
+#
+# LPT inputs are the top-level average durations from PR Risk runs
+# 31096079438, 31405176315, 31445762355, 31458011217, 31467456407, and
+# 31503834104. The 57 runnable roots total 773.09s. Predicted loads are:
+# shard 1: 154.98s (6), shard 2: 154.34s (9), shard 3: 155.28s (10),
+# shard 4: 153.24s (19), shard 5: 155.26s (13).
+#
+# TestConformance belongs to test-embedded-conformance and TestHelperProcess
+# is only a subprocess entry point. Neither is a storage-shard root.
+5 3 TestAddDependency
+5 2 TestAddDependency_CrossPrefixRejectedOnEmbeddedStore
+5 2 TestAddLabel
+5 4 TestBuildDSN_NoDatabase
+5 4 TestBuildDSN_SpacesInPath
+5 4 TestBuildDSN_WithDatabase
+5 4 TestCleanGitRemoteCacheGarbage
+5 4 TestCleanGitRemoteCacheGarbage_NoCacheDir
+5 4 TestCleanGitRemoteCacheGarbage_Throttled
+5 2 TestConcurrencyMultiProcess
+5 3 TestConcurrentOpenReturnsCached
+5 2 TestCountsIncludeWispDependencies
+5 1 TestCreateIssue
+5 2 TestCreateIssues
+5 4 TestCreateIssuesRejectStaleUpserts
+5 4 TestEmbeddedConfigCommitStagesConfig
+5 2 TestEmbeddedDirtyTablesGate_BlocksReopenThenWorkingSetReconcileRecovers
+5 1 TestEmbeddedMergeAndSettleDirtyWorkingSetSurvivesRefusedMerge
+5 4 TestEmbeddedMergeAndSettleFKCascadeRepair
+5 4 TestEmbeddedMergeAndSettleMemoryConfigConflict
+5 3 TestEmbeddedMergeAndSettleMetadataConflict
+5 1 TestEmbeddedMergeAndSettleRefusesUnknownTable
+5 3 TestEmbeddedMergeAndSettleReportsOperatorConflicts
+5 5 TestEmbeddedMergeAndSettleSkipsNonMemoryConfigConflict
+5 1 TestEmbeddedOpenForReadOnlyCommand_LenientGate
+5 5 TestEmbeddedOpenReadOnly_SkipsGateAndMigrations
+5 5 TestEmbeddedRecomputeAllBlockedWiring
+5 5 TestEmbeddedRemoteMigrateGate_BlocksReopen
+5 5 TestEmbeddedSyncCommitsConfigBeforeMerge
+5 4 TestExternalCrossDBQualifiedSelectInTx
+5 5 TestExternalExplain_CrossTableIDStaysInOneHalf
+5 4 TestExternalExplain_ExternalOnlyIsBlocked
+5 5 TestExternalExplain_FailClosedIsBlocked
+5 4 TestExternalExplain_MixedLocalAndExternal
+5 5 TestExternalExplain_NoLeakageFromNonExternalExclusions
+5 3 TestExternalExplain_SatisfiedReturnsToReady
+5 5 TestExternalExplain_WispIsBlocked
+5 4 TestExternalReady_CountsPathBlocking
+5 5 TestExternalReady_EmptyShortCircuit
+5 4 TestExternalReady_IssueBlocking
+5 3 TestExternalReady_LimitCorrectness
+5 3 TestExternalReady_WispPlainPathExcluded
+5 4 TestGetDependenciesWithMetadataIncludesExternalRefs
+5 5 TestGetIssue
+5 2 TestGetLabels
+5 5 TestGetNextChildID
+5 5 TestGetReadyWorkIncludeEphemeralAppliesWispFilters
+5 4 TestGetReadyWorkIncludeEphemeralExcludesNonReadyWisps
+5 1 TestGetReadyWorkMoleculeFilter
+5 2 TestHookFiringStoreCreateIssuesFiresDependencyUpdatesFromEmbeddedStore
+5 4 TestListWisps
+5 4 TestOpenAfterCloseCreatesNewStore
+5 3 TestOpenDifferentDirsReturnsDifferentStores
+5 1 TestOpenReturnsCachedStore
+5 3 TestReopenIssue
+5 2 TestSchemaAfterInit
+5 3 TestUpdateIssueType
