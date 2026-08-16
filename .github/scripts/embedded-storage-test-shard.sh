@@ -41,12 +41,37 @@ if [[ -z "$ALL_TESTS" ]]; then
   exit 1
 fi
 
-declare -A ALL_TEST_SET=()
+ALL_TEST_NAMES=()
 while IFS= read -r name; do
-  ALL_TEST_SET["$name"]=1
+  ALL_TEST_NAMES+=("$name")
 done <<< "$ALL_TESTS"
 
-declare -A MANIFEST_SHARDS=()
+contains_exact_test() {
+  local needle="$1"
+  local candidate
+  shift
+  for candidate in "$@"; do
+    if [[ "$candidate" == "$needle" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+MANIFEST_TEST_NAMES=()
+MANIFEST_SHARD_NUMBERS=()
+manifest_shard_for_test() {
+  local test_name="$1"
+  local index
+  for index in "${!MANIFEST_TEST_NAMES[@]}"; do
+    if [[ "${MANIFEST_TEST_NAMES[$index]}" == "$test_name" ]]; then
+      printf '%s\n' "${MANIFEST_SHARD_NUMBERS[$index]}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 while IFS= read -r line || [[ -n "$line" ]]; do
   line="${line%%#*}"
   read -r manifest_total manifest_shard test_name extra <<< "$line"
@@ -68,15 +93,16 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     echo "Special-owner test is not allowed in storage shard manifest: $test_name" >&2
     exit 1
   fi
-  if [[ -n "${MANIFEST_SHARDS[$test_name]:-}" ]]; then
+  if manifest_shard_for_test "$test_name" >/dev/null; then
     echo "Duplicate shard manifest entry for $test_name in $MANIFEST" >&2
     exit 1
   fi
-  MANIFEST_SHARDS["$test_name"]="$manifest_shard"
+  MANIFEST_TEST_NAMES+=("$test_name")
+  MANIFEST_SHARD_NUMBERS+=("$manifest_shard")
 done < "$MANIFEST"
 
-for name in "${!MANIFEST_SHARDS[@]}"; do
-  if [[ -z "${ALL_TEST_SET[$name]:-}" ]]; then
+for name in "${MANIFEST_TEST_NAMES[@]}"; do
+  if ! contains_exact_test "$name" "${ALL_TEST_NAMES[@]}"; then
     echo "Shard manifest entry does not match the compiled test inventory: $name" >&2
     exit 1
   fi
@@ -86,10 +112,9 @@ SHARD_TESTS=()
 SHARD_SOURCES=()
 MANIFEST_COUNT=0
 FALLBACK_COUNT=0
-while IFS= read -r name; do
-  assigned_shard="${MANIFEST_SHARDS[$name]:-}"
+for name in "${ALL_TEST_NAMES[@]}"; do
   source="manifest"
-  if [[ -z "$assigned_shard" ]]; then
+  if ! assigned_shard=$(manifest_shard_for_test "$name"); then
     hash=$(printf '%s' "$name" | cksum | awk '{print $1}')
     assigned_shard=$(( (hash % TOTAL_SHARDS) + 1 ))
     source="fallback"
@@ -104,7 +129,7 @@ while IFS= read -r name; do
       echo "Warning: $name is not in $MANIFEST; assigning it to shard ${assigned_shard}/${TOTAL_SHARDS} by cksum fallback" >&2
     fi
   fi
-done <<< "$ALL_TESTS"
+done
 
 if (( ${#SHARD_TESTS[@]} == 0 )); then
   echo "Shard ${SHARD_NUMBER}/${TOTAL_SHARDS} has no selected tests" >&2

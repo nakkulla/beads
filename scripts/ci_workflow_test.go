@@ -105,12 +105,20 @@ func TestEmbeddedStorageShardWorkflowContract(t *testing.T) {
 
 func TestEmbeddedStorageShardRunnerContracts(t *testing.T) {
 	fixture := newEmbeddedStorageShardFixture(t)
+	runnerSource, err := os.ReadFile(fixture.sourceRunner)
+	if err != nil {
+		t.Fatalf("read storage runner source: %v", err)
+	}
+	if strings.Contains(string(runnerSource), "declare -A") {
+		t.Error("storage runner uses Bash 4 associative arrays")
+	}
+
 	assignments := make(map[string]string)
 	for shard := 1; shard <= 5; shard++ {
 		runner := filepath.Join(fixture.root, fmt.Sprintf("run-shard-%d.sh", shard))
-		ciWriteExecutable(t, runner, fmt.Sprintf("#!/usr/bin/env bash\nexec %q %d 5 \"$@\"\n", fixture.sourceRunner, shard))
+		ciWriteExecutable(t, runner, fmt.Sprintf("#!/usr/bin/env bash\nexec /bin/bash %q %d 5 \"$@\"\n", fixture.sourceRunner, shard))
 		artifactDir := filepath.Join(fixture.root, fmt.Sprintf("artifacts-%d", shard))
-		output, status := runFixtureScript(t, fixture.root, runner, map[string]string{
+		output, status := runFixtureScriptWithShell(t, "/bin/bash", fixture.root, runner, map[string]string{
 			"BEADS_TEST_EMBEDDED_TEST_BINARY": fixture.binary,
 			"BEADS_TEST_SHARD_MANIFEST":       fixture.manifest,
 			"BEADS_TEST_SHARD_ARTIFACT_DIR":   artifactDir,
@@ -144,9 +152,9 @@ func TestEmbeddedStorageShardRunnerContracts(t *testing.T) {
 	repeatedFallback := ""
 	for shard := 1; shard <= 5; shard++ {
 		runner := filepath.Join(fixture.root, fmt.Sprintf("repeat-run-shard-%d.sh", shard))
-		ciWriteExecutable(t, runner, fmt.Sprintf("#!/usr/bin/env bash\nexec %q %d 5 \"$@\"\n", fixture.sourceRunner, shard))
+		ciWriteExecutable(t, runner, fmt.Sprintf("#!/usr/bin/env bash\nexec /bin/bash %q %d 5 \"$@\"\n", fixture.sourceRunner, shard))
 		artifactDir := filepath.Join(fixture.root, fmt.Sprintf("repeat-artifacts-%d", shard))
-		output, status := runFixtureScript(t, fixture.root, runner, map[string]string{
+		output, status := runFixtureScriptWithShell(t, "/bin/bash", fixture.root, runner, map[string]string{
 			"BEADS_TEST_EMBEDDED_TEST_BINARY": fixture.binary,
 			"BEADS_TEST_SHARD_MANIFEST":       fixture.manifest,
 			"BEADS_TEST_SHARD_ARTIFACT_DIR":   artifactDir,
@@ -913,7 +921,12 @@ exec "$FIXTURE_ROOT/scripts/ci/pr-lint.sh"
 
 func runFixtureScript(t *testing.T, root, script string, values map[string]string) (string, int) {
 	t.Helper()
-	command := exec.Command("bash", script)
+	return runFixtureScriptWithShell(t, "bash", root, script, values)
+}
+
+func runFixtureScriptWithShell(t *testing.T, shell, root, script string, values map[string]string) (string, int) {
+	t.Helper()
+	command := exec.Command(shell, script)
 	command.Dir = root
 	command.Env = ciFixtureEnvironment(values)
 	output, err := command.CombinedOutput()
