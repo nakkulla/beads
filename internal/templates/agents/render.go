@@ -81,7 +81,19 @@ func RenderSectionWithOpts(profile Profile, opts RenderOpts) string {
 // CodexSectionBody returns the setup-managed Codex guidance body without
 // Codex-specific markers.
 func CodexSectionBody() string {
-	return normalizeEmbeddedMarkdown(beadsSectionCodex)
+	return codexSectionBody("beads", "`.agents/skills/beads/SKILL.md` (project install) or `~/.agents/skills/beads/SKILL.md` (global install)")
+}
+
+// CodexSectionBodyWithGlobalUsage points to the installed global workflow skill.
+func CodexSectionBodyWithGlobalUsage(location string) string {
+	return codexSectionBody("bd-usage", "`"+location+"`")
+}
+
+func codexSectionBody(skillName, skillLocation string) string {
+	return strings.NewReplacer(
+		"{{skill_name}}", skillName,
+		"{{skill_location}}", skillLocation,
+	).Replace(normalizeEmbeddedMarkdown(beadsSectionCodex))
 }
 
 // ReplaceSection replaces an existing beads integration section in content with a

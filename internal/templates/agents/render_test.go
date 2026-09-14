@@ -125,6 +125,17 @@ func TestRenderSectionMinimal(t *testing.T) {
 	}
 }
 
+func TestCodexSectionBodyWithGlobalUsage(t *testing.T) {
+	body := CodexSectionBodyWithGlobalUsage("~/.codex/skills/bd-usage/SKILL.md")
+
+	if !strings.Contains(body, "Use the `bd-usage` skill at `~/.codex/skills/bd-usage/SKILL.md`") {
+		t.Fatal("missing installed global skill guidance")
+	}
+	if strings.Contains(body, ".agents/skills/beads") || strings.Contains(body, "{{") {
+		t.Fatal("global guidance contains a legacy pointer or unrendered placeholder")
+	}
+}
+
 func TestCodexSectionBody(t *testing.T) {
 	body := CodexSectionBody()
 	if body == "" {

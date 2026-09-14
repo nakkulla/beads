@@ -42,6 +42,156 @@ func newCodexTestEnv(t *testing.T) (codexEnv, *bytes.Buffer, *bytes.Buffer) {
 	return env, stdout, stderr
 }
 
+func TestInstallCodexUsesGlobalUsageSkill(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		global     bool
+		customHome bool
+	}{
+		{name: "project"},
+		{name: "global", global: true},
+		{name: "project with CODEX_HOME", customHome: true},
+		{name: "global with CODEX_HOME", global: true, customHome: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, _, _ := newCodexTestEnv(t)
+			if tc.customHome {
+				customHome := filepath.Join(t.TempDir(), "custom-codex")
+				env.getenv = func(key string) string {
+					if key == codexHomeEnvVar {
+						return customHome
+					}
+					return ""
+				}
+			}
+			skillPath := filepath.Join(codexHomeDir(env), "skills", "bd-usage", "SKILL.md")
+			if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(t.TempDir(), "SKILL.md")
+			const skillContent = "# Existing global workflow\n"
+			if err := os.WriteFile(target, []byte(skillContent), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, skillPath); err != nil {
+				t.Fatal(err)
+			}
+			instructionsPath := codexInstructionsPath(env, tc.global)
+			const prefix = "# User instructions\n\nkeep before\n"
+			const suffix = "\nkeep after\n"
+			seed := prefix + codexManagedSection("") + suffix
+			if err := os.WriteFile(instructionsPath, []byte(seed), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := installCodex(env, tc.global); err != nil {
+				t.Fatal(err)
+			}
+			if err := checkCodex(env, tc.global); err != nil {
+				t.Fatalf("check global usage installation: %v", err)
+			}
+			first, err := os.ReadFile(instructionsPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := installCodex(env, tc.global); err != nil {
+				t.Fatal(err)
+			}
+			second, err := os.ReadFile(instructionsPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			location := "~/.codex/skills/bd-usage/SKILL.md"
+			if tc.customHome {
+				location = skillPath
+			}
+			if !strings.Contains(string(first), "Use the `bd-usage` skill at `"+location+"`") {
+				t.Fatalf("missing global usage pointer in %s", first)
+			}
+			if strings.Contains(string(first), ".agents/skills/beads") {
+				t.Fatal("global usage guidance still points to the local skill")
+			}
+			if !strings.HasPrefix(string(first), prefix) || !strings.HasSuffix(string(first), suffix) {
+				t.Fatal("setup changed user instructions outside its section")
+			}
+			if !bytes.Equal(first, second) {
+				t.Fatal("repeated setup changed instructions")
+			}
+			if _, err := os.Stat(filepath.Join(codexRootDir(env, tc.global), ".agents")); !os.IsNotExist(err) {
+				t.Fatalf("setup created a redundant agent skill directory: %v", err)
+			}
+			if got, err := os.ReadFile(target); err != nil || string(got) != skillContent {
+				t.Fatalf("setup changed global skill target: %q, %v", got, err)
+			}
+			if got, err := os.Readlink(skillPath); err != nil || got != target {
+				t.Fatalf("setup replaced global skill symlink: %q, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestCheckCodexTracksGlobalUsageAvailability(t *testing.T) {
+	env, _, _ := newCodexTestEnv(t)
+	if err := installCodex(env, false); err != nil {
+		t.Fatal(err)
+	}
+	skillPath := filepath.Join(codexHomeDir(env), "skills", "bd-usage", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skillPath, []byte("global guidance\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkCodex(env, false); !errors.Is(err, errCodexInstructionsStale) {
+		t.Fatalf("expected stale local guidance after global install, got %v", err)
+	}
+	const localContent = "user-owned local skill\n"
+	if err := os.WriteFile(agentSkillPath(env.projectDir), []byte(localContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := installCodex(env, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkCodex(env, false); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := os.ReadFile(agentSkillPath(env.projectDir)); err != nil || string(got) != localContent {
+		t.Fatalf("setup changed existing local skill: %q, %v", got, err)
+	}
+	if err := os.Remove(skillPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkCodex(env, false); !errors.Is(err, errAgentSkillStale) {
+		t.Fatalf("expected fallback to check the local skill, got %v", err)
+	}
+}
+
+func TestCodexPropagatesUnreadableGlobalUsage(t *testing.T) {
+	env, _, _ := newCodexTestEnv(t)
+	skillPath := filepath.Join(codexHomeDir(env), "skills", "bd-usage", "SKILL.md")
+	env.readFile = func(path string) ([]byte, error) {
+		if path == skillPath {
+			return nil, os.ErrPermission
+		}
+		return os.ReadFile(path)
+	}
+
+	if err := installCodex(env, false); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("expected global read failure, got %v", err)
+	}
+	if err := checkCodex(env, false); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("expected global read failure from check, got %v", err)
+	}
+
+	entries, err := os.ReadDir(env.projectDir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("setup wrote files after failed skill selection: %v, %v", entries, err)
+	}
+}
+
 func TestInstallCodexCreatesProjectSkillAndInstructions(t *testing.T) {
 	env, stdout, _ := newCodexTestEnv(t)
 	if err := installCodex(env, false); err != nil {
@@ -159,7 +309,7 @@ func TestInstallCodexInstructionsUpdatesExistingSection(t *testing.T) {
 	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
 		t.Fatalf("write seed: %v", err)
 	}
-	if err := installCodexInstructions(env, false); err != nil {
+	if err := installCodexInstructions(env, false, ""); err != nil {
 		t.Fatalf("installCodexInstructions returned error: %v", err)
 	}
 	data, err := os.ReadFile(path)

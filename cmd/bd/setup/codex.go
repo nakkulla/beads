@@ -89,13 +89,19 @@ func InstallCodexProject() error {
 }
 
 func installCodex(env codexEnv, global bool) error {
-	if err := installAgentSkill(codexAgentSkillEnv(env, global)); err != nil {
+	usageLocation, err := codexGlobalUsageLocation(env)
+	if err != nil {
 		return err
+	}
+	if usageLocation == "" {
+		if err := installAgentSkill(codexAgentSkillEnv(env, global)); err != nil {
+			return err
+		}
 	}
 	if err := installCodexNativeHooks(env, global); err != nil {
 		return err
 	}
-	return installCodexInstructions(env, global)
+	return installCodexInstructions(env, global, usageLocation)
 }
 
 func CheckCodex(global bool) error {
@@ -107,13 +113,19 @@ func CheckCodex(global bool) error {
 }
 
 func checkCodex(env codexEnv, global bool) error {
-	if err := checkAgentSkill(codexAgentSkillEnv(env, global), codexSetupCommand(global)); err != nil {
+	usageLocation, err := codexGlobalUsageLocation(env)
+	if err != nil {
 		return err
+	}
+	if usageLocation == "" {
+		if err := checkAgentSkill(codexAgentSkillEnv(env, global), codexSetupCommand(global)); err != nil {
+			return err
+		}
 	}
 	if err := checkCodexNativeHooks(env, global); err != nil {
 		return err
 	}
-	return checkCodexInstructions(env, global)
+	return checkCodexInstructions(env, global, usageLocation)
 }
 
 func RemoveCodex(global bool) error {
@@ -191,11 +203,32 @@ func codexAgentSkillEnv(env codexEnv, global bool) agentSkillEnv {
 	}
 }
 
-func codexManagedSection() string {
-	return codexBeginMarker + "\n" + agents.CodexSectionBody() + "\n" + codexEndMarker
+// codexGlobalUsageLocation returns the guidance location of an installed global
+// skill. Read errors must not cause setup to install a competing local skill.
+func codexGlobalUsageLocation(env codexEnv) (string, error) {
+	root := codexHomeDir(env)
+	path := filepath.Join(root, "skills", "bd-usage", "SKILL.md")
+	if _, err := env.readFile(path); err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read global bd-usage skill: %w", err)
+	}
+	if root == filepath.Join(env.homeDir, codexConfigDir) {
+		return "~/.codex/skills/bd-usage/SKILL.md", nil
+	}
+	return path, nil
 }
 
-func installCodexInstructions(env codexEnv, global bool) error {
+func codexManagedSection(usageLocation string) string {
+	body := agents.CodexSectionBody()
+	if usageLocation != "" {
+		body = agents.CodexSectionBodyWithGlobalUsage(usageLocation)
+	}
+	return codexBeginMarker + "\n" + body + "\n" + codexEndMarker
+}
+
+func installCodexInstructions(env codexEnv, global bool, usageLocation string) error {
 	path := codexInstructionsPath(env, global)
 	if global {
 		_, _ = fmt.Fprintln(env.stdout, "Installing Codex instructions globally...")
@@ -219,7 +252,7 @@ func installCodexInstructions(env codexEnv, global bool) error {
 		return err
 	}
 
-	next := upsertCodexManagedSection(current)
+	next := upsertCodexManagedSection(current, usageLocation)
 	if err := env.writeFile(path, []byte(next)); err != nil {
 		_, _ = fmt.Fprintf(env.stderr, "Error: write %s: %v\n", path, err)
 		return err
@@ -231,7 +264,7 @@ func installCodexInstructions(env codexEnv, global bool) error {
 	return nil
 }
 
-func checkCodexInstructions(env codexEnv, global bool) error {
+func checkCodexInstructions(env codexEnv, global bool, usageLocation string) error {
 	path := codexInstructionsPath(env, global)
 	data, err := env.readFile(path)
 	if os.IsNotExist(err) {
@@ -250,7 +283,7 @@ func checkCodexInstructions(env codexEnv, global bool) error {
 		_, _ = fmt.Fprintf(env.stdout, "  Run: %s\n", codexSetupCommand(global))
 		return errCodexInstructionsNoMarker
 	}
-	if section != codexManagedSection() {
+	if section != codexManagedSection(usageLocation) {
 		_, _ = fmt.Fprintf(env.stdout, "⚠ Codex instructions installed but stale: %s\n", path)
 		_, _ = fmt.Fprintf(env.stdout, "  Run: %s\n", codexSetupCommand(global))
 		return errCodexInstructionsStale
@@ -287,8 +320,8 @@ func removeCodexInstructions(env codexEnv, global bool) error {
 	return nil
 }
 
-func upsertCodexManagedSection(content string) string {
-	section := codexManagedSection()
+func upsertCodexManagedSection(content, usageLocation string) string {
+	section := codexManagedSection(usageLocation)
 	if _, ok := extractCodexManagedSection(content); ok {
 		start := strings.Index(content, codexBeginMarker)
 		end := strings.Index(content, codexEndMarker)
