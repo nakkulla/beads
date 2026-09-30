@@ -842,6 +842,25 @@ func TestProxiedServerUpdate(t *testing.T) {
 	})
 }
 
+func TestProxiedServerAppendNotes(t *testing.T) {
+	requireProxiedServerEnv(t)
+	bd := buildEmbeddedBD(t)
+	p := bdProxiedInit(t, bd, "ran")
+	issue := bdProxiedCreate(t, bd, p.dir, "Repeated notes", "--notes", "first")
+	updated := bdProxiedUpdateOne(t, bd, p.dir, issue.ID, "--append-notes", "a", "--append-notes", "b")
+	if updated.Notes != "first\na\nb" {
+		t.Errorf("notes = %q, want first\na\nb", updated.Notes)
+	}
+	created := bdProxiedCreate(t, bd, p.dir, "Create repeated notes", "--append-notes", "a,b", "--append-notes", "c\nd")
+	if created.Notes != "a,b\nc\nd" {
+		t.Errorf("create notes = %q, want a,b\nc\nd", created.Notes)
+	}
+	out := bdProxiedCreateFail(t, bd, p.dir, "Conflicting notes", "--notes", "x", "--append-notes", "y")
+	if !strings.Contains(out, "cannot specify both --notes and --append-notes") {
+		t.Errorf("expected conflict error, got %s", out)
+	}
+}
+
 func TestProxiedServerUpdateHooks(t *testing.T) {
 	requireProxiedServerEnv(t)
 	bd := buildEmbeddedBD(t)

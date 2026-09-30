@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/spf13/pflag"
 )
 
 // Fast CLI tests converted from scripttest suite
@@ -425,36 +427,44 @@ func TestCLI_UpdateEphemeralMutualExclusion(t *testing.T) {
 }
 
 func TestCLI_UpdateAppendNotes(t *testing.T) {
-	tmpDir := setupCLITestDB(t)
-	out := runBDInProcess(t, tmpDir, "create", "Issue for append-notes test", "-p", "2", "--notes", "Original notes", "--json")
+	bd := buildEmbeddedBD(t)
+	tmpDir, _, _ := bdInit(t, bd, "--prefix", "ian")
+	out := runBDInProcess(t, tmpDir, "create", "Issue for append-notes test", "-p", "2", "--notes", "first", "--json")
+	issue := parseIssueJSON(t, []byte(out))
 
-	var issue map[string]interface{}
-	json.Unmarshal([]byte(out), &issue)
-	id := issue["id"].(string)
-
-	// Test appending notes
-	runBDInProcess(t, tmpDir, "update", id, "--append-notes", "Appended content")
-
-	out = runBDInProcess(t, tmpDir, "show", id, "--json")
-	var updated []map[string]interface{}
-	json.Unmarshal([]byte(out), &updated)
-	notes := updated[0]["notes"].(string)
-	if notes != "Original notes\nAppended content" {
-		t.Errorf("Expected 'Original notes\\nAppended content', got: %q", notes)
-	}
-
-	// Test appending to empty notes
-	out = runBDInProcess(t, tmpDir, "create", "Issue with empty notes", "-p", "2", "--json")
-	json.Unmarshal([]byte(out), &issue)
-	id2 := issue["id"].(string)
-
-	runBDInProcess(t, tmpDir, "update", id2, "--append-notes", "First note")
-
-	out = runBDInProcess(t, tmpDir, "show", id2, "--json")
-	json.Unmarshal([]byte(out), &updated)
-	notes = updated[0]["notes"].(string)
-	if notes != "First note" {
-		t.Errorf("Expected 'First note', got: %q", notes)
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"repeated", []string{"a", "b"}, "first\na\nb"},
+		{"single", []string{"single"}, "first\na\nb\nsingle"},
+		{"commas_and_newlines", []string{"a,b", "c\nd"}, "first\na\nb\nsingle\na,b\nc\nd"},
+		{"empty", []string{""}, "first\na\nb\nsingle\na,b\nc\nd\n"},
+		{"empty_initial_notes", []string{"First note"}, "First note"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Each in-process invocation needs a fresh array value, as a CLI process has.
+			flag := updateCmd.Flags().Lookup("append-notes")
+			oldValue, oldChanged := flag.Value, flag.Changed
+			fresh := pflag.NewFlagSet("append", pflag.ContinueOnError)
+			fresh.StringArray("append-notes", nil, "")
+			flag.Value, flag.Changed = fresh.Lookup("append-notes").Value, false
+			defer func() { flag.Value, flag.Changed = oldValue, oldChanged }()
+			if tc.name == "empty_initial_notes" {
+				out := runBDInProcess(t, tmpDir, "create", "Issue with empty notes", "--notes", "", "--json")
+				issue = parseIssueJSON(t, []byte(out))
+			}
+			args := []string{"update", issue.ID}
+			for _, value := range tc.args {
+				args = append(args, "--append-notes", value)
+			}
+			runBDInProcess(t, tmpDir, args...)
+			got := parseIssueJSON(t, []byte(runBDInProcess(t, tmpDir, "show", issue.ID, "--json")))
+			if got.Notes != tc.want {
+				t.Errorf("notes = %q, want %q", got.Notes, tc.want)
+			}
+		})
 	}
 }
 

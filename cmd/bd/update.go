@@ -137,8 +137,8 @@ use --set-metadata-json for intentional typed JSON values.`,
 			updates["notes"] = notes
 		}
 		if cmd.Flags().Changed("append-notes") {
-			appendNotes, _ := cmd.Flags().GetString("append-notes")
-			updates["append_notes"] = appendNotes
+			appendNotes, _ := cmd.Flags().GetStringArray("append-notes")
+			updates["append_notes"] = strings.Join(appendNotes, "\n")
 		}
 		if cmd.Flags().Changed("acceptance") || cmd.Flags().Changed("acceptance-criteria") {
 			var acceptanceCriteria string

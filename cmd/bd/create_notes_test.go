@@ -4,10 +4,13 @@ package main
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -137,4 +140,82 @@ func TestCreateWithNotes(t *testing.T) {
 			t.Errorf("notes mismatch.\nExpected: %q\nGot: %q", specialNotes, retrieved.Notes)
 		}
 	})
+}
+
+func TestEmbeddedCreateAppendNotes(t *testing.T) {
+	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
+		t.Skip("set BEADS_TEST_EMBEDDED_DOLT=1 to run embedded dolt create tests")
+	}
+	bd := buildEmbeddedBD(t)
+	dir, _, _ := bdInit(t, bd, "--prefix", "can")
+	for _, tc := range []struct {
+		name   string
+		values []string
+		want   string
+	}{
+		{"single", []string{"a"}, "a"},
+		{"repeated", []string{"a", "b"}, "a\nb"},
+		{"commas_and_newlines", []string{"a,b", "c\nd"}, "a,b\nc\nd"},
+		{"empty_values", []string{"", "b", ""}, "\nb\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := []string{"Append notes " + tc.name, "--type", "task"}
+			for _, value := range tc.values {
+				args = append(args, "--append-notes", value)
+			}
+			issue := bdCreate(t, bd, dir, args...)
+			if got := bdShow(t, bd, dir, issue.ID); got.Notes != tc.want {
+				t.Errorf("notes = %q, want %q", got.Notes, tc.want)
+			}
+		})
+	}
+	for _, notes := range []string{"x", ""} {
+		out := bdCreateFail(t, bd, dir, "Conflicting notes", "--notes", notes, "--append-notes", "y")
+		if !strings.Contains(out, "cannot specify both --notes and --append-notes") {
+			t.Errorf("expected conflict error, got %s", out)
+		}
+	}
+}
+
+func TestGatherAppendNotes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+		set  bool
+	}{
+		{"absent", nil, "", false},
+		{"single", []string{"--append-notes", "a"}, "a", true},
+		{"repeated", []string{"--append-notes", "a", "--append-notes", "b"}, "a\nb", true},
+		{"literal", []string{"--append-notes", "a,b", "--append-notes", "c\nd"}, "a,b\nc\nd", true},
+		{"empty", []string{"--append-notes", ""}, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := &cobra.Command{}
+			registerCommonIssueFlags(cmd)
+			cmd.Flags().String("priority", "2", "")
+			if err := cmd.ParseFlags(tc.args); err != nil {
+				t.Fatal(err)
+			}
+			created, err := gatherCreateInput(cmd, []string{"Test notes input"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if created.notes != tc.want {
+				t.Errorf("create notes = %q, want %q", created.notes, tc.want)
+			}
+			updated := gatherUpdateInput(context.Background(), cmd)
+			if updated.appendNotes != tc.want || updated.hasAppendNotes != tc.set {
+				t.Errorf("update notes = %q, set = %t; want %q, %t", updated.appendNotes, updated.hasAppendNotes, tc.want, tc.set)
+			}
+		})
+	}
+	cmd := &cobra.Command{}
+	registerCommonIssueFlags(cmd)
+	if err := cmd.ParseFlags([]string{"--notes", "x", "--append-notes", "y"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gatherCreateInput(cmd, []string{"Test conflicting notes"}); err == nil {
+		t.Fatalf("expected notes conflict, got %v", err)
+	}
 }

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0-fork.2] - 2026-09-30
+
+### Fixed
+
+- Repeated `bd update --append-notes` values are now appended in order with
+  newline separators in both direct and proxied mode. Commas remain literal.
+- `bd create --append-notes` now initializes notes instead of discarding the
+  input. Both create and update reject combining `--notes` with `--append-notes`.
+
 ## [1.2.0-fork.1] - 2026-08-10
 
 ### Breaking

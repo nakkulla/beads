@@ -325,6 +325,14 @@ func TestEmbeddedUpdate(t *testing.T) {
 		}
 	})
 
+	t.Run("update_append_notes_repeated", func(t *testing.T) {
+		issue := bdCreate(t, bd, dir, "Repeated notes", "--type", "task", "--notes", "first")
+		bdUpdate(t, bd, dir, issue.ID, "--append-notes", "a", "--append-notes", "b")
+		if got := bdShow(t, bd, dir, issue.ID); got.Notes != "first\na\nb" {
+			t.Errorf("notes = %q, want first\na\nb", got.Notes)
+		}
+	})
+
 	t.Run("update_notes_and_append_conflict", func(t *testing.T) {
 		issue := bdCreate(t, bd, dir, "Notes conflict", "--type", "task")
 		out := bdUpdateFail(t, bd, dir, issue.ID, "--notes", "x", "--append-notes", "y")

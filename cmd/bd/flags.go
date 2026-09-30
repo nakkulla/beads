@@ -30,7 +30,7 @@ func registerCommonIssueFlags(cmd *cobra.Command) {
 	cmd.MarkFlagsMutuallyExclusive("design", "design-file")
 	cmd.Flags().String("acceptance", "", "Acceptance criteria")
 	cmd.Flags().String("notes", "", "Additional notes")
-	cmd.Flags().String("append-notes", "", "Append to existing notes (with newline separator)")
+	cmd.Flags().StringArray("append-notes", nil, "Append to existing notes (with newline separator; repeatable, one line per value)")
 	cmd.Flags().String("external-ref", "", "External reference (e.g., 'gh-9', 'jira-ABC', Linear URL)")
 }
 

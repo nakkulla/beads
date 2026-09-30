@@ -151,7 +151,14 @@ var createCmd = &cobra.Command{
 			return err
 		}
 		acceptance, _ := cmd.Flags().GetString("acceptance")
+		if cmd.Flags().Changed("notes") && cmd.Flags().Changed("append-notes") {
+			return HandleError("cannot specify both --notes and --append-notes")
+		}
 		notes, _ := cmd.Flags().GetString("notes")
+		if cmd.Flags().Changed("append-notes") {
+			appendNotes, _ := cmd.Flags().GetStringArray("append-notes")
+			notes = strings.Join(appendNotes, "\n")
+		}
 		specID, _ := cmd.Flags().GetString("spec-id")
 
 		priorityStr, _ := cmd.Flags().GetString("priority")

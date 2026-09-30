@@ -96,7 +96,8 @@ func gatherUpdateInput(ctx context.Context, cmd *cobra.Command) *updateInput {
 		in.fields["notes"] = notes
 	}
 	if cmd.Flags().Changed("append-notes") {
-		in.appendNotes, _ = cmd.Flags().GetString("append-notes")
+		appendNotes, _ := cmd.Flags().GetStringArray("append-notes")
+		in.appendNotes = strings.Join(appendNotes, "\n")
 		in.hasAppendNotes = true
 	}
 	if cmd.Flags().Changed("acceptance") || cmd.Flags().Changed("acceptance-criteria") {

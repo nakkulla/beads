@@ -214,6 +214,14 @@ type VersionChange struct {
 // versionChanges contains agent-actionable changes for recent versions
 var versionChanges = []VersionChange{
 	{
+		Version: "1.2.0-fork.2",
+		Date:    "2026-09-30",
+		Changes: []string{
+			"FIX: repeat --append-notes to append every value in order, separated by newlines; commas are preserved.",
+			"FIX: create now stores --append-notes and rejects combining it with --notes, matching update.",
+		},
+	},
+	{
 		Version: "1.2.0-fork.1",
 		Date:    "2026-08-10",
 		Changes: []string{

@@ -31,7 +31,6 @@ type createInput struct {
 	design             string
 	acceptanceCriteria string
 	notes              string
-	appendNotes        string
 	labels             []string
 	noInheritLabels    bool
 	deps               []string
@@ -137,7 +136,13 @@ func gatherCreateInput(cmd *cobra.Command, args []string) (createInput, error) {
 	in.design = design
 	in.acceptanceCriteria, _ = cmd.Flags().GetString("acceptance")
 	in.notes, _ = cmd.Flags().GetString("notes")
-	in.appendNotes, _ = cmd.Flags().GetString("append-notes")
+	if cmd.Flags().Changed("notes") && cmd.Flags().Changed("append-notes") {
+		return in, HandleError("cannot specify both --notes and --append-notes")
+	}
+	if cmd.Flags().Changed("append-notes") {
+		appendNotes, _ := cmd.Flags().GetStringArray("append-notes")
+		in.notes = strings.Join(appendNotes, "\n")
+	}
 	in.specID, _ = cmd.Flags().GetString("spec-id")
 
 	if in.markdownFile == "" && in.graphFile == "" {
