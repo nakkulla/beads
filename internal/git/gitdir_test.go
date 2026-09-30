@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/steveyegge/beads/internal/testutil/gitconfig"
 )
 
 // setupTestRepo creates a temporary git repository for testing.
@@ -41,6 +43,7 @@ func setupTestRepo(t *testing.T) (repoPath string, cleanup func()) {
 }
 
 func TestGetGitHooksDirTildeExpansion(t *testing.T) {
+	gitconfig.IsolateEnv(t)
 	// Use an explicit temporary HOME so tilde expansion is deterministic
 	// regardless of the environment (CI, containers, overridden HOME, etc.).
 	fakeHome := t.TempDir()

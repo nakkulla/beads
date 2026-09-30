@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/steveyegge/beads/internal/testutil"
+	"github.com/steveyegge/beads/internal/testutil/gitconfig"
 )
 
 // Template git repository optimization (bd-ktng):
@@ -103,6 +104,7 @@ func copyDirRecursive(src, dst string) error {
 }
 
 func TestNewGitRepo_UsesRepoLocalHooksPathDespiteGlobalConfig(t *testing.T) {
+	gitconfig.IsolateEnv(t)
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(fakeHome, ".config"))

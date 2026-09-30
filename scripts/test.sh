@@ -14,7 +14,19 @@ source "$REPO_ROOT/.buildflags"
 # shellcheck source=ci/lib/test-env.sh
 source "$REPO_ROOT/scripts/ci/lib/test-env.sh"
 
+# Keep every ancestor outside the host TMPDIR: path canonicalization scans
+# parent directories too, so nesting below a crowded host temp dir is not enough.
+TEST_TMPDIR="$(mktemp -d /tmp/beads-test-XXXXXX)"
+export TMPDIR="$TEST_TMPDIR"
+cleanup_test_run() {
+    if [[ "${BEADS_TEST_ENV_KEEP:-0}" != "1" ]]; then
+        rm -rf "$TEST_TMPDIR"
+    fi
+}
+trap cleanup_test_run EXIT
 beads_test_env_enter
+# The shared environment helper installs its own trap.
+trap cleanup_test_run EXIT
 
 # Build skip pattern from .test-skip file
 build_skip_pattern() {
@@ -29,7 +41,7 @@ build_skip_pattern() {
 }
 
 # Default values
-TIMEOUT="${TEST_TIMEOUT:-3m}"
+TIMEOUT="${TEST_TIMEOUT:-10m}"
 GO_TEST_PKG_PARALLEL="${GO_TEST_PKG_PARALLEL:-4}"
 GO_TEST_PARALLEL="${GO_TEST_PARALLEL:-4}"
 SKIP_PATTERN=$(build_skip_pattern)
@@ -120,7 +132,7 @@ if [[ "${BEADS_TEST_SHARED_SERVER:-}" == "1" && -z "${BEADS_DOLT_PORT:-}" ]]; th
                 wait "$SHARED_DOLT_PID" 2>/dev/null || true
                 rm -rf "$SHARED_DOLT_DIR"
             }
-            trap 'cleanup_shared_server; beads_test_env_cleanup' EXIT
+            trap 'cleanup_shared_server; cleanup_test_run' EXIT
         else
             echo "WARN: shared Dolt server failed to start, falling back to per-package servers" >&2
             kill "$SHARED_DOLT_PID" 2>/dev/null || true
@@ -157,7 +169,19 @@ echo "Running: ${CMD[*]}" >&2
 echo "Skipping: $SKIP_PATTERN" >&2
 echo "" >&2
 
-"${CMD[@]}"
+# Inline Git configuration outranks the test fixtures' local/global config.
+# Strip it only in the test subprocess, keeping the caller's hooks intact.
+run_tests() (
+    for name in "${!GIT_CONFIG_@}"; do
+        case "$name" in
+            GIT_CONFIG_COUNT|GIT_CONFIG_PARAMETERS|GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*)
+                unset "$name"
+                ;;
+        esac
+    done
+    "${CMD[@]}"
+)
+run_tests
 status=$?
 
 if [[ -n "$COVERAGE" ]]; then

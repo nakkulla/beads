@@ -7,11 +7,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/steveyegge/beads/internal/testutil/gitconfig"
+
 	"github.com/steveyegge/beads/internal/git"
 )
 
 func setupConfigWorktree(t *testing.T) (mainRepoDir, worktreeDir, mainConfigPath string) {
 	t.Helper()
+	gitconfig.IsolateEnv(t)
 
 	tmpDir := t.TempDir()
 	mainRepoDir = filepath.Join(tmpDir, "main-repo")

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/steveyegge/beads/internal/testutil/gitconfig"
+
 	"github.com/steveyegge/beads/internal/git"
 )
 
@@ -18,6 +20,7 @@ func chdirForDriftTest(t *testing.T, dir string) {
 
 // TestCheckHooksDriftNotGitRepo verifies hooks check skips when not in a git repo.
 func TestCheckHooksDriftNotGitRepo(t *testing.T) {
+	gitconfig.IsolateEnv(t)
 	chdirForDriftTest(t, t.TempDir())
 
 	items := checkHooksDrift()

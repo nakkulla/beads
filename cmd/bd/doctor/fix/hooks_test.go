@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/steveyegge/beads/internal/testutil/gitconfig"
 )
 
 func TestDetectExternalHookManagers(t *testing.T) {
@@ -778,6 +780,7 @@ func TestBdHookPatternMatching(t *testing.T) {
 }
 
 func TestDetectActiveHookManager(t *testing.T) {
+	gitconfig.IsolateEnv(t)
 	tests := []struct {
 		name        string
 		hookContent string
@@ -868,6 +871,7 @@ func TestDetectActiveHookManager(t *testing.T) {
 }
 
 func TestDetectActiveHookManager_CustomHooksPath(t *testing.T) {
+	gitconfig.IsolateEnv(t)
 	dir := t.TempDir()
 
 	// Initialize real git repo from cached template
